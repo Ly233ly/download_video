@@ -19,12 +19,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
+from .constants import TERMINAL_MEDIA_PLAN_STATUSES
 from .database import Database
 from .network_proxy import (
     NetworkProxyManager,
     ProxyConfigurationError,
     ProxyRoute,
 )
+from .wechat_channels_crypto import WechatVideoDecryptor
 
 
 ALLOWED_CONTAINERS = frozenset({"mp4", "mkv", "webm", "m4a", "mp3", "ts"})
@@ -37,6 +39,7 @@ NETWORK_RETRYABLE_ERRORS = frozenset(
         "page_resolver_failed",
         "youtube_resolver_failed",
         "subtitle_download_failed",
+        "wechat_download_failed",
     }
 )
 WINDOWS_RESERVED_NAMES = frozenset(
@@ -296,6 +299,7 @@ class MediaCoordinator:
             f"{tab_id}|{page_url}|{page_title}".encode("utf-8")
         ).hexdigest()
         runtime_headers = payload.get("runtimeHeaders")
+        source_type = _safe_text(payload.get("sourceType"), 40).lower()
         contexts: list[dict[str, Any]] = []
         known_total = 0
         known_size_count = 0
@@ -360,6 +364,21 @@ class MediaCoordinator:
                 if isinstance(runtime_headers, list) and index < len(runtime_headers)
                 else {}
             )
+            wechat_decode_key: int | None = None
+            wechat_encrypted_bytes = 0
+            if source_type == "wechat_channels":
+                raw_key = _safe_text(raw.get("wechatDecodeKey"), 32)
+                if raw_key:
+                    try:
+                        wechat_decode_key = int(raw_key, 0)
+                    except ValueError as exc:
+                        raise MediaPlanError("视频号解密键无效", "wechat_decode_key_invalid") from exc
+                    if not 0 <= wechat_decode_key < 2**64:
+                        raise MediaPlanError("视频号解密键无效", "wechat_decode_key_invalid")
+                    raw_encrypted_bytes = raw.get("wechatEncryptedBytes")
+                    if not isinstance(raw_encrypted_bytes, int) or not 1 <= raw_encrypted_bytes <= 8 * 1024 * 1024:
+                        raise MediaPlanError("视频号加密长度无效", "wechat_encrypted_length_invalid")
+                    wechat_encrypted_bytes = raw_encrypted_bytes
             contexts.append(
                 {
                     "url": url,
@@ -373,6 +392,8 @@ class MediaCoordinator:
                     "size": size,
                     "preferred_quality": preferred_quality,
                     "resolver": resolver,
+                    "wechat_decode_key": wechat_decode_key,
+                    "wechat_encrypted_bytes": wechat_encrypted_bytes,
                 }
             )
             if size is not None and size > 0:
@@ -704,6 +725,22 @@ class MediaCoordinator:
         ]
         if not media_contexts:
             raise MediaPlanError("下载方案缺少音视频内容", "plan_missing_media")
+        preprocessed = False
+        prepared_contexts: list[dict[str, Any]] = []
+        for index, context in enumerate(media_contexts):
+            if context.get("wechat_decode_key") is None:
+                prepared_contexts.append(context)
+                continue
+            prepared_contexts.append(
+                self._download_and_decrypt_wechat_stream(
+                    plan_id,
+                    context,
+                    plan_root / f"wechat-decrypted-{index}.mp4",
+                    proxy_route.url,
+                )
+            )
+            preprocessed = True
+        media_contexts = prepared_contexts
         if is_youtube_resolver:
             media_contexts = self._resolve_youtube_streams(
                 plan_id, media_contexts[0], plan_root, proxy_route.url
@@ -777,7 +814,8 @@ class MediaCoordinator:
         last_output = ""
         latest_bytes = 0
         latest_time_us = 0
-        last_progress = 2.0
+        progress_floor = 62.0 if preprocessed else 2.0
+        last_progress = progress_floor
         last_update = 0.0
         expected_bytes = int(plan.get("total_bytes") or 0)
         expected_duration = max(
@@ -806,9 +844,9 @@ class MediaCoordinator:
             if expected_duration > 0 and latest_time_us > 0:
                 ratios.append((latest_time_us / 1_000_000) / expected_duration)
             if ratios:
-                next_progress = 2 + min(1.0, max(ratios)) * 76
+                next_progress = progress_floor + min(1.0, max(ratios)) * (78 - progress_floor)
             elif value == "continue":
-                next_progress = min(72, last_progress + 1)
+                next_progress = min(72 if not preprocessed else 77, last_progress + 1)
             else:
                 next_progress = last_progress
             timestamp = time.monotonic()
@@ -941,6 +979,82 @@ class MediaCoordinator:
         if total > 0:
             return f"已下载 {display(downloaded)} / {display(total)}"
         return f"已处理 {display(downloaded)}"
+
+    def _download_and_decrypt_wechat_stream(
+        self,
+        plan_id: str,
+        context: dict[str, Any],
+        target: Path,
+        proxy_url: str | None = None,
+    ) -> dict[str, Any]:
+        key = context.get("wechat_decode_key")
+        encrypted_bytes = context.get("wechat_encrypted_bytes")
+        if not isinstance(key, int) or not isinstance(encrypted_bytes, int):
+            raise MediaPlanError("视频号解密上下文无效", "wechat_decode_context_invalid")
+        headers = {
+            name.title(): str(value)
+            for name, value in dict(context.get("headers") or {}).items()
+        }
+        request = Request(str(context.get("url") or ""), headers=headers)
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else {}
+        opener = build_opener(ProxyHandler(proxies))
+        target.unlink(missing_ok=True)
+        try:
+            response_context = opener.open(request, timeout=60)
+            with response_context as response, target.open("wb") as output:
+                content_length = response.headers.get("Content-Length", "")
+                try:
+                    expected = int(content_length) if content_length else int(context.get("size") or 0)
+                except ValueError:
+                    expected = int(context.get("size") or 0)
+                decryptor = WechatVideoDecryptor(key, encrypted_bytes)
+                downloaded = 0
+                last_update = 0.0
+                while chunk := response.read(256 * 1024):
+                    with self._lock:
+                        if plan_id in self._stop_requested:
+                            raise MediaPlanError("任务已由用户停止", "canceled")
+                    downloaded += len(chunk)
+                    output.write(decryptor.transform(chunk))
+                    now = time.monotonic()
+                    if now - last_update >= 0.5:
+                        ratio = min(1.0, downloaded / expected) if expected > 0 else 0.0
+                        self._set_progress(
+                            plan_id,
+                            4 + ratio * 54 if ratio else min(55, 4 + downloaded / (8 * 1024 * 1024)),
+                            downloaded_bytes=downloaded,
+                            detail=(
+                                f"视频号媒体已下载并解密 {self._download_detail(downloaded, expected).removeprefix('已下载 ')}"
+                                if expected > 0
+                                else f"视频号媒体{self._download_detail(downloaded, 0)}并解密"
+                            ),
+                        )
+                        last_update = now
+                if content_length and downloaded != int(content_length):
+                    raise MediaPlanError("视频号媒体下载长度不完整", "wechat_download_incomplete")
+        except MediaPlanError:
+            target.unlink(missing_ok=True)
+            raise
+        except (HTTPError, URLError, OSError, ValueError) as exc:
+            target.unlink(missing_ok=True)
+            raise MediaPlanError(f"视频号媒体下载失败：{exc}", "wechat_download_failed") from exc
+        if not target.is_file() or target.stat().st_size <= 0:
+            target.unlink(missing_ok=True)
+            raise MediaPlanError("视频号媒体下载结果为空", "wechat_download_failed")
+        self._set_status(plan_id, "downloading", 60, "视频号媒体已下载并解密，正在校验封装")
+        prepared = dict(context)
+        prepared.update(
+            {
+                "url": str(target),
+                "headers": {},
+                "size": target.stat().st_size,
+                "extension": "mp4",
+                "wechat_decode_key": None,
+                "wechat_encrypted_bytes": 0,
+                "local_input": True,
+            }
+        )
+        return prepared
 
     @staticmethod
     def _resolver_cookie_lines(cookie_header: str, hostname: str) -> list[str]:
@@ -1202,7 +1316,7 @@ class MediaCoordinator:
         url = str(context.get("url") or "")
         headers = context.get("headers") if isinstance(context.get("headers"), dict) else {}
         arguments: list[str] = []
-        if proxy_url:
+        if proxy_url and not context.get("local_input"):
             arguments.extend(["-http_proxy", proxy_url])
         user_agent = headers.get("user-agent")
         if user_agent:
@@ -1720,6 +1834,31 @@ class MediaCoordinator:
                 (max(1, min(limit, 200)),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def clear_terminal_history(self) -> int:
+        """Forget terminal plan records without deleting any output or preview files."""
+        statuses = tuple(TERMINAL_MEDIA_PLAN_STATUSES)
+        placeholders = ",".join("?" for _ in statuses)
+        with self.database.transaction() as connection:
+            rows = connection.execute(
+                f"SELECT id FROM download_plans WHERE status IN ({placeholders})",
+                statuses,
+            ).fetchall()
+            plan_ids = [str(row["id"]) for row in rows]
+            if plan_ids:
+                id_placeholders = ",".join("?" for _ in plan_ids)
+                connection.execute(
+                    f"DELETE FROM download_plans WHERE id IN ({id_placeholders})",
+                    plan_ids,
+                )
+        if not plan_ids:
+            return 0
+        with self._lock:
+            for plan_id in plan_ids:
+                self._remote_inputs.pop(plan_id, None)
+                self._scheduled.discard(plan_id)
+                self._stop_requested.discard(plan_id)
+        return len(plan_ids)
 
     def _owned_plan_file(self, plan_id: str, field: str, directory: str) -> Path:
         plan = self.get_plan(_safe_text(plan_id, 80))

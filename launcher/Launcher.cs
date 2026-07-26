@@ -14,8 +14,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("把 IDM 下载的视频自动中转导入 Eagle")]
 [assembly: AssemblyProduct("下载中转站")]
 [assembly: AssemblyCompany("下载中转站")]
-[assembly: AssemblyVersion("1.2.11.0")]
-[assembly: AssemblyFileVersion("1.2.11.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 internal static class Launcher
 {
@@ -276,7 +276,7 @@ internal static class Launcher
             child = childProcess;
             ChildExitCode = 0;
 
-            ToolStripMenuItem statusItem = new ToolStripMenuItem("下载中转站 1.2.11");
+            ToolStripMenuItem statusItem = new ToolStripMenuItem("下载中转站 1.3.0");
             statusItem.Enabled = false;
             ToolStripMenuItem openItem = new ToolStripMenuItem("打开记录");
             openItem.Font = new Font(openItem.Font, FontStyle.Bold);

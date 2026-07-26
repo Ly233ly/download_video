@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Version = "1.2.11",
+    [string]$Version = "1.3.0",
     [switch]$SkipTests,
     [switch]$SkipFfmpegFetch,
     [switch]$SkipYoutubeResolverFetch
@@ -43,8 +43,8 @@ function Invoke-Checked([string]$Label, [scriptblock]$Action) {
     if ($LASTEXITCODE -ne 0) { throw "$Label 失败，退出码 $LASTEXITCODE" }
 }
 
-if ($Version -ne "1.2.11") {
-    throw "本分支只允许构建已经同步版本号的 1.2.11。"
+if ($Version -ne "1.3.0") {
+    throw "本分支只允许构建已经同步版本号的 1.3.0。"
 }
 
 if (-not $SkipTests) {
@@ -97,7 +97,7 @@ Invoke-Checked "安装固定 PyInstaller 6.21.0" { & $venvPython -m pip install 
 $installedVersion = (& $venvPython -m PyInstaller --version).Trim()
 if ($installedVersion -ne "6.21.0") { throw "PyInstaller 版本错误：$installedVersion" }
 
-$buildRoot = Reset-GeneratedDirectory (Join-Path $projectRoot "build\release-1.2.11")
+$buildRoot = Reset-GeneratedDirectory (Join-Path $projectRoot "build\release-1.3.0")
 $pyiDist = Join-Path $buildRoot "dist"
 $pyiWork = Join-Path $buildRoot "work"
 New-Item -ItemType Directory -Path $pyiDist, $pyiWork -Force | Out-Null

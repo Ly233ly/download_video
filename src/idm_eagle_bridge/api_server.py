@@ -18,6 +18,7 @@ from .database import Database
 from .media import MediaCoordinator, MediaPlanError
 from .security import CHROME_EXTENSION_ORIGIN, PairingError, PairingManager
 from .url_utils import InvalidPageUrl, normalize_domain
+from .wechat_channels import WechatChannelsCaptureService
 
 
 MAX_BODY_SIZE = 256 * 1024
@@ -37,6 +38,9 @@ class LocalApi:
         self.database = database
         self.pairing = PairingManager(database)
         self.media = MediaCoordinator(database, ready_callback=media_ready_callback)
+        self.wechat_channels = WechatChannelsCaptureService(
+            self.media, root=database.path.parent / "wechat-channels"
+        )
 
     def pair(self, origin: str, payload: dict[str, Any]) -> dict[str, Any]:
         token = self.pairing.pair(origin, str(payload.get("code", "")))
@@ -152,6 +156,7 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
             parsed = urlsplit(self.path)
             if parsed.path == "/health":
                 media_health = api.media.health()
+                wechat_health = api.wechat_channels.health()
                 self._json(
                     HTTPStatus.OK,
                     {
@@ -163,6 +168,17 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
                         "downloadEngine": media_health.get("downloadEngine"),
                         "mediaReady": bool(media_health.get("ok")),
                         "youtubeResolverReady": bool(media_health.get("youtubeResolver")),
+                        "wechatChannels": {
+                            "state": wechat_health.get("state"),
+                            "running": bool(wechat_health.get("running")),
+                            "candidateCount": int(wechat_health.get("candidateCount", 0)),
+                            "rejectedCount": int(wechat_health.get("rejectedCount", 0)),
+                            "internalApiObserved": int(wechat_health.get("internalApiObserved", 0)),
+                            "proxyDiagnostics": dict(wechat_health.get("proxyDiagnostics") or {}),
+                            "bridgeHash": str(wechat_health.get("bridgeHash") or ""),
+                            "certificateId": str(wechat_health.get("certificateId") or ""),
+                            "errorCode": str(wechat_health.get("errorCode") or ""),
+                        },
                     },
                 )
                 return
@@ -301,6 +317,10 @@ class LocalApiServer:
         self.thread.start()
 
     def stop(self) -> None:
+        # Restore the user's system proxy before waiting for HTTP/media workers.
+        # The native launcher has a bounded shutdown timeout, so this ordering is
+        # a safety property rather than merely a performance preference.
+        self.api.wechat_channels.close()
         self.server.shutdown()
         self.server.server_close()
         if self.thread:

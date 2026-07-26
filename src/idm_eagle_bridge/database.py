@@ -13,7 +13,12 @@ from typing import Any, Iterator
 from urllib.parse import unquote, urlsplit
 
 from .paths import database_path
-from .constants import DEFAULT_HISTORY_DAYS, DEFAULT_HISTORY_LIMIT, TERMINAL_JOB_STATUSES
+from .constants import (
+    DEFAULT_HISTORY_DAYS,
+    DEFAULT_HISTORY_LIMIT,
+    TERMINAL_JOB_STATUSES,
+    TERMINAL_MEDIA_PLAN_STATUSES,
+)
 from .url_utils import clean_page_url, domain_from_url, normalize_domain
 
 
@@ -392,6 +397,11 @@ class Database:
                 "DELETE FROM site_rules WHERE domain = ?", (normalized,)
             )
         return cursor.rowcount > 0
+
+    def clear_site_rules(self) -> int:
+        with self.session() as connection:
+            cursor = connection.execute("DELETE FROM site_rules")
+        return max(cursor.rowcount, 0)
 
     def add_source_event(
         self,
@@ -776,9 +786,32 @@ class Database:
     def clear_terminal_history(self) -> int:
         statuses = tuple(TERMINAL_JOB_STATUSES)
         placeholders = ",".join("?" for _ in statuses)
-        with self.session() as connection:
+        plan_statuses = tuple(TERMINAL_MEDIA_PLAN_STATUSES)
+        plan_placeholders = ",".join("?" for _ in plan_statuses)
+        with self.transaction() as connection:
+            # A terminal media plan no longer needs its IDM/Eagle queue row.
+            # Unlink it first so clearing the queue history keeps the plan
+            # visible and never touches its downloaded output.
+            connection.execute(
+                f"""
+                UPDATE download_plans SET job_id = NULL, updated_at = ?
+                WHERE status IN ({plan_placeholders})
+                  AND job_id IN (
+                      SELECT id FROM jobs WHERE status IN ({placeholders})
+                  )
+                """,
+                (time.time(), *plan_statuses, *statuses),
+            )
             cursor = connection.execute(
-                f"DELETE FROM jobs WHERE status IN ({placeholders})", statuses
+                f"""
+                DELETE FROM jobs
+                WHERE status IN ({placeholders})
+                  AND NOT EXISTS (
+                      SELECT 1 FROM download_plans
+                      WHERE download_plans.job_id = jobs.id
+                  )
+                """,
+                statuses,
             )
         return max(cursor.rowcount, 0)
 

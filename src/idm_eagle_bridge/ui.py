@@ -8,7 +8,23 @@ import json
 import threading
 from pathlib import Path
 from queue import Empty, Queue
-from tkinter import BOTH, END, LEFT, RIGHT, X, PhotoImage, StringVar, Tk, Toplevel, filedialog, messagebox, simpledialog
+from tkinter import (
+    BOTH,
+    END,
+    LEFT,
+    RIGHT,
+    X,
+    Y,
+    BooleanVar,
+    Canvas,
+    PhotoImage,
+    StringVar,
+    Tk,
+    Toplevel,
+    filedialog,
+    messagebox,
+    simpledialog,
+)
 from tkinter import ttk
 from urllib.parse import urlsplit
 
@@ -93,6 +109,102 @@ def _set_window_icon(window: Tk | Toplevel) -> None:
             continue
 
 
+class _VerticalScrolledFrame(ttk.Frame):
+    """A width-filling frame that scrolls only when its content is too tall."""
+
+    def __init__(self, parent: object, *, padding: object = 0) -> None:
+        super().__init__(parent)
+        background = ttk.Style(self).lookup("TFrame", "background")
+        self.canvas = Canvas(
+            self,
+            borderwidth=0,
+            highlightthickness=0,
+            background=background,
+            yscrollincrement=20,
+        )
+        self.scrollbar = ttk.Scrollbar(
+            self,
+            orient="vertical",
+            command=self.canvas.yview,
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side=RIGHT, fill=Y)
+        self.canvas.pack(side=LEFT, fill=BOTH, expand=True)
+
+        self.content = ttk.Frame(self.canvas, padding=padding)
+        self._content_window = self.canvas.create_window(
+            (0, 0),
+            window=self.content,
+            anchor="nw",
+        )
+        self.content.bind("<Configure>", self._sync_layout, add="+")
+        self.canvas.bind("<Configure>", self._sync_layout, add="+")
+        self._wheel_binding = self.winfo_toplevel().bind(
+            "<MouseWheel>",
+            self._on_mousewheel,
+            add="+",
+        )
+        self.bind("<Destroy>", self._release_wheel_binding, add="+")
+
+    def _sync_layout(self, _event: object | None = None) -> None:
+        width = max(1, self.canvas.winfo_width())
+        height = max(self.canvas.winfo_height(), self.content.winfo_reqheight(), 1)
+        self.canvas.itemconfigure(
+            self._content_window,
+            width=width,
+            height=height,
+        )
+        self.canvas.configure(scrollregion=(0, 0, width, height))
+
+    def _contains(self, widget: object) -> bool:
+        current = widget
+        while current is not None:
+            if current is self:
+                return True
+            current = getattr(current, "master", None)
+        return False
+
+    def _inside_independent_scroller(self, widget: object) -> bool:
+        current = widget
+        while current is not None and current is not self:
+            if isinstance(current, (ttk.Treeview, ttk.Combobox)):
+                return True
+            current = getattr(current, "master", None)
+        return False
+
+    def _on_mousewheel(self, event: object) -> str | None:
+        widget = getattr(event, "widget", None)
+        if (
+            widget is None
+            or not self._contains(widget)
+            or self._inside_independent_scroller(widget)
+        ):
+            return None
+        delta = int(getattr(event, "delta", 0) or 0)
+        if delta == 0 or self.canvas.yview() == (0.0, 1.0):
+            return None
+        units = max(1, abs(delta) // 120)
+        self.canvas.yview_scroll(-units if delta > 0 else units, "units")
+        return "break"
+
+    def scroll_to_top(self) -> None:
+        self.canvas.yview_moveto(0.0)
+
+    def scroll_to_bottom(self) -> None:
+        self.update_idletasks()
+        self._sync_layout()
+        self.canvas.yview_moveto(1.0)
+
+    def _release_wheel_binding(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self or not self._wheel_binding:
+            return
+        try:
+            self.winfo_toplevel().unbind("<MouseWheel>", self._wheel_binding)
+        except Exception:
+            pass
+        self._wheel_binding = ""
+
+
 class SiteRulesWindow:
     def __init__(self, parent: "MainWindow") -> None:
         self.parent = parent
@@ -142,13 +254,22 @@ class SiteRulesWindow:
         self.tree.pack(fill=BOTH, expand=True)
         self.tree.bind("<Double-1>", lambda _event: self.toggle_enabled())
 
-        actions = ttk.Frame(outer, padding=(0, 10, 0, 0))
-        actions.pack(fill=X)
-        ttk.Button(actions, text="新增并开启", command=self.add_rule).pack(side=LEFT)
-        ttk.Button(actions, text="开启 / 关闭", command=self.toggle_enabled).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="切换子域名", command=self.toggle_subdomains).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="删除规则", command=self.delete_rule).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="关闭", command=self.close).pack(side=RIGHT)
+        primary_actions = ttk.Frame(outer, padding=(0, 10, 0, 0))
+        primary_actions.pack(fill=X)
+        ttk.Button(
+            primary_actions,
+            text="刷新",
+            command=lambda: self.refresh(force=True),
+        ).pack(side=LEFT)
+        ttk.Button(primary_actions, text="新增并开启", command=self.add_rule).pack(side=LEFT, padx=6)
+        ttk.Button(primary_actions, text="开启 / 关闭", command=self.toggle_enabled).pack(side=LEFT)
+        ttk.Button(primary_actions, text="切换子域名", command=self.toggle_subdomains).pack(side=LEFT, padx=6)
+
+        secondary_actions = ttk.Frame(outer, padding=(0, 6, 0, 0))
+        secondary_actions.pack(fill=X)
+        ttk.Button(secondary_actions, text="删除选中规则", command=self.delete_rule).pack(side=LEFT)
+        ttk.Button(secondary_actions, text="清空全部规则", command=self.clear_rules).pack(side=LEFT, padx=6)
+        ttk.Button(secondary_actions, text="关闭", command=self.close).pack(side=RIGHT)
 
     def selected_rule(self) -> dict | None:
         selected = self.tree.selection()
@@ -211,6 +332,22 @@ class SiteRulesWindow:
             return
         self.database.delete_site_rule(rule["domain"])
         self.refresh(force=True)
+
+    def clear_rules(self) -> None:
+        rules = self.database.list_site_rules()
+        if not rules:
+            messagebox.showinfo("规则列表为空", "当前没有可清除的网站规则。", parent=self.window)
+            return
+        if not messagebox.askyesno(
+            "清空全部规则",
+            "清空后，所有网站都将恢复为默认不自动导入；下载文件、任务记录和 Eagle 内容不会受到影响。是否继续？",
+            parent=self.window,
+        ):
+            return
+        count = self.database.clear_site_rules()
+        self.refresh(force=True)
+        self.parent.refresh(force=True)
+        messagebox.showinfo("清理完成", f"已清除 {count} 条网站规则。", parent=self.window)
 
     def refresh(self, force: bool = False, select_domain: str | None = None) -> None:
         if not self.window.winfo_exists():
@@ -381,6 +518,7 @@ class MainWindow:
         self.database = database
         self.api_server = api_server
         self.media = api_server.api.media
+        self.wechat_channels = api_server.api.wechat_channels
         self.processing = processing
         self.external_tray = external_tray
         self.start_hidden = start_hidden and external_tray
@@ -414,6 +552,15 @@ class MainWindow:
         self.last_plans_revision: tuple[int, float] | None = None
         self.plan_rows: dict[str, dict] = {}
         self.preview_image: PhotoImage | None = None
+        self.wechat_rows: dict[str, dict] = {}
+        self.wechat_variant_ids: list[str] = []
+        self.wechat_revision: tuple[int, float] | None = None
+        self.wechat_preview_events: Queue[tuple[str, bytes]] = Queue()
+        self.wechat_preview_requests: set[str] = set()
+        self.wechat_preview_object_id = ""
+        self.wechat_preview_image: PhotoImage | None = None
+        self.wechat_operation_results: Queue[tuple[bool, str]] = Queue()
+        self.wechat_operation_busy = False
         self.last_eagle_check = 0.0
         self.eagle_connected = False
         self._build()
@@ -423,8 +570,9 @@ class MainWindow:
         self.auto_update_after_id = self.root.after(10000, self._automatic_update_check)
 
     def _build(self) -> None:
-        outer = ttk.Frame(self.root, padding=16)
-        outer.pack(fill=BOTH, expand=True)
+        self.main_scroller = _VerticalScrolledFrame(self.root, padding=16)
+        self.main_scroller.pack(fill=BOTH, expand=True)
+        outer = self.main_scroller.content
 
         heading = ttk.Frame(outer)
         heading.pack(fill=X)
@@ -467,7 +615,13 @@ class MainWindow:
 
         self.notebook = ttk.Notebook(outer)
         self.notebook.pack(fill=BOTH, expand=True)
+        self.notebook.bind(
+            "<<NotebookTabChanged>>",
+            lambda _event: self.main_scroller.scroll_to_top(),
+            add="+",
+        )
         self._build_media_tab()
+        self._build_wechat_tab()
         self._build_idm_tab()
 
         footer = ttk.Frame(outer, padding=(0, 10, 0, 0))
@@ -519,10 +673,11 @@ class MainWindow:
         actions = ttk.Frame(tab, padding=(0, 10, 0, 0))
         actions.pack(fill=X)
         ttk.Button(actions, text="刷新", command=lambda: self.refresh(force=True)).pack(side=LEFT)
+        ttk.Button(actions, text="清除已完成记录", command=self.clear_media_history).pack(side=LEFT, padx=6)
         ttk.Button(actions, text="停止任务", command=self.stop_selected_plan).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="重试下载", command=self.retry_selected_plan).pack(side=LEFT, padx=6)
+        ttk.Button(actions, text="重试下载", command=self.retry_selected_plan).pack(side=LEFT)
         ttk.Button(actions, text="导入现有文件到 Eagle", command=self.import_selected_plan).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="打开文件位置", command=self.open_plan_location).pack(side=LEFT, padx=6)
+        ttk.Button(actions, text="打开文件位置", command=self.open_plan_location).pack(side=LEFT)
         ttk.Button(actions, text="打开来源网页", command=self.open_plan_source).pack(side=LEFT, padx=6)
 
     def _build_idm_tab(self) -> None:
@@ -548,7 +703,109 @@ class MainWindow:
         ttk.Button(actions, text="打开文件位置", command=self.open_file_location).pack(side=LEFT, padx=6)
         ttk.Button(actions, text="打开来源网页", command=self.open_source).pack(side=LEFT, padx=6)
         ttk.Button(actions, text="补充/修改来源", command=self.assign_source).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="清理已完成", command=self.clear_history).pack(side=LEFT, padx=6)
+        ttk.Button(actions, text="清除已完成记录", command=self.clear_history).pack(side=LEFT, padx=6)
+
+    def _build_wechat_tab(self) -> None:
+        tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(tab, text="微信视频号")
+
+        header = ttk.Frame(tab)
+        header.pack(fill=X, pady=(0, 10))
+        self.wechat_status_text = StringVar(value="视频号捕获已关闭")
+        self.wechat_action_text = StringVar(value="开始捕获")
+        ttk.Label(
+            header,
+            textvariable=self.wechat_status_text,
+            font=("Microsoft YaHei UI", 11, "bold"),
+        ).pack(side=LEFT)
+        self.wechat_action_button = ttk.Button(
+            header,
+            textvariable=self.wechat_action_text,
+            command=self.toggle_wechat_capture,
+        )
+        self.wechat_action_button.pack(side=RIGHT)
+        ttk.Label(
+            tab,
+            text="仅在你点击开始后，本机才为微信桌面客户端启用受控 HTTPS 捕获；停止或退出会恢复开启前的系统代理。浏览器扩展与 IDM 不参与此过程。",
+            foreground="#475569",
+            wraplength=1020,
+            justify=LEFT,
+        ).pack(fill=X, pady=(0, 10))
+
+        columns = ("title", "author", "duration", "quality", "updated")
+        self.wechat_tree = ttk.Treeview(
+            tab, columns=columns, show="headings", selectmode="browse", height=13
+        )
+        for name, label in (
+            ("title", "视频内容"),
+            ("author", "作者"),
+            ("duration", "时长"),
+            ("quality", "可用质量"),
+            ("updated", "最近识别"),
+        ):
+            self.wechat_tree.heading(name, text=label)
+        self.wechat_tree.column("title", width=420)
+        self.wechat_tree.column("author", width=150)
+        self.wechat_tree.column("duration", width=80, anchor="center")
+        self.wechat_tree.column("quality", width=190)
+        self.wechat_tree.column("updated", width=130, anchor="center")
+        self.wechat_tree.pack(fill=BOTH, expand=True)
+        self.wechat_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_wechat_detail())
+
+        detail = ttk.LabelFrame(tab, text="候选详情", padding=10)
+        detail.pack(fill=X, pady=(10, 0))
+        self.wechat_preview_label = ttk.Label(
+            detail,
+            text="封面将在识别后显示",
+            width=34,
+            anchor="center",
+            compound="center",
+        )
+        self.wechat_preview_label.pack(side=LEFT, fill="y", padx=(0, 12))
+        detail_text = ttk.Frame(detail)
+        detail_text.pack(side=LEFT, fill=BOTH, expand=True)
+        self.wechat_detail_text = StringVar(value="开始捕获后，在微信中打开视频号内容。")
+        self.wechat_quality_text = StringVar(value="")
+        self.wechat_variant_text = StringVar(value="")
+        ttk.Label(
+            detail_text,
+            textvariable=self.wechat_detail_text,
+            font=("Microsoft YaHei UI", 11, "bold"),
+            wraplength=980,
+            justify=LEFT,
+        ).pack(fill=X)
+        ttk.Label(detail_text, textvariable=self.wechat_quality_text, foreground="#475569").pack(fill=X, pady=(4, 0))
+        self.wechat_variant_box = ttk.Combobox(
+            detail_text,
+            state="readonly",
+            textvariable=self.wechat_variant_text,
+            values=(),
+        )
+        self.wechat_variant_box.pack(fill=X, pady=(8, 0))
+
+        actions = ttk.Frame(tab, padding=(0, 10, 0, 0))
+        actions.pack(fill=X)
+        self.wechat_import_to_eagle = BooleanVar(value=True)
+        ttk.Checkbutton(
+            actions,
+            text="下载完成后导入 Eagle",
+            variable=self.wechat_import_to_eagle,
+        ).pack(side=LEFT)
+        ttk.Button(
+            actions,
+            text="创建下载任务",
+            command=self.submit_selected_wechat_candidate,
+        ).pack(side=LEFT, padx=8)
+        ttk.Button(
+            actions,
+            text="刷新候选",
+            command=lambda: self.refresh(force=True),
+        ).pack(side=LEFT)
+        ttk.Button(
+            actions,
+            text="清除全部候选",
+            command=self.clear_wechat_candidates,
+        ).pack(side=LEFT, padx=8)
 
     def run(self) -> None:
         self.root.mainloop()
@@ -731,6 +988,9 @@ class MainWindow:
             status_parts.append(f"媒体任务 {media_active_count}")
         if job_active_count:
             status_parts.append(f"导入队列 {job_active_count}")
+        wechat_health = self.wechat_channels.health()
+        if wechat_health.get("running"):
+            status_parts.append(f"视频号候选 {wechat_health.get('candidateCount', 0)}")
         if counts.get("failed_permanent", 0):
             status_parts.append(f"失败 {counts['failed_permanent']}")
         self.status_text.set(" · ".join(status_parts))
@@ -746,6 +1006,7 @@ class MainWindow:
             self.pairing_text.set(f"Chrome 配对码：{self.pairing.pairing_code}")
 
         self._refresh_media_tasks(plans, force)
+        self._refresh_wechat_candidates(wechat_health, force)
 
         revision = self.database.jobs_revision()
         if force or revision != self.last_jobs_revision:
@@ -775,7 +1036,255 @@ class MainWindow:
             if selected and self.job_tree.exists(selected):
                 self.job_tree.selection_set(selected)
             self.last_jobs_revision = revision
-        self.refresh_after_id = self.root.after(1000 if media_active_count else 4000, self.refresh)
+        self.refresh_after_id = self.root.after(
+            1000 if media_active_count or wechat_health.get("running") else 4000,
+            self.refresh,
+        )
+
+    @staticmethod
+    def _duration_text(milliseconds: object) -> str:
+        try:
+            total = max(0, int(milliseconds or 0) // 1000)
+        except (TypeError, ValueError):
+            return "未知"
+        if not total:
+            return "未知"
+        hours, remainder = divmod(total, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+    def _refresh_wechat_candidates(self, health: dict, force: bool) -> None:
+        self._drain_wechat_preview_events()
+        state = str(health.get("state") or "off")
+        labels = {
+            "off": "视频号捕获已关闭",
+            "preparing": "正在准备视频号捕获…",
+            "waiting_wechat": "等待微信中打开视频号内容",
+            "capturing": f"捕获中 · {health.get('endpoint') or '本机代理'}",
+            "needs_recovery": "需要确认代理恢复状态",
+            "failed": "视频号捕获启动失败",
+        }
+        summary = labels.get(state, state)
+        if health.get("lastEvent"):
+            summary += f" · {health['lastEvent']}"
+        if health.get("error"):
+            summary += f" · {health['error']}"
+        if health.get("running") and not health.get("candidateCount"):
+            diagnostics = health.get("proxyDiagnostics") or {}
+            summary += (
+                f" · 资源脚本 {diagnostics.get('resourceScriptsInstrumented', 0)}"
+                f"/{diagnostics.get('resourceScriptsSeen', 0)}"
+                f" · 内部数据 {health.get('internalApiObserved', 0)}"
+            )
+        self.wechat_status_text.set(summary)
+        self.wechat_action_text.set("停止捕获" if health.get("running") else "开始捕获")
+
+        candidates = self.wechat_channels.candidates()
+        revision = (
+            len(candidates),
+            max((float(item.get("updatedAt") or 0) for item in candidates), default=0.0),
+        )
+        self.wechat_rows = {str(item["objectId"]): item for item in candidates}
+        selected = self.wechat_tree.selection()
+        selected_id = selected[0] if selected else ""
+        if force or revision != self.wechat_revision:
+            for item in self.wechat_tree.get_children():
+                self.wechat_tree.delete(item)
+            for item in candidates:
+                variants = item.get("variants") if isinstance(item.get("variants"), list) else []
+                qualities = "、".join(str(variant.get("quality") or "自动") for variant in variants[:6])
+                if len(variants) > 6:
+                    qualities += f" 等 {len(variants)} 档"
+                updated = time.strftime(
+                    "%H:%M:%S", time.localtime(float(item.get("updatedAt") or 0))
+                )
+                self.wechat_tree.insert(
+                    "",
+                    END,
+                    iid=str(item["objectId"]),
+                    values=(
+                        str(item.get("title") or "微信视频号视频"),
+                        str(item.get("author") or "未知作者"),
+                        self._duration_text(item.get("durationMs")),
+                        qualities or "自动质量",
+                        updated,
+                    ),
+                )
+            if selected_id and self.wechat_tree.exists(selected_id):
+                self.wechat_tree.selection_set(selected_id)
+            elif candidates:
+                latest_id = str(candidates[-1]["objectId"])
+                self.wechat_tree.selection_set(latest_id)
+                self.wechat_tree.see(latest_id)
+            self.wechat_revision = revision
+        self._update_wechat_detail()
+
+    def _selected_wechat_candidate(self) -> dict | None:
+        selected = self.wechat_tree.selection()
+        return self.wechat_rows.get(selected[0]) if selected else None
+
+    def _update_wechat_detail(self) -> None:
+        candidate = self._selected_wechat_candidate()
+        if not candidate:
+            self.wechat_detail_text.set("开始捕获后，在微信中打开视频号内容。")
+            self.wechat_quality_text.set("")
+            self.wechat_variant_ids = []
+            self.wechat_variant_box.configure(values=())
+            self.wechat_variant_text.set("")
+            self.wechat_preview_object_id = ""
+            self.wechat_preview_image = None
+            self.wechat_preview_label.configure(image="", text="封面将在识别后显示")
+            return
+        object_id = str(candidate.get("objectId") or "")
+        if object_id != self.wechat_preview_object_id:
+            self.wechat_preview_object_id = object_id
+            self.wechat_preview_image = None
+            self.wechat_preview_label.configure(image="", text="正在读取封面…")
+            if object_id and candidate.get("coverUrl") and object_id not in self.wechat_preview_requests:
+                self.wechat_preview_requests.add(object_id)
+                threading.Thread(
+                    target=self._load_wechat_preview,
+                    args=(object_id,),
+                    name="wechat-cover-preview",
+                    daemon=True,
+                ).start()
+            elif not candidate.get("coverUrl"):
+                self.wechat_preview_label.configure(text="该内容未提供封面")
+        self.wechat_detail_text.set(
+            f"{candidate.get('title') or '微信视频号视频'} · {candidate.get('author') or '未知作者'}"
+        )
+        self.wechat_quality_text.set(
+            f"内容 ID：{candidate.get('objectId')} · 视频 · 时长 {self._duration_text(candidate.get('durationMs'))}\n"
+            f"预计输出：{candidate.get('outputName') or '微信视频号视频.mp4'}"
+        )
+        variants = candidate.get("variants") if isinstance(candidate.get("variants"), list) else []
+        values = []
+        self.wechat_variant_ids = []
+        for variant in variants:
+            size = _display_bytes(variant.get("fileSize"))
+            encrypted = " · 本机解密" if variant.get("encrypted") else ""
+            values.append(f"{variant.get('quality') or '自动质量'} · {size}{encrypted}")
+            self.wechat_variant_ids.append(str(variant.get("id") or ""))
+        self.wechat_variant_box.configure(values=values)
+        self.wechat_variant_text.set(values[0] if values else "自动质量")
+
+    def _load_wechat_preview(self, object_id: str) -> None:
+        try:
+            preview = self.wechat_channels.preview_png(object_id)
+        except Exception:
+            preview = b""
+        self.wechat_preview_events.put((object_id, preview))
+
+    def _drain_wechat_preview_events(self) -> None:
+        while True:
+            try:
+                object_id, preview = self.wechat_preview_events.get_nowait()
+            except Empty:
+                return
+            self.wechat_preview_requests.discard(object_id)
+            if object_id != self.wechat_preview_object_id:
+                continue
+            if not preview:
+                self.wechat_preview_label.configure(image="", text="封面暂不可用")
+                continue
+            try:
+                image = PhotoImage(data=preview, format="png")
+            except Exception:
+                self.wechat_preview_label.configure(image="", text="封面暂不可用")
+                continue
+            self.wechat_preview_image = image
+            self.wechat_preview_label.configure(image=image, text="")
+
+    def toggle_wechat_capture(self) -> None:
+        if self.wechat_operation_busy:
+            return
+        running = bool(self.wechat_channels.health().get("running"))
+        if not running:
+            try:
+                existing = self.wechat_channels.certificate.existing()
+                needs_trust = not existing or not self.wechat_channels.certificate.is_trusted(
+                    existing.fingerprint
+                )
+            except Exception as exc:
+                messagebox.showerror("无法检查视频号证书", str(exc), parent=self.root)
+                return
+            if needs_trust and not messagebox.askokcancel(
+                "首次启用视频号捕获",
+                "下载中转站将为当前 Windows 用户生成并信任一张仅用于微信视频号本机捕获的根证书。\n\n"
+                "Windows 随后会显示“安全警告”，请核对证书名称为“下载中转站 微信视频号本机捕获根证书”后亲自确认。停止捕获会恢复系统代理；卸载会按精确指纹移除此证书。\n\n"
+                "是否继续？",
+                parent=self.root,
+            ):
+                return
+        self.wechat_operation_busy = True
+        self.wechat_action_button.state(["disabled"])
+        self.wechat_status_text.set("正在停止视频号捕获…" if running else "正在准备视频号捕获…")
+        threading.Thread(
+            target=self._run_wechat_operation,
+            args=(running,),
+            name="wechat-capture-toggle",
+            daemon=True,
+        ).start()
+        self.root.after(200, self._poll_wechat_operation)
+
+    def _run_wechat_operation(self, was_running: bool) -> None:
+        try:
+            if was_running:
+                self.wechat_channels.stop()
+            else:
+                self.wechat_channels.start()
+        except Exception as exc:
+            self.wechat_operation_results.put((False, str(exc)))
+            return
+        self.wechat_operation_results.put((True, ""))
+
+    def _poll_wechat_operation(self) -> None:
+        try:
+            succeeded, error = self.wechat_operation_results.get_nowait()
+        except Empty:
+            if self.wechat_operation_busy:
+                self.root.after(200, self._poll_wechat_operation)
+            return
+        self.wechat_operation_busy = False
+        self.wechat_action_button.state(["!disabled"])
+        if not succeeded:
+            messagebox.showerror("视频号捕获失败", error or "视频号捕获操作失败", parent=self.root)
+        self.refresh(force=True)
+
+    def submit_selected_wechat_candidate(self) -> None:
+        candidate = self._selected_wechat_candidate()
+        if not candidate:
+            messagebox.showinfo("没有候选", "请先在微信中打开并选择一条视频号内容。")
+            return
+        index = self.wechat_variant_box.current()
+        variant_id = self.wechat_variant_ids[index] if 0 <= index < len(self.wechat_variant_ids) else ""
+        try:
+            self.wechat_channels.submit(
+                str(candidate["objectId"]),
+                variant_id,
+                import_to_eagle=bool(self.wechat_import_to_eagle.get()),
+            )
+        except Exception as exc:
+            messagebox.showerror("创建任务失败", str(exc), parent=self.root)
+            return
+        self.notebook.select(0)
+        self.refresh(force=True)
+
+    def clear_wechat_candidates(self) -> None:
+        count = len(self.wechat_channels.candidates())
+        if not count:
+            messagebox.showinfo("候选列表为空", "当前没有可清除的视频号候选。", parent=self.root)
+            return
+        if not messagebox.askyesno(
+            "清除视频号候选",
+            f"将清除当前识别到的 {count} 条候选；捕获会保持当前状态，下载任务和文件不会受到影响。是否继续？",
+            parent=self.root,
+        ):
+            return
+        removed = self.wechat_channels.clear_candidates()
+        self.wechat_revision = None
+        self.refresh(force=True)
+        messagebox.showinfo("清理完成", f"已清除 {removed} 条视频号候选。", parent=self.root)
 
     def _refresh_media_tasks(self, plans: list[dict], force: bool) -> None:
         revision = (
@@ -1070,13 +1579,27 @@ class MainWindow:
 
     def clear_history(self) -> None:
         if not messagebox.askyesno(
-            "清理记录",
-            "只清理成功、失败和已跳过记录；等待中的任务不会删除。是否继续？",
+            "清除 IDM 导入记录",
+            "只清除成功、失败和已跳过的终态记录；等待中的任务会保留。下载文件和 Eagle 内容不会受到影响。是否继续？",
+            parent=self.root,
         ):
             return
         count = self.database.clear_terminal_history()
         self.refresh(force=True)
-        messagebox.showinfo("清理完成", f"已清理 {count} 条历史记录。")
+        messagebox.showinfo("清理完成", f"已清除 {count} 条 IDM 导入记录。", parent=self.root)
+
+    def clear_media_history(self) -> None:
+        if not messagebox.askyesno(
+            "清除媒体任务记录",
+            "只清除已导入、已下载、下载失败和已停止的任务记录；进行中及等待导入的任务会保留。"
+            "下载文件、预览文件和 Eagle 内容不会受到影响。是否继续？",
+            parent=self.root,
+        ):
+            return
+        count = self.media.clear_terminal_history()
+        self.last_plans_revision = None
+        self.refresh(force=True)
+        messagebox.showinfo("清理完成", f"已清除 {count} 条媒体任务记录。", parent=self.root)
 
     def copy_pairing_code(self) -> None:
         code = self.pairing.pairing_code

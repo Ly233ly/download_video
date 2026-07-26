@@ -172,6 +172,21 @@
 - [x] **94 可见状态与诊断**：主界面提供网络入口、检测结果和操作说明；403/超时显示代理建议，诊断只导出脱敏端点（A195）。
 - [x] **95 1.2.11 发行与实机复验**：113 项 Python、17 个扩展 JavaScript、双清单、冻结运行时、隔离安装器四路径、发行构建、签名更新清单、GitHub 推送与公开发布全部通过（A196）。
 
+## 1.3.0：微信视频号本机捕获与统一下载
+
+本阶段独立参考 `ltaoo/wx_channels_download` 的可观察行为，不复制其 Go/JavaScript 源码、Gopeed 下载器、证书或图标。微信桌面客户端的发现作为新的本机来源适配器，候选提交后继续使用现有 `MediaCoordinator`、SQLite 任务、FFmpeg、Eagle 和桌面任务 UI。详细任务位于 `.scratch/wechat-channels-1-3/issues/`。
+
+- [x] [**96 来源生命周期纵向闭环**](.scratch/wechat-channels-1-3/issues/01-source-lifecycle-tracer.md)：默认关闭的桌面入口、服务状态、健康信息、幂等启停和合成候选闭环（A197–A198）。
+- [x] [**97 受控证书与 HTTPS 捕获**](.scratch/wechat-channels-1-3/issues/02-trusted-proxy-capture.md)：每机证书、目标域名 TLS、非目标隧道、系统代理精确恢复与资源门禁（A199–A201）。
+- [x] [**98 内容身份、预览与候选提交**](.scratch/wechat-channels-1-3/issues/03-feed-candidate-ui.md)：按 objectId 归组标题/作者/封面/时长/质量；微信原操作栏普通点击提交当前质量、悬停选择其他实际质量，桌面保留完整核对和手动入口（A202–A204）。
+- [x] [**99 多质量下载与受控解密**](.scratch/wechat-channels-1-3/issues/04-quality-download-decrypt.md)：短期上下文、任意实际档位、流式解密、FFmpeg/ffprobe 和错误语义（A205–A208）。
+- [x] [**100 任务、Eagle 与恢复**](.scratch/wechat-channels-1-3/issues/05-task-eagle-recovery.md)：统一任务进度、仅下载、补导、离线等待、重启保留和来源可靠性（A209–A211）。
+- [x] [**101 安全、诊断与故障恢复**](.scratch/wechat-channels-1-3/issues/06-security-diagnostics-recovery.md)：秘密零落盘、代理归属恢复、注入安全、资源上限与可操作错误（A212–A214）。
+- [x] [**102 安装、升级、卸载与版本门禁**](.scratch/wechat-channels-1-3/issues/07-installer-rollback.md)：1.3.0 版本同步、载荷归属、健康回滚、证书/代理卸载和全量文档（A215–A217）。
+- [-] [**103 全量回归与真实视频号验收**](.scratch/wechat-channels-1-3/issues/08-release-live-verification.md)：首次真实运行已完成证书信任、目标页面注入和代理精确恢复，并据现场 0 候选修复资源模块内部 `finder*` feed 入口；当前 158 项 Python、6 组 Node、活动 JavaScript 语法、双清单、冻结运行时、隔离安装器四路径、发行构建、当前电脑覆盖安装和在线健康通过。仍需完成真实授权内容的按钮、当前/其他质量、ffprobe/Eagle 闭环；此前只能发布为明确标注的预发布候选（A218–A220）。
+- [x] **104 主窗口纵向滚动**：在最低窗口高度及缩放场景下，用外层滚动容器保证标签详情、操作区和全局底栏可达；Treeview 与下拉框保留自身滚轮（A221）。
+- [x] **105 列表刷新与安全清理**：媒体、视频号、IDM 与网站规则列表提供明确刷新和匹配其语义的清理操作；只删允许的记录/候选，不删文件、不动 Eagle、不影响活动任务（A222）。
+
 ## 1.2.0：职责边界、分片信息密度与本地补导
 
 - [x] [49 播放分片与最新项交互](.scratch/extension-boundary-1-2/issues/01-fragment-and-order.md)：默认排除不可下载分片、提供紧凑诊断开关，候选按时间正序并在跟随最新状态下滚动到底部（A145–A146）。

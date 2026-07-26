@@ -14,6 +14,11 @@ from .single_instance import SingleInstance
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="下载中转站：IDM 视频自动导入 Eagle")
     parser.add_argument("--once", action="store_true", help="只处理一轮任务后退出")
+    parser.add_argument(
+        "--cleanup-wechat-capture",
+        action="store_true",
+        help="恢复视频号捕获代理并移除本程序证书后退出",
+    )
     parser.add_argument("--headless", action="store_true", help="不显示窗口，只运行后台服务")
     parser.add_argument(
         "--start-hidden",
@@ -36,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.cleanup_wechat_capture:
+        from .wechat_channels import cleanup_wechat_capture
+
+        cleanup_wechat_capture()
+        return 0
     database = Database()
     if args.once:
         JobProcessor(database).process_once()
@@ -75,8 +85,11 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        processing.stop()
+        # LocalApiServer.stop() restores any owned WeChat capture proxy first.
+        # Do that before the legacy processor can spend up to five seconds
+        # waiting for its worker thread during application shutdown.
         api_server.stop()
+        processing.stop()
         instance.close()
     return 0
 

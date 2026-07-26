@@ -873,6 +873,58 @@ class MediaCoordinatorTests(unittest.TestCase):
         stopped = self.coordinator.stop_plan(plan["id"])
         self.assertEqual(stopped["status"], "canceled")
 
+    def test_clear_terminal_history_removes_records_but_not_files_or_active_plans(self) -> None:
+        output = self.root / "finished.mp4"
+        output.write_bytes(b"user-visible-download")
+        with patch.object(self.coordinator, "schedule"):
+            finished = self.coordinator.create_plan(self.payload(outputName="finished.mp4"))
+            active = self.coordinator.create_plan(self.payload(outputName="active.mp4", tabId=8))
+        with self.database.session() as connection:
+            connection.execute(
+                """
+                UPDATE download_plans SET status = 'completed_local',
+                    progress = 100, final_path = ? WHERE id = ?
+                """,
+                (str(output), finished["id"]),
+            )
+
+        self.assertEqual(self.coordinator.clear_terminal_history(), 1)
+        self.assertTrue(output.is_file())
+        self.assertEqual([plan["id"] for plan in self.coordinator.list_plans()], [active["id"]])
+        self.assertNotIn(finished["id"], self.coordinator._remote_inputs)
+        self.assertIn(active["id"], self.coordinator._remote_inputs)
+
+    def test_clearing_idm_history_unlinks_terminal_media_plan_only(self) -> None:
+        with patch.object(self.coordinator, "schedule"):
+            terminal_plan = self.coordinator.create_plan(self.payload(outputName="imported.mp4"))
+            active_plan = self.coordinator.create_plan(self.payload(outputName="waiting.mp4", tabId=8))
+        terminal_job = self.database.add_job(str(self.root / "imported.mp4"))
+        active_job = self.database.add_job(str(self.root / "waiting.mp4"))
+        self.database.update_job(terminal_job, status="imported", eagle_item_id="item-1")
+        self.database.update_job(active_job, status="failed_permanent")
+        with self.database.session() as connection:
+            connection.execute(
+                "UPDATE download_plans SET status = 'imported', job_id = ? WHERE id = ?",
+                (terminal_job, terminal_plan["id"]),
+            )
+            connection.execute(
+                "UPDATE download_plans SET status = 'ready_to_import', job_id = ? WHERE id = ?",
+                (active_job, active_plan["id"]),
+            )
+
+        self.assertEqual(self.database.clear_terminal_history(), 1)
+        self.assertIsNone(self.database.get_job(terminal_job))
+        self.assertIsNotNone(self.database.get_job(active_job))
+        with self.database.session() as connection:
+            terminal_link = connection.execute(
+                "SELECT job_id FROM download_plans WHERE id = ?", (terminal_plan["id"],)
+            ).fetchone()
+            active_link = connection.execute(
+                "SELECT job_id FROM download_plans WHERE id = ?", (active_plan["id"],)
+            ).fetchone()
+        self.assertIsNone(terminal_link["job_id"])
+        self.assertEqual(active_link["job_id"], active_job)
+
     def test_completed_plan_preview_is_bounded_to_program_preview_directory(self) -> None:
         station_root = self.root / "preview-root"
         preview = station_root / "下载中转站" / "预览" / "frame.png"

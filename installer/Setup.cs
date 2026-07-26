@@ -7,6 +7,7 @@ using System.Net;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -16,12 +17,12 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("下载中转站一键安装程序")]
 [assembly: AssemblyProduct("下载中转站")]
 [assembly: AssemblyCompany("下载中转站")]
-[assembly: AssemblyVersion("1.2.11.0")]
-[assembly: AssemblyFileVersion("1.2.11.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 internal static class SetupProgram
 {
-    internal const string Version = "1.2.11";
+    internal const string Version = "1.3.0";
     internal const string ProductName = "下载中转站";
     internal const string QuitEventName = @"Local\IdmEagleAutoImportQuit";
     internal const string DefaultIdmRegistry = @"Software\DownloadManager";
@@ -415,6 +416,7 @@ internal static class InstallerEngine
         report("正在停止旧版本…");
         SignalQuit();
         Thread.Sleep(testMode ? 50 : (updateMode ? 2500 : 1000));
+        CleanupWechatCapture(installDirectory, testMode);
 
         if (updateMode)
         {
@@ -632,7 +634,11 @@ internal static class InstallerEngine
                         || body.Contains("\"extensionProtocol\":1");
                     bool downloadEngineReady = body.Contains("\"downloadEngine\": \"desktop_ffmpeg\"")
                         || body.Contains("\"downloadEngine\":\"desktop_ffmpeg\"");
-                    if (versionMatches && mediaReady && youtubeResolverReady && databaseReady && protocolReady && downloadEngineReady)
+                    bool wechatModuleReady = Regex.IsMatch(
+                        body,
+                        "\\\"bridgeHash\\\"\\s*:\\s*\\\"[0-9a-fA-F]{16}\\\""
+                    );
+                    if (versionMatches && mediaReady && youtubeResolverReady && databaseReady && protocolReady && downloadEngineReady && wechatModuleReady)
                     {
                         return true;
                     }
@@ -724,6 +730,42 @@ internal static class InstallerEngine
         }
         catch (UnauthorizedAccessException)
         {
+        }
+    }
+
+    private static void CleanupWechatCapture(string installDirectory, bool testMode)
+    {
+        if (testMode) return;
+        string captureRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "IdmEagleAutoImport",
+            "wechat-channels"
+        );
+        if (!Directory.Exists(captureRoot)) return;
+        string backend = Path.Combine(
+            installDirectory,
+            "runtime",
+            "下载中转站后台",
+            "下载中转站后台.exe"
+        );
+        if (!File.Exists(backend))
+        {
+            throw new InvalidOperationException("检测到视频号捕获状态，但旧版后端缺失，无法安全恢复系统代理。请先修复安装。 ");
+        }
+        using (Process process = Process.Start(new ProcessStartInfo
+        {
+            FileName = backend,
+            Arguments = "--cleanup-wechat-capture",
+            WorkingDirectory = installDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
+        }))
+        {
+            if (process == null || !process.WaitForExit(20000) || process.ExitCode != 0)
+            {
+                throw new InvalidOperationException("视频号捕获清理未完成；为保护系统代理设置，已中止安装或卸载。 ");
+            }
         }
     }
 
@@ -972,6 +1014,7 @@ internal static class InstallerEngine
 
         SignalQuit();
         Thread.Sleep(testMode ? 50 : 1200);
+        CleanupWechatCapture(fullInstall, testMode);
         RestoreIdm(fullInstall, testMode);
         if (!testMode)
         {

@@ -10,6 +10,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(project_root / 'assets' / 'download-transfer-station.ico'), 'assets'),
+        (str(project_root / 'src' / 'idm_eagle_bridge' / 'assets' / 'wechat_channels_bridge.js'), 'idm_eagle_bridge/assets'),
     ],
     hiddenimports=[],
     hookspath=[],

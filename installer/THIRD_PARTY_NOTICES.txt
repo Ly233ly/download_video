@@ -9,7 +9,7 @@ third_party/cat-catch and docs/UPSTREAM_PROVENANCE.md.
 
 Browser libraries formerly bundled by cat-catch (mux.js, mpd-parser,
 jquery-qrcode, jQuery, hls.js, MQTT.js, jquery.json-viewer, StreamSaver.js and
-the hls.js AES decryptor) are not part of the 1.2.11 active extension payload.
+the hls.js AES decryptor) are not part of the 1.3.0 active extension payload.
 Their original notices remain inside the fixed corresponding-source snapshot at
 third_party/cat-catch/source/lib/third-party-libraries.md.
 
@@ -34,9 +34,14 @@ Copyright 2018-2026 the Deno authors.
 Distributed under the MIT License.
 See licenses/DENO-MIT.txt and media-tools/YOUTUBE-RESOLVER-VERSION.json.
 
-The Download Transfer Station 1.2.11 combined work is distributed under
+The Download Transfer Station 1.3.0 combined work is distributed under
 GNU General Public License v3.0. Original project code from 0.6.0 and earlier
 retains its MIT notice in licenses/PROJECT-MIT-LICENSE.txt.
+
+ltaoo/wx_channels_download and Hanson/WechatSphDecrypt were reviewed only to
+understand observable WeChat Channels behavior. No source code, binaries,
+certificates, icons, UI, SunnyNet, Gopeed, or other artifacts from those
+repositories are included in this source tree or standalone runtime.
 
 Python 3.14.4
 Copyright (c) Python Software Foundation.

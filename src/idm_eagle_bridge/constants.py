@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "下载中转站"
-APP_VERSION = "1.2.11"
+APP_VERSION = "1.3.0"
 EXTENSION_PROTOCOL_VERSION = 1
 DATA_DIR_NAME = "IdmEagleAutoImport"
 DEFAULT_EAGLE_BASE_URL = "http://127.0.0.1:41595"
@@ -35,6 +35,15 @@ TERMINAL_JOB_STATUSES = frozenset(
         "ignored_non_video",
         "ignored_by_user",
         "failed_permanent",
+    }
+)
+
+TERMINAL_MEDIA_PLAN_STATUSES = frozenset(
+    {
+        "imported",
+        "completed_local",
+        "retry",
+        "canceled",
     }
 )
 

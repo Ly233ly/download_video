@@ -29,7 +29,7 @@ class ExtensionTests(unittest.TestCase):
     def test_manifests_are_versioned_and_include_structured_site_bridges(self) -> None:
         for name in ("manifest.json", "manifest.firefox.json"):
             manifest = json.loads((EXTENSION / name).read_text(encoding="utf-8"))
-            self.assertEqual(manifest["version"], "1.2.11")
+            self.assertEqual(manifest["version"], "1.3.0")
             self.assertEqual(manifest["name"], "下载中转站")
             scripts = [script for entry in manifest["content_scripts"] for script in entry["js"]]
             self.assertIn("js/bilibili-content.js", scripts)
@@ -39,12 +39,12 @@ class ExtensionTests(unittest.TestCase):
             self.assertIn("catch-script/youtube.js", resources)
         setup = (ROOT / "installer" / "Setup.cs").read_text(encoding="utf-8")
         launcher = (ROOT / "launcher" / "Launcher.cs").read_text(encoding="utf-8")
-        self.assertIn('internal const string Version = "1.2.11"', setup)
-        self.assertIn('AssemblyFileVersion("1.2.11.0")', setup)
-        self.assertIn('AssemblyFileVersion("1.2.11.0")', launcher)
+        self.assertIn('internal const string Version = "1.3.0"', setup)
+        self.assertIn('AssemblyFileVersion("1.3.0.0")', setup)
+        self.assertIn('AssemblyFileVersion("1.3.0.0")', launcher)
         version_resource = (ROOT / "packaging" / "download-transfer-station-version.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(1, 2, 10, 0)", version_resource)
-        self.assertIn("prodvers=(1, 2, 10, 0)", version_resource)
+        self.assertIn("filevers=(1, 3, 0, 0)", version_resource)
+        self.assertIn("prodvers=(1, 3, 0, 0)", version_resource)
         self.assertGreaterEqual(setup.count("WriteBootstrapPairing(extensionDirectory"), 3)
 
     def test_bilibili_playinfo_becomes_grouped_video_and_audio(self) -> None:
@@ -56,6 +56,27 @@ class ExtensionTests(unittest.TestCase):
             check=True,
         )
         self.assertIn("Bilibili metadata bridge OK", result.stdout)
+
+    def test_wechat_channels_bridge_submits_registered_current_video_without_downloading_in_page(self) -> None:
+        result = subprocess.run(
+            ["node", str(ROOT / "tests" / "js" / "test_wechat_channels_bridge.js")],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=True,
+        )
+        self.assertIn("wechat channels bridge tests passed", result.stdout)
+        bridge = (
+            ROOT / "src" / "idm_eagle_bridge" / "assets" / "wechat_channels_bridge.js"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("chrome.downloads", bridge)
+        self.assertNotIn("WebAssembly", bridge)
+        self.assertNotIn('action: "submit"', bridge)
+        self.assertIn('action: "download"', bridge)
+        self.assertIn("objectId: entry.feed.objectId", bridge)
+        self.assertIn("variantId: variantId", bridge)
+        self.assertIn(".slides-item .click-box.op-item", bridge)
+        self.assertIn("download-station-wechat-control", bridge)
 
     def test_youtube_player_response_becomes_grouped_video_and_audio(self) -> None:
         result = subprocess.run(

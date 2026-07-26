@@ -466,3 +466,44 @@ Open Graph / Twitter Player 明确视频声明
 - 代理选择是任务级值，不修改 Windows、代理软件或全进程环境，避免把 Eagle、本机配对和控制信号错误送入代理。
 - 自动模式的线路数组最多包含“系统代理、直连”两项；状态机只对网络型错误前进一次，不会重新排队形成循环。手动和直连模式都只有一项。
 - FFmpeg/ffprobe 使用输入级 HTTP proxy，yt-dlp 使用固定 `--proxy` 参数，字幕请求使用任务专用 ProxyHandler。端点验证拒绝控制字符、用户信息、无端口和非 HTTP 协议。
+
+## 1.3.0 微信视频号本机来源
+
+```text
+下载中转站桌面 UI
+      │ 显式开始/停止
+      ▼
+WechatChannelsCaptureService
+      ├─ CertificateAuthority ── 当前用户根证书 / 多目标叶证书（每机唯一）
+      ├─ WinInetProxyLease ───── 原配置快照 / 所有权 / 精确恢复
+      ├─ LoopbackHttpsProxy ──── 目标 TLS、非目标隧道、上游代理链
+      ├─ module hooks + bridge ─ 微信内部返回值观察、objectId 归组、原操作栏下载入口
+      └─ CandidateRegistry ───── 短期 URL/头/decodeKey（只在内存）
+                                      │
+                                      ▼
+                              MediaCoordinator.create_plan
+                                      │
+                         下载 → 必要解密 → 合并 → ffprobe
+                                      │
+                         completed_local / Eagle 官方 API
+```
+
+### 生命周期与网络所有权
+
+- 捕获首次默认关闭。开始动作先检查端口和证书，再持久化 WinINET 的 ProxyEnable、ProxyServer、ProxyOverride、AutoConfigURL、AutoDetect 与 `Connections` 二进制值，最后把当前用户代理指向回环服务。写入失败先用租约恢复；恢复也失败时保留租约和“需要恢复”状态。
+- 服务停止、应用退出或启动中途失败时先验证代理所有权并尝试恢复原配置，再结束代理监听、HTTP/媒体和旧任务线程，最后清理会话秘密。异常退出不能保证执行清理，因此下次启动读取带实例标识的租约；仅当当前配置仍指向该实例时恢复。
+- 非目标 CONNECT 不解密。目标主机集合由视频号协议能力维护，不由某条视频 URL、用户账号或页面样本生成。Eagle、回环 API 和本机控制始终绕过。
+- 若捕获前已有系统 HTTP/Mixed 代理，回环代理把公网连接链到原上游，避免开启视频号时切断用户既有线路。PAC/SOCKS 等无法安全链式复用时开始动作明确阻止并说明，不静默改成直连。
+
+### 页面与候选
+
+- 代理在视频号 HTML 的最早可用位置加入同源静态 `bridge.js`，并给页面脚本/ES 模块依赖追加本次捕获会话缓存键，确保开启后的模块确实经过本机代理。`bridge.js` 继续观察 fetch/XHR/Response JSON；代理还在 `res.wx.qq.com` 返回的微信资源模块中，按稳定的 `finderPcFlow`、`finderGetRecommend`、`finderGetCommentDetail` 等方法边界加入结果观察调用。包装使用内层 async 箭头保留原返回、异常、`this` 和 `await` 语义，只把微信已经取得的结构化对象交给同一白名单扫描器，不调用内部下载能力。
+- 资源脚本已检查数、成功改写数、安装钩子数与实际内部 API 返回次数只作为整数诊断进入健康状态；不记录资源 URL、账号、feed、Cookie、签名或解密键。入口改名或结构失配会显示为“脚本已见但钩子为 0”或“钩子已装但内部数据为 0”，不再把所有失配都显示成无限等待。
+- `CandidateRegistry` 以 `wechat-channel:<objectId>` 为键，把 feed 的媒体项、实际质量、作者、封面、时长和可靠来源归组。原始/最高入口保留原签名查询；每个实际 `fileFormat` 规格只追加 `X-snsvideoflag`，不重编码已有签名参数。签名 URL、请求头和 decodeKey 留在进程内存，桌面 UI/API 返回的是脱敏候选视图。
+- `bridge.js` 在首页推荐和详情页已有 `.click-box.op-item` 操作栏旁加入自有下载按钮，并用 MutationObserver 处理微信复用/重建的 DOM；找不到操作栏时才创建固定悬浮后备。普通点击从当前视频 URL 的 `X-snsvideoflag` 或原始规格选择当前 variant，悬停菜单展示服务端脱敏候选视图中的实际 variants。当前内容先按 URL 中 objectId、媒体主机+路径、同一内容标题唯一匹配，再使用内部详情事件；多候选无法唯一绑定时拒绝。页面经随机会话令牌只提交 objectId/variantId，`WechatChannelsCaptureService.submit` 再调用 `MediaCoordinator.create_plan`。桌面候选页仍保留完整核对和手动入口，统一任务页显示下载、解密、合并、校验、等待 Eagle 和终态。
+
+### 下载与解密
+
+- 普通视频号媒体复用既有远程输入下载。带 decodeKey 的媒体在任务专属临时目录边下载边执行 ISAAC-64 密钥流异或；只有声明的加密前缀处理，后续明文字节原样写入。
+- 解密器支持任意输入分块和 Range 起点，不把完整视频读入内存。输出仍需通过现有 FFmpeg/ffprobe 映射和完整性校验，错误密钥或长度不符不得进入完成态。
+- 计划终态立即从 `MediaCoordinator._remote_inputs` 和视频号会话删除签名 URL、请求头、Cookie 与 decodeKey。重启只恢复安全任务状态，不恢复或猜测短期上下文。

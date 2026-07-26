@@ -50,12 +50,15 @@ class SecurityApiTests(unittest.TestCase):
         try:
             with urlopen(f"http://{host}:{port}/health", timeout=3) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-            self.assertEqual(payload["version"], "1.2.11")
+            self.assertEqual(payload["version"], "1.3.0")
             self.assertEqual(payload["extensionProtocol"], 1)
             self.assertEqual(payload["databaseSchema"], 5)
             self.assertEqual(payload["downloadEngine"], "desktop_ffmpeg")
             self.assertIsInstance(payload["youtubeResolverReady"], bool)
             self.assertTrue(payload["mediaReady"])
+            self.assertEqual(payload["wechatChannels"]["state"], "off")
+            self.assertFalse(payload["wechatChannels"]["running"])
+            self.assertEqual(len(payload["wechatChannels"]["bridgeHash"]), 16)
         finally:
             server.stop()
 

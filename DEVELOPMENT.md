@@ -7,9 +7,9 @@
 - Chrome 扩展为 Manifest V3；Eagle 只通过官方本地 Web API 访问。
 - 发行后端使用 PyInstaller 6.21.0 `onedir` 打包，包含 Python 3.14.4 和 Tcl/Tk。
 
-## 1.2.11 实现边界
+## 1.3.0 实现边界
 
-1.0.0 曾按 [cat-catch 迁移总计划](docs/CAT_CATCH_MIGRATION_PLAN.md) 和 [功能对照矩阵](docs/FEATURE_PARITY_MATRIX.md) 完成研究与迁移。固定上游源码保存在 `third_party/cat-catch/source/` 作为 GPL 对应源码；1.2.11 活动浏览器载荷不再复制完整上游工具箱。浏览器只负责发现和提交；无直链候选由桌面固定 yt-dlp/Deno 解析，FFmpeg 继续执行实际下载与合并。桌面网络层默认按任务读取 Windows 系统代理，并将同一 HTTP 代理显式传给 FFmpeg/ffprobe、yt-dlp 与字幕请求；Eagle、本机 API 和控制信号不使用该代理。
+1.0.0 曾按 [cat-catch 迁移总计划](docs/CAT_CATCH_MIGRATION_PLAN.md) 和 [功能对照矩阵](docs/FEATURE_PARITY_MATRIX.md) 完成研究与迁移。固定上游源码保存在 `third_party/cat-catch/source/` 作为 GPL 对应源码；1.3.0 活动浏览器载荷不再复制完整上游工具箱。浏览器只负责发现和提交；无直链候选由桌面固定 yt-dlp/Deno 解析，FFmpeg 继续执行实际下载与合并。桌面网络层默认按任务读取 Windows 系统代理，并将同一 HTTP 代理显式传给 FFmpeg/ffprobe、yt-dlp 与字幕请求；Eagle、本机 API 和控制信号不使用该代理。
 
 - 浏览器捕获层只负责发现资源、形成媒体候选组、展示选择并经认证回环接口提交计划；专用 bridge 不调用 `chrome.downloads`。
 - 本机后端负责所有普通直链、分轨、HLS/DASH 下载，以及持久状态、FFmpeg/ffprobe、输出验证和现有 Eagle 导入。
@@ -19,6 +19,8 @@
 - Cookie、Authorization、Referer 等下载上下文仅按任务最小化使用；DRM 只检测和阻断，不实现绕过。
 - 只有程序在 `下载中转站/临时/<planId>` 中创建的明确中间文件可以自动清理；用户原文件始终不动。
 - 任何 GPL-3.0 源码复用必须先完成任务 01 的许可和来源门禁。
+- 微信视频号是桌面端显式启用的独立来源。自有 Python 回环代理只终止 `channels.weixin.qq.com` 页面和 `res.wx.qq.com` 资源模块的目标 TLS；JavaScript bridge 观察页面 JSON 与微信内部 `finder*` API 已返回的结构化 feed，并在当前视频操作栏提交经 objectId/variantId 验证的计划。下载、前缀解密、封装、校验和 Eagle 继续全部归 `MediaCoordinator`。它不进入浏览器扩展或 IDM hook。
+- `ltaoo/wx_channels_download` 只用于观察交互链路；不复制或分发它的 Go/JavaScript、SunnyNet、Gopeed、证书、图标或 UI。ISAAC-64 按 Bob Jenkins 公共领域规范独立实现。
 
 ## 入口
 
@@ -32,7 +34,7 @@
 
 ## 验证
 
-把 `src` 加入 `PYTHONPATH` 后运行 `python -m unittest discover -s tests -p "test_*.py" -v`。当前测试覆盖原有后端/安装/安全能力，以及候选归组、默认隐藏播放分片、信息流内容绑定、SABR 全画质目录、通用页面解析、统一下载、Windows 系统代理检测、本机绕过、FFmpeg/yt-dlp 代理参数、手动/直连持久化和单次线路切换上限。另运行 `node tests/js/test_youtube.js`、`node tests/js/test_popup_logic.js`、`node tests/js/test_candidate_presentation.js`、`node tests/js/test_auth_race.js` 与 `node tests/js/test_bilibili.js` 验证 YouTube/B 站格式目录、候选、页面链接、信息流分区和认证纯逻辑。
+把 `src` 加入 `PYTHONPATH` 后运行 `python -m unittest discover -s tests -p "test_*.py" -v`。当前测试覆盖原有后端/安装/安全能力，以及候选归组、默认隐藏播放分片、信息流内容绑定、SABR 全画质目录、通用页面解析、统一下载、Windows 系统代理检测、本机绕过、FFmpeg/yt-dlp 代理参数、手动/直连持久化、单次线路切换上限、主窗口外层滚动和四类列表安全清理。另运行 `node tests/js/test_youtube.js`、`node tests/js/test_popup_logic.js`、`node tests/js/test_candidate_presentation.js`、`node tests/js/test_auth_race.js`、`node tests/js/test_bilibili.js` 与 `node tests/js/test_wechat_channels_bridge.js`。视频号测试还覆盖证书叶配置原地轮换、页面/资源双 TLS 入口、内部 `finder*` 返回值改写语义、模块缓存键、透明代理、二进制代理快照、动态质量、签名查询保真、候选、候选清理不停止捕获、秘密不落盘、ISAAC-64、真实 FFmpeg/ffprobe 纵向闭环，以及退出时先恢复系统代理再等待其他工作线程的顺序门禁。
 
 扩展的 JavaScript 使用 `node --check` 检查；`manifest.json` 需通过 JSON 解析。`constants.py`、`pyproject.toml`、扩展清单、弹窗版本、托盘菜单和安装器版本必须同步。
 
@@ -40,7 +42,7 @@
 
 ## 发行结构
 
-`release/下载中转站-1.2.11-Windows-x64/下载中转站-1.2.11` 包含：
+`release/下载中转站-1.3.0-Windows-x64/下载中转站-1.3.0` 包含：
 
 - `一键安装.exe`：接收者唯一需要运行的入口；
 - `app/`：安装器载荷，包括两个 C# 启动器、Chrome/Firefox 扩展、FFmpeg/ffprobe、yt-dlp/Deno 和独立后端；

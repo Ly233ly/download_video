@@ -34,6 +34,15 @@ class DatabaseTests(unittest.TestCase):
         self.assertFalse(self.database.site_enabled("example.com"))
         self.assertFalse(self.database.delete_site_rule("example.com"))
 
+    def test_all_site_rules_can_be_cleared_without_touching_other_records(self) -> None:
+        self.database.set_site_rule("one.example", True)
+        self.database.set_site_rule("two.example", False)
+        job_id = self.database.add_job("C:/Downloads/keep.mp4")
+
+        self.assertEqual(self.database.clear_site_rules(), 2)
+        self.assertEqual(self.database.list_site_rules(), [])
+        self.assertIsNotNone(self.database.get_job(job_id))
+
     def test_disabled_site_cannot_create_source_event(self) -> None:
         with self.assertRaises(PermissionError):
             self.database.add_source_event("https://example.com/video")
@@ -177,6 +186,15 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual(removed["jobs"], 1)
         self.assertIsNone(self.database.get_job(old_job))
+        self.assertIsNotNone(self.database.get_job(active_job))
+
+    def test_clear_terminal_history_keeps_active_jobs(self) -> None:
+        terminal_job = self.database.add_job("C:/Downloads/finished.txt")
+        active_job = self.database.add_job("C:/Downloads/active.mp4")
+        self.database.update_job(terminal_job, status="ignored_non_video")
+
+        self.assertEqual(self.database.clear_terminal_history(), 1)
+        self.assertIsNone(self.database.get_job(terminal_job))
         self.assertIsNotNone(self.database.get_job(active_job))
 
 
