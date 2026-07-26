@@ -38,3 +38,19 @@ def database_path() -> Path:
 
 def bootstrap_pairing_path() -> Path:
     return ensure_data_dir() / "pairing-bootstrap.json"
+
+
+def download_station_root() -> Path:
+    override = os.environ.get("IDM_EAGLE_DOWNLOAD_ROOT")
+    if override:
+        root = Path(override).expanduser().resolve()
+    else:
+        profile = Path(os.environ.get("USERPROFILE") or Path.home())
+        root = profile.joinpath("Downloads").resolve()
+    station = (
+        root
+        if root.name.casefold() == "下载中转站".casefold()
+        else root / "下载中转站"
+    )
+    station.mkdir(parents=True, exist_ok=True)
+    return station

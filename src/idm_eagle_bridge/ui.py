@@ -89,6 +89,105 @@ def _display_bytes(value: object) -> str:
     return "未知"
 
 
+class _AsyncProbe:
+    """Run a slow health probe without blocking Tk's event loop."""
+
+    def __init__(self, probe, *, name: str) -> None:
+        self._probe = probe
+        self._name = name
+        self._results: Queue[object] = Queue()
+        self._lock = threading.Lock()
+        self._running = False
+
+    def request(self) -> bool:
+        with self._lock:
+            if self._running:
+                return False
+            self._running = True
+        threading.Thread(
+            target=self._run,
+            name=self._name,
+            daemon=True,
+        ).start()
+        return True
+
+    def _run(self) -> None:
+        try:
+            result = self._probe()
+        except Exception:
+            result = False
+        self._results.put(result)
+        with self._lock:
+            self._running = False
+
+    def poll(self) -> tuple[bool, object | None]:
+        available = False
+        latest = None
+        while True:
+            try:
+                latest = self._results.get_nowait()
+                available = True
+            except Empty:
+                return available, latest
+
+
+class _PreviewImageCache:
+    """Decode a preview only when its path or file identity changes."""
+
+    def __init__(self, image_factory=PhotoImage) -> None:
+        self._image_factory = image_factory
+        self._signature: tuple[str, int, int] | None = None
+        self._image: object | None = None
+
+    def clear(self) -> None:
+        self._signature = None
+        self._image = None
+
+    def resolve(self, path: Path) -> object | None:
+        try:
+            stat = path.stat()
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            signature = (str(path), int(stat.st_size), int(stat.st_mtime_ns))
+        except OSError:
+            self.clear()
+            return None
+        if signature == self._signature:
+            return self._image
+        try:
+            image = self._image_factory(file=str(path))
+        except Exception:
+            image = None
+        self._signature = signature
+        self._image = image
+        return image
+
+
+def _sync_tree_rows(tree: object, rows: list[tuple[str, tuple[object, ...]]]) -> None:
+    """Incrementally project rows into a Treeview-like interface."""
+    desired_ids = [iid for iid, _values in rows]
+    desired_set = set(desired_ids)
+    existing_ids = list(tree.get_children())
+    stale_ids = [iid for iid in existing_ids if iid not in desired_set]
+    if stale_ids:
+        tree.delete(*stale_ids)
+
+    for iid, values in rows:
+        values = tuple(values)
+        if not tree.exists(iid):
+            tree.insert("", END, iid=iid, values=values)
+        elif tuple(tree.item(iid, "values")) != values:
+            tree.item(iid, values=values)
+
+    current_order = list(tree.get_children())
+    for index, iid in enumerate(desired_ids):
+        if current_order[index] == iid:
+            continue
+        tree.move(iid, "", index)
+        current_order.remove(iid)
+        current_order.insert(index, iid)
+
+
 def _set_window_icon(window: Tk | Toplevel) -> None:
     candidates: list[Path] = []
     bundle_root = getattr(sys, "_MEIPASS", "")
@@ -360,24 +459,24 @@ class SiteRulesWindow:
             selected = str(self.tree.item(self.tree.selection()[0], "values")[0])
 
         rules = self.database.list_site_rules()
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        rows = []
         for rule in rules:
             updated = time.strftime(
                 "%Y-%m-%d %H:%M",
                 time.localtime(rule["updated_at"]),
             )
-            self.tree.insert(
-                "",
-                END,
-                iid=rule["domain"],
-                values=(
+            rows.append(
+                (
+                    str(rule["domain"]),
+                    (
                     rule["domain"],
                     "已开启" if rule["enabled"] else "已关闭",
                     "包含子域名" if rule["include_subdomains"] else "仅此域名",
                     updated,
                 ),
+                )
             )
+        _sync_tree_rows(self.tree, rows)
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
             self.tree.see(selected)
@@ -386,7 +485,8 @@ class SiteRulesWindow:
         self.summary_text.set(
             f"已开启 {enabled_count} 个 · 已关闭 {disabled_count} 个 · 双击可快速切换"
         )
-        self.parent.refresh(force=True)
+        if force:
+            self.parent.refresh(force=True)
         self.refresh_after_id = self.window.after(3000, self.refresh)
 
     def focus(self) -> None:
@@ -552,6 +652,7 @@ class MainWindow:
         self.last_plans_revision: tuple[int, float] | None = None
         self.plan_rows: dict[str, dict] = {}
         self.preview_image: PhotoImage | None = None
+        self.preview_cache = _PreviewImageCache()
         self.wechat_rows: dict[str, dict] = {}
         self.wechat_variant_ids: list[str] = []
         self.wechat_revision: tuple[int, float] | None = None
@@ -563,6 +664,10 @@ class MainWindow:
         self.wechat_operation_busy = False
         self.last_eagle_check = 0.0
         self.eagle_connected = False
+        self.eagle_probe = _AsyncProbe(
+            self.eagle.is_available,
+            name="eagle-health-probe",
+        )
         self._build()
         self.refresh()
         if self.control_signals:
@@ -788,7 +893,7 @@ class MainWindow:
         self.wechat_import_to_eagle = BooleanVar(value=True)
         ttk.Checkbutton(
             actions,
-            text="下载完成后导入 Eagle",
+            text="导入 Eagle，成功后删除本机下载文件",
             variable=self.wechat_import_to_eagle,
         ).pack(side=LEFT)
         ttk.Button(
@@ -968,13 +1073,17 @@ class MainWindow:
             self.refresh_after_id = self.root.after(30000, self.refresh)
             return
 
-        now = time.time()
+        now = time.monotonic()
+        eagle_result_available, eagle_result = self.eagle_probe.poll()
+        if eagle_result_available:
+            self.eagle_connected = bool(eagle_result)
         if force or now - self.last_eagle_check >= 10:
-            self.eagle_connected = self.eagle.is_available()
-            self.last_eagle_check = now
+            if self.eagle_probe.request():
+                self.last_eagle_check = now
         eagle_text = "Eagle 已连接" if self.eagle_connected else "正在等待 Eagle"
         host, port = self.api_server.address
-        counts = self.database.job_status_counts()
+        dashboard = self.database.ui_snapshot()
+        counts = dashboard["status_counts"]
         job_active_count = sum(
             counts.get(status, 0)
             for status in ("waiting_source", "queued", "waiting_eagle", "retry")
@@ -994,9 +1103,7 @@ class MainWindow:
         if counts.get("failed_permanent", 0):
             status_parts.append(f"失败 {counts['failed_permanent']}")
         self.status_text.set(" · ".join(status_parts))
-        enabled_sites = sum(
-            1 for rule in self.database.list_site_rules() if rule["enabled"]
-        )
+        enabled_sites = dashboard["enabled_site_count"]
         self.site_rules_text.set(f"网站规则（已开启 {enabled_sites}）")
         proxy_status = self.media.network_proxy.status()
         self.network_proxy_text.set(f"网络：{proxy_status['summary']}")
@@ -1008,11 +1115,10 @@ class MainWindow:
         self._refresh_media_tasks(plans, force)
         self._refresh_wechat_candidates(wechat_health, force)
 
-        revision = self.database.jobs_revision()
+        revision = dashboard["jobs_revision"]
         if force or revision != self.last_jobs_revision:
             selected = self.selected_job_id()
-            for item in self.job_tree.get_children():
-                self.job_tree.delete(item)
+            job_rows = []
             for job in self.database.list_jobs(500):
                 created = time.strftime("%Y-%m-%d %H:%M", time.localtime(job["created_at"]))
                 source = "未记录"
@@ -1021,18 +1127,19 @@ class MainWindow:
                 message = job.get("error_message") or ""
                 if job["status"] == "imported" and not job.get("source_url"):
                     message = "已直接导入，未保存来源网页"
-                self.job_tree.insert(
-                    "",
-                    END,
-                    iid=job["id"],
-                    values=(
+                job_rows.append(
+                    (
+                        str(job["id"]),
+                        (
                         created,
                         STATUS_TEXT.get(job["status"], job["status"]),
                         job["file_name"],
                         source,
                         message,
                     ),
+                    )
                 )
+            _sync_tree_rows(self.job_tree, job_rows)
             if selected and self.job_tree.exists(selected):
                 self.job_tree.selection_set(selected)
             self.last_jobs_revision = revision
@@ -1088,8 +1195,7 @@ class MainWindow:
         selected = self.wechat_tree.selection()
         selected_id = selected[0] if selected else ""
         if force or revision != self.wechat_revision:
-            for item in self.wechat_tree.get_children():
-                self.wechat_tree.delete(item)
+            rows = []
             for item in candidates:
                 variants = item.get("variants") if isinstance(item.get("variants"), list) else []
                 qualities = "、".join(str(variant.get("quality") or "自动") for variant in variants[:6])
@@ -1098,18 +1204,19 @@ class MainWindow:
                 updated = time.strftime(
                     "%H:%M:%S", time.localtime(float(item.get("updatedAt") or 0))
                 )
-                self.wechat_tree.insert(
-                    "",
-                    END,
-                    iid=str(item["objectId"]),
-                    values=(
+                rows.append(
+                    (
+                        str(item["objectId"]),
+                        (
                         str(item.get("title") or "微信视频号视频"),
                         str(item.get("author") or "未知作者"),
                         self._duration_text(item.get("durationMs")),
                         qualities or "自动质量",
                         updated,
                     ),
+                    )
                 )
+            _sync_tree_rows(self.wechat_tree, rows)
             if selected_id and self.wechat_tree.exists(selected_id):
                 self.wechat_tree.selection_set(selected_id)
             elif candidates:
@@ -1259,10 +1366,12 @@ class MainWindow:
         index = self.wechat_variant_box.current()
         variant_id = self.wechat_variant_ids[index] if 0 <= index < len(self.wechat_variant_ids) else ""
         try:
+            import_to_eagle = bool(self.wechat_import_to_eagle.get())
             self.wechat_channels.submit(
                 str(candidate["objectId"]),
                 variant_id,
-                import_to_eagle=bool(self.wechat_import_to_eagle.get()),
+                import_to_eagle=import_to_eagle,
+                delete_after_import=import_to_eagle,
             )
         except Exception as exc:
             messagebox.showerror("创建任务失败", str(exc), parent=self.root)
@@ -1294,8 +1403,7 @@ class MainWindow:
         self.plan_rows = {str(plan["id"]): plan for plan in plans}
         selected = self.selected_plan_id()
         if force or revision != self.last_plans_revision:
-            for item in self.plan_tree.get_children():
-                self.plan_tree.delete(item)
+            rows = []
             for plan in plans:
                 status = str(plan.get("status") or "")
                 job_status = str(plan.get("job_status") or "")
@@ -1312,18 +1420,19 @@ class MainWindow:
                 updated = time.strftime(
                     "%Y-%m-%d %H:%M", time.localtime(float(plan.get("updated_at") or 0))
                 )
-                self.plan_tree.insert(
-                    "",
-                    END,
-                    iid=str(plan["id"]),
-                    values=(
+                rows.append(
+                    (
+                        str(plan["id"]),
+                        (
                         status_label,
                         f"{float(plan.get('progress') or 0):.0f}%",
                         title,
                         source,
                         updated,
                     ),
+                    )
                 )
+            _sync_tree_rows(self.plan_tree, rows)
             if selected and self.plan_tree.exists(selected):
                 self.plan_tree.selection_set(selected)
             elif plans:
@@ -1349,6 +1458,7 @@ class MainWindow:
             self.plan_file_text.set("")
             self.plan_progress.configure(value=0)
             self.preview_image = None
+            self.preview_cache.clear()
             self.preview_label.configure(image="", text="暂无预览")
             return
         status = str(plan.get("status") or "")
@@ -1369,13 +1479,11 @@ class MainWindow:
         self.plan_file_text.set(f"文件：{output} · 已处理 {downloaded} / {total}")
         self.plan_progress.configure(value=max(0.0, min(100.0, float(plan.get("progress") or 0))))
         preview = Path(str(plan.get("preview_path") or ""))
-        if preview.is_file():
-            try:
-                self.preview_image = PhotoImage(file=str(preview))
-                self.preview_label.configure(image=self.preview_image, text="")
-                return
-            except Exception:
-                pass
+        image = self.preview_cache.resolve(preview)
+        if image is not None:
+            self.preview_image = image
+            self.preview_label.configure(image=image, text="")
+            return
         self.preview_image = None
         self.preview_label.configure(image="", text="下载完成后显示视频预览")
 

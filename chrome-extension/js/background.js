@@ -256,6 +256,15 @@ function visibleMediaCount(items) {
     }
 }
 
+function updateVisibleMediaCount(tabId) {
+    SetIcon({ number: visibleMediaCount(cacheData[tabId]), tabId });
+}
+
+const scheduleVisibleMediaCount = globalThis.EagleBridgeCandidateLogic.createKeyedBoundedScheduler(
+    updateVisibleMediaCount,
+    250
+);
+
 G.deepSearchTemporarilyClose = null; // 深度搜索临时变量
 G.urlMap = new Map();   // url查重map
 G.requestHeaders = new Map();   // 临时储存请求头
@@ -611,7 +620,7 @@ function findMedia(data, isRegex = false, filter = false, timer = false) {
         // 储存数据
         cacheData[info.tabId] ??= [];
         cacheData[info.tabId].push(info);
-        SetIcon({ number: visibleMediaCount(cacheData[info.tabId]), tabId: info.tabId });
+        scheduleVisibleMediaCount(info.tabId);
 
         // 当前标签媒体数量大于100 开启防抖 等待5秒储存 或 积累10个资源储存一次。
         if (cacheData[info.tabId].length >= 100 && debounceCount <= 10) {
@@ -642,7 +651,7 @@ function save(tabId) {
                 chrome.runtime.lastError && console.log(chrome.runtime.lastError);
             });
         }
-        SetIcon({ number: visibleMediaCount(cacheData[tabId]), tabId: tabId });
+        scheduleVisibleMediaCount(tabId);
     }
 }
 
@@ -665,7 +674,7 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
             () => cacheData
         ).then(snapshot => {
             const tabId = Message.tabId ?? G.tabId;
-            SetIcon({ number: visibleMediaCount(snapshot?.[tabId]), tabId: tabId });
+            scheduleVisibleMediaCount(tabId);
             sendResponse(snapshot && typeof snapshot === "object" ? snapshot : {});
         });
         return true;

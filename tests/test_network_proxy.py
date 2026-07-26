@@ -88,6 +88,27 @@ class NetworkProxyTests(unittest.TestCase):
             routes = self.manager.routes_for("https://intranet.example/video.mp4")
         self.assertEqual([route.source for route in routes], ["direct"])
 
+    def test_status_caches_expensive_system_detection(self) -> None:
+        self.manager.configure("auto")
+        with (
+            patch(
+                "idm_eagle_bridge.network_proxy._windows_proxies",
+                return_value={"http": "127.0.0.1:7890"},
+            ) as windows_proxies,
+            patch("idm_eagle_bridge.network_proxy._environment_proxies", return_value={}),
+            patch("idm_eagle_bridge.network_proxy.request.proxy_bypass", return_value=False),
+        ):
+            first = self.manager.status("https://example.com/video")
+            second = self.manager.status("https://example.com/video")
+
+        self.assertEqual(first, second)
+        self.assertEqual(windows_proxies.call_count, 1)
+        self.manager.configure("direct")
+        self.assertEqual(
+            self.manager.status("https://example.com/video")["source"],
+            "direct",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

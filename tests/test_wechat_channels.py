@@ -14,7 +14,7 @@ import unittest
 import zlib
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from idm_eagle_bridge.wechat_channels import (
     WechatCandidateRegistry,
@@ -68,6 +68,48 @@ def sample_candidate(object_id: str = "1234567890123456789") -> dict:
 
 
 class CaptureServiceLifecycleTests(unittest.TestCase):
+    def test_health_caches_static_file_identity_and_counts_without_rendering_candidates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+            )
+            bridge_path = Mock()
+            bridge_path.read_bytes.return_value = b"bridge"
+            try:
+                service.registry.ingest(sample_candidate())
+                with (
+                    patch.object(
+                        service.certificate,
+                        "existing",
+                        wraps=service.certificate.existing,
+                    ) as existing,
+                    patch.object(
+                        service,
+                        "bridge_script_path",
+                        return_value=bridge_path,
+                    ),
+                    patch.object(
+                        service.registry,
+                        "list",
+                        side_effect=AssertionError("health should use the O(1) count"),
+                    ),
+                ):
+                    first = service.health()
+                    second = service.health()
+
+                self.assertEqual(first["candidateCount"], 1)
+                self.assertEqual(second["candidateCount"], 1)
+                self.assertEqual(existing.call_count, 1)
+                self.assertEqual(bridge_path.read_bytes.call_count, 1)
+            finally:
+                service.close()
+                coordinator.close()
+
     def test_candidates_can_be_cleared_without_stopping_capture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -180,6 +222,7 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
                 )
                 plan = coordinator.get_plan(created["plan"]["id"])
                 self.assertTrue(plan["import_to_eagle"])
+                self.assertTrue(plan["delete_after_import"])
                 self.assertIn(
                     "X-snsvideoflag=hd",
                     coordinator._remote_inputs[str(plan["id"])]["streams"][0]["url"],
@@ -457,10 +500,16 @@ class CandidateRegistryTests(unittest.TestCase):
             },
         )
         variant_id = next(iter(candidate.variants))
-        payload = self.registry.plan_payload(candidate.object_id, variant_id, import_to_eagle=False)
+        payload = self.registry.plan_payload(
+            candidate.object_id,
+            variant_id,
+            import_to_eagle=True,
+            delete_after_import=True,
+        )
         self.assertEqual(payload["sourceType"], "wechat_channels")
         self.assertEqual(payload["streams"][0]["wechatDecodeKey"], "123456789")
-        self.assertFalse(payload["importToEagle"])
+        self.assertTrue(payload["importToEagle"])
+        self.assertTrue(payload["deleteAfterImport"])
         self.assertEqual(payload["mergeMode"], "direct")
         self.assertEqual(payload["streams"][0]["headers"]["User-Agent"], "WechatDesktop/1.0")
         self.assertNotIn("Cookie", payload["streams"][0]["headers"])

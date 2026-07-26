@@ -528,7 +528,14 @@
     trigger.className = "click-box op-item";
     trigger.setAttribute("role", "button");
     trigger.setAttribute("tabindex", "0");
-    trigger.setAttribute("aria-label", "下载当前视频");
+    trigger.setAttribute(
+      "aria-label",
+      "下载并导入 Eagle，成功后删除本机下载文件"
+    );
+    trigger.setAttribute(
+      "title",
+      "导入 Eagle 成功后会自动删除本机下载文件"
+    );
     trigger.style.cssText = floating
       ? "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;width:58px;height:58px;border-radius:10px;background:rgba(31,31,31,.96);box-shadow:0 8px 28px rgba(0,0,0,.32);color:#fff;cursor:pointer;user-select:none"
       : "padding:4px;cursor:pointer;user-select:none";

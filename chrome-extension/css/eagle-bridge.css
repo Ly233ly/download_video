@@ -432,6 +432,8 @@ body.popupBody {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     border-bottom: 1px solid #e8ecf2;
+    content-visibility: auto;
+    contain-intrinsic-size: 108px;
 }
 
 .bridge-group-item[data-batch="true"] {

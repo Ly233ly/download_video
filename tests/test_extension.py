@@ -29,7 +29,7 @@ class ExtensionTests(unittest.TestCase):
     def test_manifests_are_versioned_and_include_structured_site_bridges(self) -> None:
         for name in ("manifest.json", "manifest.firefox.json"):
             manifest = json.loads((EXTENSION / name).read_text(encoding="utf-8"))
-            self.assertEqual(manifest["version"], "1.3.0")
+            self.assertEqual(manifest["version"], "1.3.1")
             self.assertEqual(manifest["name"], "下载中转站")
             scripts = [script for entry in manifest["content_scripts"] for script in entry["js"]]
             self.assertIn("js/bilibili-content.js", scripts)
@@ -39,9 +39,9 @@ class ExtensionTests(unittest.TestCase):
             self.assertIn("catch-script/youtube.js", resources)
         setup = (ROOT / "installer" / "Setup.cs").read_text(encoding="utf-8")
         launcher = (ROOT / "launcher" / "Launcher.cs").read_text(encoding="utf-8")
-        self.assertIn('internal const string Version = "1.3.0"', setup)
-        self.assertIn('AssemblyFileVersion("1.3.0.0")', setup)
-        self.assertIn('AssemblyFileVersion("1.3.0.0")', launcher)
+        self.assertIn('internal const string Version = "1.3.1"', setup)
+        self.assertIn('AssemblyFileVersion("1.3.1.0")', setup)
+        self.assertIn('AssemblyFileVersion("1.3.1.0")', launcher)
         version_resource = (ROOT / "packaging" / "download-transfer-station-version.txt").read_text(encoding="utf-8")
         self.assertIn("filevers=(1, 3, 0, 0)", version_resource)
         self.assertIn("prodvers=(1, 3, 0, 0)", version_resource)
@@ -123,6 +123,24 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("fixedByteRange(candidate)", logic)
         self.assertIn('item.name == "content-md5"', background)
         self.assertIn("contentIdentity: data.header?.contentIdentity", background)
+
+    def test_large_candidate_bursts_do_not_regroup_or_load_every_preview_eagerly(self) -> None:
+        background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        css = (EXTENSION / "css" / "eagle-bridge.css").read_text(encoding="utf-8")
+
+        ingest_start = background.index("// 储存数据")
+        ingest_end = background.index("// 当前标签媒体数量大于100", ingest_start)
+        ingest_source = background[ingest_start:ingest_end]
+        self.assertIn("scheduleVisibleMediaCount(info.tabId)", ingest_source)
+        self.assertNotIn("visibleMediaCount(cacheData[info.tabId])", ingest_source)
+
+        sidebar_start = ui.index("function renderSidebar")
+        sidebar_end = ui.index("function candidateOption", sidebar_start)
+        sidebar_source = ui[sidebar_start:sidebar_end]
+        self.assertNotIn("mediaPreviewMarkup(", sidebar_source)
+        self.assertIn("sidebarPreviewMarkup(", sidebar_source)
+        self.assertIn("content-visibility: auto", css)
 
     def test_candidate_presentation_is_cross_site_and_snapshot_safe(self) -> None:
         result = subprocess.run(
@@ -322,6 +340,12 @@ class ExtensionTests(unittest.TestCase):
         self.assertNotIn("chrome.downloads", bridge)
         self.assertIn('route: "desktop"', bridge)
         self.assertIn("importToEagle: options.importToEagle !== false", bridge)
+        self.assertIn(
+            "deleteAfterImport: options.deleteAfterImport === true",
+            bridge,
+        )
+        self.assertIn("deleteAfterImport: importToEagle", ui)
+        self.assertIn("成功后删除本机下载文件", ui)
         self.assertNotIn('command == "auto_down"', background)
         self.assertNotIn('Message.Message == "autoDown"', background)
         self.assertNotIn('if (G.send2local)', background)

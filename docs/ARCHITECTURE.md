@@ -127,7 +127,7 @@ Chrome/Edge/Firefox 扩展
 
 候选组是浏览器与后端的协议边界。B 站 DASH 的视频和音频必须共享组编号和最终输出，不能作为两个无关下载展示。新表通过 SQLite `user_version` 迁移加入，旧 IDM 任务和扩展事件继续兼容。
 
-当前数据库 `user_version=5`；保留 `capture_sessions`、`media_groups`、`media_streams` 和 `download_plans`，删除旧 `component_files` 浏览器交接表。方案新增 `import_to_eagle`、处理字节、预计字节、阶段说明和预览路径。`/health` 同时公开产品版本、schema、扩展协议 1、`desktop_ffmpeg` 引擎与媒体工具就绪状态，供安装器的原子升级门使用。
+当前数据库 `user_version=6`；保留 `capture_sessions`、`media_groups`、`media_streams` 和 `download_plans`，删除旧 `component_files` 浏览器交接表。方案记录 `import_to_eagle`、`delete_after_import`、处理字节、预计字节、阶段说明和预览路径；schema 6 对旧计划的删除选择默认关闭。新请求明确 `importToEagle=1` 时默认建立清理选择，兼容覆盖安装后仍运行且尚未发送 `deleteAfterImport` 的旧扩展 worker；仅下载或显式关闭仍为 0。Eagle job 成功后，处理器只对 plan/job 路径一致且位于本程序“已完成”目录的清理计划删除最终副本，成功后清空 `final_path`，失败则保留并记录错误。`/health` 同时公开产品版本、schema、扩展协议 1、`desktop_ffmpeg` 引擎与媒体工具就绪状态，供安装器的原子升级门使用。
 
 ## 1.1.1 popup 架构
 

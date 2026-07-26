@@ -197,6 +197,21 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNone(self.database.get_job(terminal_job))
         self.assertIsNotNone(self.database.get_job(active_job))
 
+    def test_ui_snapshot_combines_dashboard_state(self) -> None:
+        self.database.set_site_rule("enabled.example", True)
+        self.database.set_site_rule("disabled.example", False)
+        completed_job = self.database.add_job("C:/Downloads/completed.mp4")
+        self.database.add_job("C:/Downloads/pending.mp4")
+        self.database.update_job(completed_job, status="imported")
+
+        snapshot = self.database.ui_snapshot()
+
+        self.assertEqual(snapshot["status_counts"]["imported"], 1)
+        self.assertEqual(snapshot["status_counts"]["queued"], 1)
+        self.assertEqual(snapshot["enabled_site_count"], 1)
+        self.assertEqual(snapshot["jobs_revision"][0], 2)
+        self.assertGreater(snapshot["jobs_revision"][1], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

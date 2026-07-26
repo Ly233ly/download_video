@@ -183,7 +183,7 @@ class MediaCoordinatorTests(unittest.TestCase):
             result = self.coordinator.get_plan(plan_id)
         return result
 
-    def test_schema_five_has_desktop_plan_state_and_no_component_handoff(self) -> None:
+    def test_schema_six_has_safe_post_import_cleanup_state(self) -> None:
         with self.database.session() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             names = {
@@ -196,7 +196,7 @@ class MediaCoordinatorTests(unittest.TestCase):
                 row[1]
                 for row in connection.execute("PRAGMA table_info(download_plans)")
             }
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertNotIn("component_files", names)
         self.assertTrue(
             {
@@ -205,8 +205,56 @@ class MediaCoordinatorTests(unittest.TestCase):
                 "total_bytes",
                 "phase_detail",
                 "preview_path",
+                "delete_after_import",
             }.issubset(columns)
         )
+
+    def test_new_import_plan_defaults_to_post_import_cleanup_for_old_extensions(self) -> None:
+        with patch.object(self.coordinator, "schedule"):
+            plan = self.coordinator.create_plan(
+                self.payload(deleteAfterImport=True)
+            )
+        stored = self.coordinator.get_plan(plan["id"])
+        self.assertEqual(stored["import_to_eagle"], 1)
+        self.assertEqual(stored["delete_after_import"], 1)
+
+        with patch.object(self.coordinator, "schedule"):
+            legacy_extension = self.coordinator.create_plan(self.payload())
+        self.assertEqual(
+            self.coordinator.get_plan(legacy_extension["id"])["delete_after_import"],
+            1,
+        )
+
+        with patch.object(self.coordinator, "schedule"):
+            download_only = self.coordinator.create_plan(
+                self.payload(importToEagle=False)
+            )
+        self.assertEqual(
+            self.coordinator.get_plan(download_only["id"])["delete_after_import"],
+            0,
+        )
+
+    def test_schema_six_migration_keeps_existing_plans_by_default(self) -> None:
+        with patch.object(self.coordinator, "schedule"):
+            plan = self.coordinator.create_plan(
+                self.payload(deleteAfterImport=True)
+            )
+        with self.database.session() as connection:
+            connection.execute(
+                "ALTER TABLE download_plans DROP COLUMN delete_after_import"
+            )
+            connection.execute("PRAGMA user_version = 5")
+
+        reopened = Database(self.database.path)
+
+        with reopened.session() as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            migrated = connection.execute(
+                "SELECT delete_after_import FROM download_plans WHERE id = ?",
+                (plan["id"],),
+            ).fetchone()
+        self.assertEqual(version, 6)
+        self.assertEqual(migrated["delete_after_import"], 0)
 
     def test_schema_five_migrates_old_browser_tasks_without_guessing_urls(self) -> None:
         with patch.object(self.coordinator, "schedule"):
@@ -237,7 +285,7 @@ class MediaCoordinatorTests(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'component_files'"
             ).fetchone()
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertIsNone(component_table)
         self.assertEqual(dict(migrated), {
             "route": "desktop",
@@ -1015,6 +1063,7 @@ class MediaCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready_to_import")
         self.assertEqual(result["progress"], 90)
         self.assertEqual(result["import_to_eagle"], 1)
+        self.assertEqual(result["delete_after_import"], 1)
         self.assertIsNotNone(result["job_id"])
         job = self.database.get_job(result["job_id"])
         self.assertEqual(job["file_path"], str(output.resolve()))

@@ -26,6 +26,7 @@ from .network_proxy import (
     ProxyConfigurationError,
     ProxyRoute,
 )
+from .paths import download_station_root
 from .wechat_channels_crypto import WechatVideoDecryptor
 
 
@@ -280,6 +281,13 @@ class MediaCoordinator:
             raise MediaPlanError("不支持该输出容器", "invalid_container")
         output_name = safe_output_name(payload.get("outputName"), container)
         import_to_eagle = bool(payload.get("importToEagle", True))
+        # 覆盖安装无法替 Chrome 重启已经加载的旧 service worker。旧扩展仍会
+        # 明确发送 importToEagle，却不知道 deleteAfterImport；把导入动作本身
+        # 视为新计划的清理选择，避免同一按钮因 worker 版本不同而改变语义。
+        delete_after_import = bool(
+            payload.get("deleteAfterImport", import_to_eagle)
+        )
+        delete_after_import = delete_after_import and import_to_eagle
         merge_mode = _safe_text(
             payload.get("mergeMode") or ("direct" if len(streams) == 1 else "local_streamcopy"),
             40,
@@ -441,9 +449,10 @@ class MediaCoordinator:
                 """
                 INSERT INTO download_plans(
                     id, group_id, output_name, output_container, merge_mode,
-                    route, import_to_eagle, status, progress, downloaded_bytes, total_bytes,
+                    route, import_to_eagle, delete_after_import,
+                    status, progress, downloaded_bytes, total_bytes,
                     phase_detail, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, 'desktop', ?, 'queued', 0, 0, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, 'desktop', ?, ?, 'queued', 0, 0, ?, ?, ?, ?)
                 """,
                 (
                     plan_id,
@@ -452,6 +461,7 @@ class MediaCoordinator:
                     container,
                     merge_mode,
                     1 if import_to_eagle else 0,
+                    1 if delete_after_import else 0,
                     total_bytes,
                     "等待本机下载",
                     now,
@@ -503,6 +513,7 @@ class MediaCoordinator:
             "status": "queued",
             "progress": 0,
             "route": "desktop",
+            "deleteAfterImport": delete_after_import,
             "outputName": output_name,
             "title": page_title or Path(output_name).stem,
             "thumbnailUrl": thumbnail_url,
@@ -1539,19 +1550,7 @@ class MediaCoordinator:
 
     @staticmethod
     def _default_station_root() -> Path:
-        override = os.environ.get("IDM_EAGLE_DOWNLOAD_ROOT")
-        if override:
-            root = Path(override).expanduser().resolve()
-        else:
-            profile = Path(os.environ.get("USERPROFILE") or Path.home())
-            root = profile.joinpath("Downloads").resolve()
-        station = (
-            root
-            if root.name.casefold() == "下载中转站".casefold()
-            else root / "下载中转站"
-        )
-        station.mkdir(parents=True, exist_ok=True)
-        return station
+        return download_station_root()
 
     def retry_plan(self, plan_id: str) -> dict[str, Any]:
         plan_id = _safe_text(plan_id, 80)
@@ -1818,7 +1817,7 @@ class MediaCoordinator:
             rows = connection.execute(
                 """
                 SELECT plan.id, plan.output_name, plan.output_container, plan.route,
-                       plan.import_to_eagle,
+                       plan.import_to_eagle, plan.delete_after_import,
                        plan.status, plan.progress, plan.downloaded_bytes,
                        plan.total_bytes, plan.phase_detail, plan.final_path,
                        plan.preview_path, plan.error_code, plan.error_message,
@@ -1925,6 +1924,7 @@ class MediaCoordinator:
             cursor = connection.execute(
                 """
                 UPDATE download_plans SET import_to_eagle = 1,
+                    delete_after_import = 1,
                     status = 'ready_to_import', progress = 90,
                     phase_detail = '等待 Eagle 导入', job_id = ?,
                     error_code = NULL, error_message = NULL,

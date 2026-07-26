@@ -3,6 +3,8 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib import request
@@ -134,8 +136,12 @@ def _proxy_for_target(
 class NetworkProxyManager:
     """Resolve one safe, task-scoped proxy route without touching local APIs."""
 
+    _STATUS_CACHE_SECONDS = 5.0
+
     def __init__(self, database: Database) -> None:
         self.database = database
+        self._status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._status_cache_lock = threading.Lock()
 
     def configuration(self) -> dict[str, str]:
         values = self.database.get_settings((PROXY_MODE_KEY, PROXY_URL_KEY))
@@ -162,6 +168,8 @@ class NetworkProxyManager:
         self.database.set_settings(
             {PROXY_MODE_KEY: selected, PROXY_URL_KEY: normalized}
         )
+        with self._status_cache_lock:
+            self._status_cache.clear()
         return self.configuration()
 
     def _detected_system_route(self, target_url: str) -> ProxyRoute | None:
@@ -199,6 +207,17 @@ class NetworkProxyManager:
         return [detected, direct] if detected else [direct]
 
     def status(self, target_url: str = "https://www.behance.net/") -> dict[str, Any]:
+        now = time.monotonic()
+        with self._status_cache_lock:
+            cached = self._status_cache.get(target_url)
+            if cached and now - cached[0] < self._STATUS_CACHE_SECONDS:
+                return dict(cached[1])
+        status = self._uncached_status(target_url)
+        with self._status_cache_lock:
+            self._status_cache[target_url] = (now, status)
+        return dict(status)
+
+    def _uncached_status(self, target_url: str) -> dict[str, Any]:
         configuration = self.configuration()
         mode = configuration["mode"]
         if mode == "manual":

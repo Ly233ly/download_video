@@ -13,9 +13,9 @@
         noMediaBody: "播放视频后刷新，或启动深度搜索来发现隐藏媒体。",
         deepSearch: "深度搜索", video: "视频", audio: "音频", manifest: "清单",
         filename: "文件名", advanced: "高级选项", subtitles: "字幕（将单独下载）", noAudio: "不选择音频",
-        directInfo: "所选文件将下载完成后导入 Eagle。", mergeInfo: "视频与音频将在本机无损合并后导入 Eagle。",
-        manifestInfo: "HLS/DASH 清单将在本机下载、合并并校验后导入 Eagle。",
-        downloadImport: "下载并导入 Eagle", downloadOnly: "仅下载", legal: "请只下载你有权保存的内容。",
+        directInfo: "所选文件将下载并导入 Eagle；成功后删除本机下载文件。", mergeInfo: "视频与音频将在本机无损合并并导入 Eagle；成功后删除本机下载文件。",
+        manifestInfo: "HLS/DASH 清单将在本机下载、合并、校验并导入 Eagle；成功后删除本机下载文件。",
+        downloadImport: "导入 Eagle（成功后删本机文件）", downloadOnly: "仅下载", legal: "请只下载你有权保存的内容。",
         pairBody: "输入桌面助手显示的六位配对码，连接后才能自动合并并导入 Eagle。", pairPlaceholder: "六位配对码", pair: "配对",
         siteRule: "记录来源并自动导入 Eagle", recordPage: "记录当前页", ignoreNext: "忽略下一次导入",
         pauseCapture: "暂停/继续捕获", openWindow: "独立窗口", clearMedia: "清空当前页媒体",
@@ -30,23 +30,23 @@
         downloadStarted: "下载已开始", toolUpdated: "工具状态已更新", connectionError: "无法连接本机助手",
         notGrouped: "未归组资源", selectedCount: "{count} 个可下载内容", retry: "重试", activeTaskCount: "{active} 个进行中，共 {count} 个任务", taskCount: "共 {count} 个任务",
         batch: "批量", exitBatch: "退出批量", batchTitle: "批量操作", batchBody: "每个内容会创建独立任务，不会把不同视频的音轨混在一起。",
-        batchSelected: "已选择 {count} 个内容", selectAll: "全选", invert: "反选", copySelected: "复制链接", batchImport: "批量下载并导入", batchDownload: "批量仅下载",
+        batchSelected: "已选择 {count} 个内容", selectAll: "全选", invert: "反选", copySelected: "复制链接", batchImport: "批量导入（成功后删本机文件）", batchDownload: "批量仅下载",
         mediaType: "媒体类型", allTypes: "全部类型", otherType: "其他资源", extensionFilter: "扩展名（可用逗号分隔）", minimumSize: "最小大小（MB）",
         urlRegex: "网址正则", unsafeRegex: "正则表达式无效或可能造成卡顿，已停止应用。", hideDuplicateNames: "隐藏同名重复资源", showSegments: "显示未关联资源与播放分片", hiddenSegments: "已隐藏 {count} 个未关联播放资源",
         batchPartial: "已启动 {count} 个任务，另有任务失败。", actualFrame: "当前视频画面",
-        outputLocation: "保存位置：{path}", openFolder: "打开所在文件夹", folderOpened: "已打开下载文件夹", importExisting: "导入已有文件", importQueued: "已加入 Eagle 导入队列", segmentOnlyTitle: "无法确认归属的播放资源", syncInterrupted: "任务状态同步中断；本机下载仍可能继续，正在自动重连。"
+        outputLocation: "保存位置：{path}", openFolder: "打开所在文件夹", folderOpened: "已打开下载文件夹", importExisting: "导入 Eagle，成功后删除本机文件", importQueued: "已加入 Eagle 导入队列；成功后将删除本机文件", segmentOnlyTitle: "无法确认归属的播放资源", syncInterrupted: "任务状态同步中断；本机下载仍可能继续，正在自动重连。"
     };
     const zhHant = {
         product: "下載中轉站", media: "媒體", tasks: "任務", refresh: "重新整理", settings: "設定",
         checking: "正在連線", connected: "已連線", offline: "助手離線", needsPairing: "需要配對",
         captured: "已擷取媒體（{count}）", filter: "篩選", currentPage: "目前頁", otherPages: "其他頁", allPages: "全部",
         noMedia: "暫未發現媒體", noMediaBody: "播放影片後重新整理，或啟動深度搜尋。",
-        filename: "檔案名稱", advanced: "進階選項", downloadImport: "下載並匯入 Eagle", downloadOnly: "僅下載",
+        filename: "檔案名稱", advanced: "進階選項", downloadImport: "匯入 Eagle（成功後刪除本機檔案）", downloadOnly: "僅下載",
         pair: "配對", taskTitle: "下載任務", noTasks: "還沒有下載任務。", stop: "停止",
         batch: "批次", exitBatch: "退出批次", batchTitle: "批次操作", batchSelected: "已選擇 {count} 個內容", selectAll: "全選", invert: "反選",
-        batchImport: "批次下載並匯入", batchDownload: "批次僅下載", mediaType: "媒體類型", allTypes: "全部類型", otherType: "其他資源",
+        batchImport: "批次匯入（成功後刪除本機檔案）", batchDownload: "批次僅下載", mediaType: "媒體類型", allTypes: "全部類型", otherType: "其他資源",
         activeTaskCount: "{active} 個進行中，共 {count} 個任務", taskCount: "共 {count} 個任務",
-        qualityCountLabel: "影片品質（本影片 {count} 檔）", qualitySourceHint: "檔位來自目前影片；其他影片會依來源網站實際提供的品質變化。", showSegments: "顯示未關聯資源與播放分片", hiddenSegments: "已隱藏 {count} 個未關聯播放資源", importExisting: "匯入現有檔案", importQueued: "已加入 Eagle 匯入佇列", segmentOnlyTitle: "無法確認歸屬的播放資源"
+        qualityCountLabel: "影片品質（本影片 {count} 檔）", qualitySourceHint: "檔位來自目前影片；其他影片會依來源網站實際提供的品質變化。", showSegments: "顯示未關聯資源與播放分片", hiddenSegments: "已隱藏 {count} 個未關聯播放資源", importExisting: "匯入 Eagle，成功後刪除本機檔案", importQueued: "已加入 Eagle 匯入佇列；成功後將刪除本機檔案", segmentOnlyTitle: "無法確認歸屬的播放資源"
     };
     const en = {
         product: "Download Transfer Station", media: "Media", tasks: "Tasks", refresh: "Refresh", settings: "Settings",
@@ -55,10 +55,10 @@
         currentPage: "Current", otherPages: "Other pages", allPages: "All", noMedia: "No media found yet",
         noMediaBody: "Play the video and refresh, or start Deep Search.", deepSearch: "Deep Search",
         video: "Video", audio: "Audio", manifest: "Manifest", filename: "Filename", advanced: "Advanced options",
-        subtitles: "Subtitles (downloaded separately)", noAudio: "No audio", directInfo: "The selected file will be imported into Eagle after download.",
-        mergeInfo: "Video and audio will be merged losslessly on this computer, then imported into Eagle.",
-        manifestInfo: "The HLS/DASH manifest will be downloaded, merged, verified, and imported locally.",
-        downloadImport: "Download and import to Eagle", downloadOnly: "Download only", legal: "Only download content you have the right to save.",
+        subtitles: "Subtitles (downloaded separately)", noAudio: "No audio", directInfo: "The selected file will be imported into Eagle, then the local download will be deleted after success.",
+        mergeInfo: "Video and audio will be merged and imported into Eagle, then the local download will be deleted after success.",
+        manifestInfo: "The HLS/DASH media will be downloaded, verified, and imported into Eagle, then the local download will be deleted.",
+        downloadImport: "Import to Eagle (delete local file after success)", downloadOnly: "Download only", legal: "Only download content you have the right to save.",
         pairBody: "Enter the six-digit code shown by the desktop helper to enable local merging and Eagle import.", pairPlaceholder: "Six-digit code", pair: "Pair",
         siteRule: "Save source and auto-import", recordPage: "Record page", ignoreNext: "Ignore next import", pauseCapture: "Pause/resume capture",
         openWindow: "Open window", clearMedia: "Clear current media", copyLink: "Copy link",
@@ -70,11 +70,11 @@
         downloadStarted: "Download started", toolUpdated: "Tool state updated", connectionError: "Cannot reach the desktop helper", notGrouped: "Ungrouped resource",
         selectedCount: "{count} downloadable items", retry: "Retry", activeTaskCount: "{active} active, {count} total", taskCount: "{count} tasks total",
         batch: "Batch", exitBatch: "Exit batch", batchTitle: "Batch actions", batchBody: "Each content item creates its own task; tracks from different videos are never mixed.",
-        batchSelected: "{count} items selected", selectAll: "Select all", invert: "Invert", copySelected: "Copy links", batchImport: "Download and import all", batchDownload: "Download all only",
+        batchSelected: "{count} items selected", selectAll: "Select all", invert: "Invert", copySelected: "Copy links", batchImport: "Import all and delete local files", batchDownload: "Download all only",
         mediaType: "Media type", allTypes: "All types", otherType: "Other", extensionFilter: "Extensions (comma-separated)", minimumSize: "Minimum size (MB)",
         urlRegex: "URL regular expression", unsafeRegex: "This expression is invalid or potentially unsafe and was not applied.", hideDuplicateNames: "Hide duplicate filenames", showSegments: "Show unbound resources and playback fragments", hiddenSegments: "{count} unbound playback resources hidden",
         batchPartial: "Started {count} tasks; one or more failed.",
-        outputLocation: "Saved to: {path}", openFolder: "Open folder", folderOpened: "Download folder opened", importExisting: "Import existing file", importQueued: "Queued for Eagle import", segmentOnlyTitle: "Playback resource with unknown ownership", syncInterrupted: "Task sync was interrupted. The desktop download may still continue; reconnecting automatically."
+        outputLocation: "Saved to: {path}", openFolder: "Open folder", folderOpened: "Download folder opened", importExisting: "Import to Eagle, then delete local file", importQueued: "Queued for Eagle import; the local file will be deleted after success", segmentOnlyTitle: "Playback resource with unknown ownership", syncInterrupted: "Task sync was interrupted. The desktop download may still continue; reconnecting automatically."
     };
 
     const uiLanguage = String(chrome.i18n?.getUILanguage?.() || "zh-CN").toLowerCase();
@@ -168,6 +168,11 @@
             return `<video class="bridge-remote-preview ${escapeHtml(className)}" src="${escapeHtml(mediaUrl)}" aria-label="${escapeHtml(alt)}" muted playsinline preload="metadata" data-media-preview></video><img class="bridge-preview-fallback ${escapeHtml(className)}" src="${escapeHtml(asset("icons/icon-128.png"))}" alt="${escapeHtml(alt)}" hidden>`;
         }
         return `<img class="${escapeHtml(className)}" src="${escapeHtml(asset("icons/icon-128.png"))}" alt="${escapeHtml(alt)}">`;
+    }
+
+    function sidebarPreviewMarkup(group, alt = "") {
+        const fallback = asset("icons/icon-128.png");
+        return `<img class="bridge-thumb" src="${escapeHtml(staticThumbUrl(group) || fallback)}" alt="${escapeHtml(alt)}" loading="lazy" decoding="async" data-fallback="${escapeHtml(fallback)}">`;
     }
 
     function taskThumbUrl(task) {
@@ -350,7 +355,7 @@
                 ${state.batchMode ? `<label class="bridge-batch-check" title="${escapeHtml(t("batchSelected", { count: state.selectedGroupIds.size }))}"><input type="checkbox" data-batch-group="${escapeHtml(group.id)}" ${selected ? "checked" : ""} ${technical ? "disabled" : ""}><span class="bridge-visually-hidden">${escapeHtml(group.title)}</span></label>` : ""}
                 <button class="bridge-group-row" data-group-id="${escapeHtml(group.id)}" role="option" aria-current="${group.id === state.activeGroupId}" aria-selected="${selected}">
                 <span class="bridge-thumb-wrap">
-                    ${technical ? `<span class="bridge-segment-glyph">技术</span>` : mediaPreviewMarkup(group, selection, "bridge-thumb")}
+                    ${technical ? `<span class="bridge-segment-glyph">技术</span>` : sidebarPreviewMarkup(group, group.title)}
                     ${duration ? `<span class="bridge-duration">${escapeHtml(duration)}</span>` : ""}
                 </span>
                 <span class="bridge-group-copy">
@@ -593,7 +598,12 @@
         const response = await send({
             eagleBridge: "createPlan",
             items: selectedRawItemsForGroup(group),
-            options: { outputName, outputContainer: validation.outputContainer, importToEagle }
+            options: {
+                outputName,
+                outputContainer: validation.outputContainer,
+                importToEagle,
+                deleteAfterImport: importToEagle
+            }
         });
         if (!response?.ok) throw new Error(response?.error || t("connectionError"));
         const plan = {
@@ -878,9 +888,14 @@
         try {
             await refreshTab();
             patchHeader();
-            await send({ eagleBridge: "ensureDiscovery", tabId: state.tab?.id }).catch(() => undefined);
-            await refreshConnection();
-            await Promise.allSettled([refreshCandidates(), refreshPlans(), refreshSite(), refreshToolState()]);
+            // Prioritize the current media snapshot so opening the popup is
+            // not held behind discovery recovery or a slow local health check.
+            const candidates = refreshCandidates();
+            const toolState = refreshToolState();
+            const connection = refreshConnection();
+            const discovery = send({ eagleBridge: "ensureDiscovery", tabId: state.tab?.id }).catch(() => undefined);
+            await connection;
+            await Promise.allSettled([candidates, toolState, discovery, refreshPlans(), refreshSite()]);
             renderSettings();
             if (state.view === "tasks") renderTasks();
             scheduleTaskPoll();

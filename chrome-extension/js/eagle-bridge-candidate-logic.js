@@ -351,6 +351,20 @@
         };
     }
 
+    function createKeyedBoundedScheduler(callback, delayMs = 250, timers = globalThis) {
+        const timerIds = new Map();
+        const delay = Math.max(0, Number(delayMs) || 0);
+        return function schedule(key) {
+            if (timerIds.has(key)) return false;
+            const timerId = timers.setTimeout(() => {
+                timerIds.delete(key);
+                callback(key);
+            }, delay);
+            timerIds.set(key, timerId);
+            return true;
+        };
+    }
+
     async function ensureContentDiscovery(chromeApi, tab) {
         const tabId = Number(tab?.id);
         const tabUrl = String(tab?.url || "");
@@ -483,6 +497,7 @@
         chooseStructuredVideoPageUrl,
         selectContentTitle,
         createBoundedScheduler,
+        createKeyedBoundedScheduler,
         ensureContentDiscovery,
         parseManifestQualities,
         parseVimeoPlayerConfig,

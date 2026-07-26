@@ -375,6 +375,7 @@ async function eagleBridgeCreatePlan(items, options = {}) {
         mergeMode: items.length > 1 ? "local_streamcopy" : "direct",
         route: "desktop",
         importToEagle: options.importToEagle !== false,
+        deleteAfterImport: options.deleteAfterImport === true,
         tabId: Number.isInteger(first.tabId) ? first.tabId : null,
         streams: items.map(eagleBridgePublicStream),
         runtimeHeaders: items.map(item => {

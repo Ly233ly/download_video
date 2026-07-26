@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS download_plans (
     merge_mode TEXT NOT NULL,
     route TEXT NOT NULL,
     import_to_eagle INTEGER NOT NULL DEFAULT 1 CHECK (import_to_eagle IN (0, 1)),
+    delete_after_import INTEGER NOT NULL DEFAULT 0 CHECK (delete_after_import IN (0, 1)),
     status TEXT NOT NULL,
     progress REAL NOT NULL DEFAULT 0,
     downloaded_bytes INTEGER NOT NULL DEFAULT 0,
@@ -287,6 +288,24 @@ class Database:
                 )
                 connection.execute("DROP TABLE IF EXISTS component_files")
                 connection.execute("PRAGMA user_version = 5")
+            if schema_version < 6:
+                # 只有新版界面明确请求时，Eagle 导入成功后才允许清理本机副本。
+                # 旧计划默认保留，避免升级后改变已经创建任务的删除语义。
+                plan_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(download_plans)"
+                    )
+                }
+                if "delete_after_import" not in plan_columns:
+                    connection.execute(
+                        """
+                        ALTER TABLE download_plans
+                        ADD COLUMN delete_after_import INTEGER NOT NULL DEFAULT 0
+                        CHECK (delete_after_import IN (0, 1))
+                        """
+                    )
+                connection.execute("PRAGMA user_version = 6")
 
     def get_setting(self, key: str, default: Any = None) -> Any:
         with self.session() as connection:
@@ -684,12 +703,92 @@ class Database:
                     """
                     UPDATE download_plans SET
                         status = 'imported', progress = 100,
+                        phase_detail = '已导入 Eagle',
                         error_code = NULL, error_message = NULL,
                         completed_at = COALESCE(completed_at, ?), updated_at = ?
                     WHERE job_id = ?
                     """,
                     (completed_at, updates["updated_at"], job_id),
                 )
+
+    def imported_plan_output_for_cleanup(self, job_id: str) -> dict[str, Any] | None:
+        with self.session() as connection:
+            row = connection.execute(
+                """
+                SELECT plan.id AS plan_id, plan.final_path, jobs.file_path
+                FROM download_plans AS plan
+                JOIN jobs ON jobs.id = plan.job_id
+                WHERE plan.job_id = ?
+                  AND plan.status = 'imported'
+                  AND plan.import_to_eagle = 1
+                  AND plan.delete_after_import = 1
+                  AND plan.final_path IS NOT NULL
+                ORDER BY plan.created_at DESC
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def pending_imported_output_cleanups(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT jobs.id AS job_id, jobs.file_path
+                FROM download_plans AS plan
+                JOIN jobs ON jobs.id = plan.job_id
+                WHERE plan.status = 'imported'
+                  AND jobs.status = 'imported'
+                  AND plan.import_to_eagle = 1
+                  AND plan.delete_after_import = 1
+                  AND plan.final_path IS NOT NULL
+                  AND plan.error_code IS NULL
+                ORDER BY jobs.completed_at ASC, plan.created_at ASC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 100)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_plan_output_cleanup(
+        self,
+        plan_id: str,
+        expected_path: str,
+        *,
+        deleted: bool,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> bool:
+        now = time.time()
+        with self.transaction() as connection:
+            if deleted:
+                cursor = connection.execute(
+                    """
+                    UPDATE download_plans SET
+                        final_path = NULL,
+                        phase_detail = '已导入 Eagle，本机下载文件已自动删除',
+                        error_code = NULL, error_message = NULL, updated_at = ?
+                    WHERE id = ? AND status = 'imported' AND final_path = ?
+                    """,
+                    (now, plan_id, expected_path),
+                )
+            else:
+                cursor = connection.execute(
+                    """
+                    UPDATE download_plans SET
+                        phase_detail = '已导入 Eagle，本机文件未删除',
+                        error_code = ?, error_message = ?, updated_at = ?
+                    WHERE id = ? AND status = 'imported' AND final_path = ?
+                    """,
+                    (
+                        error_code,
+                        (error_message or "")[:1000],
+                        now,
+                        plan_id,
+                        expected_path,
+                    ),
+                )
+        return cursor.rowcount == 1
 
     def fingerprint_exists(self, fingerprint: str) -> bool:
         return self.fingerprint_owner(fingerprint) is not None
@@ -735,6 +834,29 @@ class Database:
                 "SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS revision FROM jobs"
             ).fetchone()
         return int(row["count"]), float(row["revision"])
+
+    def ui_snapshot(self) -> dict[str, Any]:
+        """Read the small dashboard projection through one database session."""
+        with self.session() as connection:
+            status_rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM jobs GROUP BY status"
+            ).fetchall()
+            revision_row = connection.execute(
+                "SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS revision FROM jobs"
+            ).fetchone()
+            enabled_site_count = connection.execute(
+                "SELECT COUNT(*) FROM site_rules WHERE enabled = 1"
+            ).fetchone()[0]
+        return {
+            "status_counts": {
+                str(row["status"]): int(row["count"]) for row in status_rows
+            },
+            "jobs_revision": (
+                int(revision_row["count"]),
+                float(revision_row["revision"]),
+            ),
+            "enabled_site_count": int(enabled_site_count),
+        }
 
     def retry_job(self, job_id: str) -> bool:
         with self.session() as connection:

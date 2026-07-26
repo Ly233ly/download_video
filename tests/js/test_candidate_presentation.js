@@ -123,6 +123,27 @@ if (boundedScanCount !== 1) throw new Error("The bounded discovery scheduler mus
 boundedSchedule();
 if (scheduledCallbacks.length !== 1) throw new Error("A new scan must be schedulable after the previous scan completes");
 
+const keyedCallbacks = [];
+const keyedRuns = [];
+const scheduleByTab = presentation.createKeyedBoundedScheduler(
+    tabId => { keyedRuns.push(tabId); },
+    250,
+    { setTimeout: callback => { keyedCallbacks.push(callback); return keyedCallbacks.length; } }
+);
+for (let index = 0; index < 400; index += 1) scheduleByTab(9);
+scheduleByTab(10);
+if (keyedCallbacks.length !== 2) {
+    throw new Error("A media burst must schedule at most one expensive badge regroup per tab");
+}
+keyedCallbacks.splice(0).forEach(callback => callback());
+if (keyedRuns.join(",") !== "9,10") {
+    throw new Error(`Each tab must eventually refresh its badge once; got ${keyedRuns.join(",")}`);
+}
+scheduleByTab(9);
+if (keyedCallbacks.length !== 1) {
+    throw new Error("A tab badge must be schedulable again after its previous refresh completes");
+}
+
 const injectionCalls = [];
 let discoveryMessageCount = 0;
 const recoveredDiscoveryPromise = presentation.ensureContentDiscovery({

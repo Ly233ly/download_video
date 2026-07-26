@@ -402,6 +402,10 @@ class WechatCandidateRegistry:
                 for item in sorted(self._items.values(), key=lambda value: value.updated_at)
             ]
 
+    def count(self) -> int:
+        with self._lock:
+            return len(self._items)
+
     def clear(self) -> None:
         with self._lock:
             self._items.clear()
@@ -416,7 +420,12 @@ class WechatCandidateRegistry:
             return candidate.cover_url, headers
 
     def plan_payload(
-        self, object_id: str, variant_id: str = "", *, import_to_eagle: bool = True
+        self,
+        object_id: str,
+        variant_id: str = "",
+        *,
+        import_to_eagle: bool = True,
+        delete_after_import: bool = False,
     ) -> dict[str, Any]:
         with self._lock:
             candidate = self._items.get(object_id)
@@ -442,6 +451,7 @@ class WechatCandidateRegistry:
                 "outputContainer": "mp4",
                 "mergeMode": "direct",
                 "importToEagle": import_to_eagle,
+                "deleteAfterImport": delete_after_import and import_to_eagle,
                 "runtimeHeaders": [dict(variant.headers)],
                 "streams": [{
                     "id": variant.variant_id,
@@ -487,6 +497,7 @@ class WechatChannelsCaptureService:
         self._preview_order: list[str] = []
         self._PREVIEW_CACHE_MAX = 50
         self._preview_failures: set[str] = set()
+        self._static_health_cache: tuple[float, dict[str, str]] | None = None
         self._lock = threading.RLock()
         orphaned = self.proxy_lease.path.exists()
         restored = self.proxy_lease.recover_orphan()
@@ -526,6 +537,7 @@ class WechatChannelsCaptureService:
             proxy: WechatLoopbackProxy | None = None
             try:
                 files = self.certificate.install() if trust_certificate else self.certificate.ensure()
+                self._static_health_cache = None
                 self._certificate_trusted = self.certificate.is_trusted(files.fingerprint) if trust_certificate else False
                 bridge_script = self.bridge_script_path().read_bytes()
                 snapshot = self.proxy_lease.backend.snapshot()
@@ -640,7 +652,12 @@ class WechatChannelsCaptureService:
             variant_id = _text(payload.get("variantId"), 128)
             if not object_id or not variant_id:
                 raise WechatChannelsError("视频号页面下载请求缺少内容或质量身份")
-            plan = self.submit(object_id, variant_id, import_to_eagle=True)
+            plan = self.submit(
+                object_id,
+                variant_id,
+                import_to_eagle=True,
+                delete_after_import=True,
+            )
             return {
                 "action": "download",
                 "plan": {
@@ -662,9 +679,19 @@ class WechatChannelsCaptureService:
         raise WechatChannelsError("视频号页面请求类型无效")
 
     def submit(
-        self, object_id: str, variant_id: str = "", *, import_to_eagle: bool = True
+        self,
+        object_id: str,
+        variant_id: str = "",
+        *,
+        import_to_eagle: bool = True,
+        delete_after_import: bool = False,
     ) -> dict[str, Any]:
-        payload = self.registry.plan_payload(object_id, variant_id, import_to_eagle=import_to_eagle)
+        payload = self.registry.plan_payload(
+            object_id,
+            variant_id,
+            import_to_eagle=import_to_eagle,
+            delete_after_import=delete_after_import,
+        )
         plan = self.media.create_plan(payload)
         self.last_event = f"任务已创建：{payload['pageTitle']}"
         return plan
@@ -756,23 +783,44 @@ class WechatChannelsCaptureService:
                 "finderHooksInstalled": 0,
             }
         )
-        existing_certificate = self.certificate.existing()
-        try:
-            bridge_hash = hashlib.sha256(self.bridge_script_path().read_bytes()).hexdigest()[:16]
-        except OSError:
-            bridge_hash = ""
+        static_identity = self._static_health_identity()
         return {
             "state": self.state,
             "running": bool(proxy),
             "endpoint": f"{proxy.address[0]}:{proxy.address[1]}" if proxy else "",
             "certificateTrusted": self._certificate_trusted,
-            "candidateCount": len(self.registry.list()),
+            "candidateCount": self.registry.count(),
             "rejectedCount": self.rejected_count,
             "internalApiObserved": self.internal_api_observed,
             "proxyDiagnostics": proxy_diagnostics,
-            "certificateId": existing_certificate.fingerprint[-8:] if existing_certificate else "",
-            "bridgeHash": bridge_hash,
+            **static_identity,
             "lastEvent": self.last_event,
             "errorCode": self.error_code,
             "error": self.error,
         }
+
+    def _static_health_identity(self) -> dict[str, str]:
+        now = time.monotonic()
+        with self._lock:
+            if (
+                self._static_health_cache
+                and now - self._static_health_cache[0] < 60
+            ):
+                return dict(self._static_health_cache[1])
+            existing_certificate = self.certificate.existing()
+            try:
+                bridge_hash = hashlib.sha256(
+                    self.bridge_script_path().read_bytes()
+                ).hexdigest()[:16]
+            except OSError:
+                bridge_hash = ""
+            identity = {
+                "certificateId": (
+                    existing_certificate.fingerprint[-8:]
+                    if existing_certificate
+                    else ""
+                ),
+                "bridgeHash": bridge_hash,
+            }
+            self._static_health_cache = (now, identity)
+            return dict(identity)
