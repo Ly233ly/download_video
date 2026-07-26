@@ -14,6 +14,8 @@ Chrome/Firefox popup 保留唯一“媒体 / 任务”运行时，以真实产�
 
 EXT/DESK/CORE 迁移矩阵已写入 `docs/FRONTEND_REFACTOR_FEATURE_INVENTORY.md`。确定性 Tk 与浏览器夹具覆盖真实控件、候选、计划和任务状态；1120×720、900×600 与 660×574 截图已和参考图同画布比较。当前 173 项 Python unittest、6 组 Node、全部活动 JavaScript 语法和双清单解析通过；视觉 QA 无 P0/P1 遗留。
 
+源码提交 `615fa94` 已推送到 `main`，发行 ZIP 与 SHA-256 文件已上传至 GitHub `v1.4.0-rc.1` prerelease。稳定更新通道的签名 `update.json` 未修改；发行证据见 `docs/RELEASE_VERIFICATION_1.4.0.md`。
+
 ## 1.3.1 浏览器性能、桌面性能与 Eagle 导入后清理
 
 已完成 `ltaoo/wx_channels_download` 最新源码的行为研究与架构索引，确认其核心链路是微信桌面客户端、受信任 HTTPS 代理、页面 JavaScript 注入、feed/媒体捕获和本机下载。1.3.1 不复制其 Go/JavaScript、SunnyNet、Gopeed、证书、图标或 UI，而以 Python 3.11+ 标准库和本项目自有 JavaScript 独立实现，并接入现有 `MediaCoordinator`、SQLite 任务、FFmpeg、Eagle 和桌面任务页。

@@ -38,6 +38,7 @@
 - ZIP 共 1,218 个条目；未包含开发机 `data`、`.scratch`、`__pycache__`、`.pyc`、`bridge.db`、配对信息、令牌、Cookie 或日志。
 - 固定工具：PyInstaller 6.21.0、FFmpeg 8.1.2、yt-dlp 2026.06.09、Deno 2.8.1。
 - 预发布不更新稳定通道的签名 `update.json`，避免自动更新静默推广尚未完成真实终验的候选版。
+- GitHub Release：`v1.4.0-rc.1`，<https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.0-rc.1>。
 
 ## 未完成的真实终验
 
