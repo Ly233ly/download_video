@@ -69,10 +69,30 @@ MEDIA_STATUS_TEXT = {
     "imported": "已导入 Eagle",
     "completed_local": "已下载到本机",
     "retry": "下载失败",
+    "import_failed": "Eagle 导入失败",
+    "failed_permanent": "无法继续",
     "canceled": "已停止",
+    "needs_rebuild": "需要回到来源重建",
 }
 
 MEDIA_ACTIVE_STATUSES = {"queued", "downloading", "merging", "validating", "ready_to_import"}
+MEDIA_RETRYABLE_STATUSES = {"retry"}
+
+UI = {
+    "canvas": "#F4F2EF",
+    "sidebar": "#EEEAE6",
+    "surface": "#FCFBF9",
+    "surface_alt": "#F7F4F1",
+    "selected": "#EDE5E4",
+    "border": "#DED9D4",
+    "text": "#272522",
+    "muted": "#716C67",
+    "accent": "#9A6470",
+    "accent_dark": "#80515C",
+    "success": "#3F7D4B",
+    "warning": "#A66B24",
+    "danger": "#B24747",
+}
 
 
 def _display_bytes(value: object) -> str:
@@ -87,6 +107,181 @@ def _display_bytes(value: object) -> str:
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1024
     return "未知"
+
+
+def _media_plan_view(plan: dict) -> dict:
+    status = str(plan.get("status") or "")
+    job_status = str(plan.get("job_status") or "")
+    display_status = status
+    if status == "ready_to_import" and job_status == "waiting_eagle":
+        display_status = "waiting_eagle"
+    elif status == "ready_to_import" and job_status == "failed_permanent":
+        display_status = "import_failed"
+    try:
+        progress = max(0.0, min(100.0, float(plan.get("progress") or 0)))
+    except (TypeError, ValueError):
+        progress = 0.0
+    if status in {"completed_local", "imported"}:
+        progress = 100.0
+    else:
+        progress = min(progress, 99.0)
+    final_path = str(plan.get("final_path") or "")
+    page_url = str(plan.get("page_url") or "")
+    return {
+        "status": status,
+        "status_label": MEDIA_STATUS_TEXT.get(display_status, display_status),
+        "progress": progress,
+        "processed": _display_bytes(plan.get("downloaded_bytes")),
+        "total": _display_bytes(plan.get("total_bytes")),
+        "active": status in MEDIA_ACTIVE_STATUSES,
+        "can_retry": status in MEDIA_RETRYABLE_STATUSES,
+        "can_open_output": bool(final_path),
+        "can_open_source": bool(page_url),
+        "can_import_existing": status == "completed_local"
+        and bool(final_path),
+    }
+
+
+def _configure_styles(root: Tk) -> None:
+    style = ttk.Style(root)
+    try:
+        # The native Vista theme ignores custom button and progress colours.
+        # Clam keeps the interface deterministic across Windows 10/11 while
+        # still using native Tk controls and accessibility semantics.
+        style.theme_use("clam")
+    except Exception:
+        pass
+    default_font = ("Microsoft YaHei UI", 10)
+    style.configure(".", font=default_font, foreground=UI["text"])
+    style.configure("App.TFrame", background=UI["canvas"])
+    style.configure("Sidebar.TFrame", background=UI["sidebar"])
+    style.configure("Surface.TFrame", background=UI["surface"])
+    style.configure("Soft.TFrame", background=UI["surface_alt"])
+    style.configure("App.TLabel", background=UI["canvas"], foreground=UI["text"])
+    style.configure("Sidebar.TLabel", background=UI["sidebar"], foreground=UI["text"])
+    style.configure("Surface.TLabel", background=UI["surface"], foreground=UI["text"])
+    style.configure("Muted.TLabel", background=UI["surface"], foreground=UI["muted"])
+    style.configure(
+        "Title.TLabel",
+        background=UI["surface"],
+        foreground=UI["text"],
+        font=("Microsoft YaHei UI", 20, "bold"),
+    )
+    style.configure(
+        "Section.TLabel",
+        background=UI["surface"],
+        foreground=UI["text"],
+        font=("Microsoft YaHei UI", 12, "bold"),
+    )
+    style.configure(
+        "Nav.TButton",
+        anchor="w",
+        padding=(16, 11),
+        background=UI["sidebar"],
+        foreground=UI["text"],
+        borderwidth=0,
+        focusthickness=0,
+    )
+    style.map(
+        "Nav.TButton",
+        background=[("active", UI["selected"]), ("pressed", UI["selected"])],
+        foreground=[("disabled", UI["muted"])],
+    )
+    style.configure(
+        "NavSelected.TButton",
+        anchor="w",
+        padding=(16, 11),
+        background=UI["selected"],
+        foreground=UI["accent_dark"],
+        borderwidth=0,
+        focusthickness=0,
+        font=("Microsoft YaHei UI", 10, "bold"),
+    )
+    style.map(
+        "NavSelected.TButton",
+        background=[("active", UI["selected"]), ("pressed", UI["selected"])],
+    )
+    style.configure(
+        "Accent.TButton",
+        padding=(14, 8),
+        background=UI["accent"],
+        foreground="#FFFFFF",
+        borderwidth=0,
+        focusthickness=0,
+        relief="flat",
+        font=("Microsoft YaHei UI", 10, "bold"),
+    )
+    style.map(
+        "Accent.TButton",
+        foreground=[("disabled", "#8D8481")],
+        bordercolor=[("disabled", UI["border"])],
+        lightcolor=[("disabled", "#D6CBCB")],
+        darkcolor=[("disabled", "#D6CBCB")],
+        background=[
+            ("disabled", "#D6CBCB"),
+            ("active", UI["accent_dark"]),
+            ("pressed", UI["accent_dark"]),
+        ],
+    )
+    style.configure(
+        "Quiet.TButton",
+        padding=(12, 7),
+        background=UI["surface_alt"],
+        foreground=UI["text"],
+        bordercolor=UI["border"],
+        borderwidth=1,
+        relief="flat",
+    )
+    style.map(
+        "Quiet.TButton",
+        background=[("active", UI["selected"]), ("pressed", UI["selected"])],
+        foreground=[("disabled", UI["muted"])],
+    )
+    style.configure(
+        "Card.TLabelframe",
+        background=UI["surface"],
+        bordercolor=UI["border"],
+        relief="solid",
+        borderwidth=1,
+    )
+    style.configure(
+        "Card.TLabelframe.Label",
+        background=UI["surface"],
+        foreground=UI["text"],
+        font=("Microsoft YaHei UI", 11, "bold"),
+    )
+    style.configure(
+        "Treeview",
+        background=UI["surface"],
+        fieldbackground=UI["surface"],
+        foreground=UI["text"],
+        bordercolor=UI["border"],
+        borderwidth=1,
+        relief="flat",
+        rowheight=34,
+    )
+    style.map(
+        "Treeview",
+        background=[("selected", UI["selected"])],
+        foreground=[("selected", UI["text"])],
+    )
+    style.configure(
+        "Treeview.Heading",
+        background=UI["surface_alt"],
+        foreground=UI["muted"],
+        padding=(8, 7),
+        borderwidth=0,
+        relief="flat",
+        font=("Microsoft YaHei UI", 9, "bold"),
+    )
+    style.configure(
+        "Warm.Horizontal.TProgressbar",
+        troughcolor="#E7E1DE",
+        background=UI["accent"],
+        bordercolor="#E7E1DE",
+        lightcolor=UI["accent"],
+        darkcolor=UI["accent"],
+    )
 
 
 class _AsyncProbe:
@@ -208,12 +403,36 @@ def _set_window_icon(window: Tk | Toplevel) -> None:
             continue
 
 
+def _load_product_image() -> PhotoImage | None:
+    candidates: list[Path] = []
+    bundle_root = getattr(sys, "_MEIPASS", "")
+    if bundle_root:
+        candidates.append(
+            Path(bundle_root) / "assets" / "download-transfer-station.png"
+        )
+    candidates.append(
+        Path(__file__).resolve().parents[2]
+        / "assets"
+        / "download-transfer-station.png"
+    )
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            source = PhotoImage(file=str(candidate))
+            factor = max(1, max(source.width(), source.height()) // 30)
+            return source.subsample(factor, factor)
+        except Exception:
+            continue
+    return None
+
+
 class _VerticalScrolledFrame(ttk.Frame):
     """A width-filling frame that scrolls only when its content is too tall."""
 
     def __init__(self, parent: object, *, padding: object = 0) -> None:
-        super().__init__(parent)
-        background = ttk.Style(self).lookup("TFrame", "background")
+        super().__init__(parent, style="Surface.TFrame")
+        background = UI["surface"]
         self.canvas = Canvas(
             self,
             borderwidth=0,
@@ -230,7 +449,11 @@ class _VerticalScrolledFrame(ttk.Frame):
         self.scrollbar.pack(side=RIGHT, fill=Y)
         self.canvas.pack(side=LEFT, fill=BOTH, expand=True)
 
-        self.content = ttk.Frame(self.canvas, padding=padding)
+        self.content = ttk.Frame(
+            self.canvas,
+            padding=padding,
+            style="Surface.TFrame",
+        )
         self._content_window = self.canvas.create_window(
             (0, 0),
             window=self.content,
@@ -626,6 +849,9 @@ class MainWindow:
         self.pairing = PairingManager(database)
         self.root = Tk()
         _set_window_icon(self.root)
+        _configure_styles(self.root)
+        self.brand_image = _load_product_image()
+        self.root.configure(background=UI["canvas"])
         if self.start_hidden:
             self.root.withdraw()
         self.root.title("下载中转站")
@@ -633,10 +859,19 @@ class MainWindow:
         self.root.minsize(900, 600)
         self.root.protocol("WM_DELETE_WINDOW", self.hide if external_tray else self.quit)
         self.status_text = StringVar()
+        self.page_title_text = StringVar(value="下载任务")
+        self.eagle_status_text = StringVar(value="Eagle 正在检查")
+        self.service_status_text = StringVar(value="本机服务正常")
+        self.chrome_status_text = StringVar(value="Chrome 未配对")
         self.pairing_text = StringVar()
         self.site_rules_text = StringVar(value="网站规则")
         self.network_proxy_text = StringVar(value="网络：自动")
+        self.settings_proxy_status_text = StringVar(value="正在检测网络…")
+        self.settings_site_summary_text = StringVar(value="正在读取网站规则…")
         self.update_button_text = StringVar(value="检查更新")
+        self.current_page = "media"
+        self.page_frames: dict[str, ttk.Frame] = {}
+        self.nav_buttons: dict[str, ttk.Button] = {}
         self.control_signals = ControlSignals() if external_tray else None
         self.control_after_id: str | None = None
         self.refresh_after_id: str | None = None
@@ -675,242 +910,817 @@ class MainWindow:
         self.auto_update_after_id = self.root.after(10000, self._automatic_update_check)
 
     def _build(self) -> None:
-        self.main_scroller = _VerticalScrolledFrame(self.root, padding=16)
-        self.main_scroller.pack(fill=BOTH, expand=True)
-        outer = self.main_scroller.content
+        shell = ttk.Frame(self.root, style="App.TFrame")
+        shell.pack(fill=BOTH, expand=True)
 
-        heading = ttk.Frame(outer)
-        heading.pack(fill=X)
+        sidebar = ttk.Frame(shell, style="Sidebar.TFrame", width=190, padding=(14, 18))
+        sidebar.pack(side=LEFT, fill=Y)
+        sidebar.pack_propagate(False)
+        brand = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        brand.pack(fill=X, pady=(0, 22))
         ttk.Label(
-            heading,
+            brand,
+            image=self.brand_image,
+            style="Sidebar.TLabel",
+        ).pack(side=LEFT, padx=(4, 8))
+        ttk.Label(
+            brand,
             text="下载中转站",
-            font=("Microsoft YaHei UI", 16, "bold"),
+            style="Sidebar.TLabel",
+            font=("Microsoft YaHei UI", 12, "bold"),
         ).pack(side=LEFT)
-        ttk.Label(heading, textvariable=self.status_text).pack(side=RIGHT)
 
+        nav = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        nav.pack(fill=X)
+        for key, label in (
+            ("media", "下载任务"),
+            ("wechat", "视频号"),
+            ("idm", "IDM 导入"),
+            ("settings", "设置"),
+        ):
+            button = ttk.Button(
+                nav,
+                text=label,
+                style="Nav.TButton",
+                command=lambda page=key: self._show_page(page),
+            )
+            button.pack(fill=X, pady=3)
+            self.nav_buttons[key] = button
+        ttk.Frame(sidebar, style="Sidebar.TFrame").pack(fill=BOTH, expand=True)
+        diagnose = ttk.Button(
+            sidebar,
+            text="诊断",
+            style="Nav.TButton",
+            command=lambda: self._show_page("diagnostics"),
+        )
+        diagnose.pack(fill=X, pady=(8, 0))
+        self.nav_buttons["diagnostics"] = diagnose
+
+        workspace = ttk.Frame(shell, style="Surface.TFrame")
+        workspace.pack(side=LEFT, fill=BOTH, expand=True)
+        topbar = ttk.Frame(workspace, style="Surface.TFrame", padding=(24, 18, 24, 12))
+        topbar.pack(fill=X)
+        ttk.Label(topbar, textvariable=self.page_title_text, style="Title.TLabel").pack(
+            side=LEFT
+        )
+        statuses = ttk.Frame(topbar, style="Surface.TFrame")
+        statuses.pack(side=LEFT, padx=(26, 0))
+        for variable in (
+            self.eagle_status_text,
+            self.service_status_text,
+            self.chrome_status_text,
+        ):
+            ttk.Label(
+                statuses,
+                textvariable=variable,
+                style="Muted.TLabel",
+                font=("Microsoft YaHei UI", 9),
+            ).pack(side=LEFT, padx=(0, 16))
         ttk.Label(
-            outer,
-            text="浏览器插件只负责发现媒体；普通直链、分离音视频和 HLS/DASH 全部由本机软件下载、校验并按需导入 Eagle。",
-            foreground="#475569",
-        ).pack(fill=X, pady=(8, 0))
-
-        pairing = ttk.Frame(outer, padding=(0, 12, 0, 8))
-        pairing.pack(fill=X)
-        ttk.Label(pairing, textvariable=self.pairing_text).pack(side=LEFT)
-        ttk.Button(pairing, text="复制配对码", command=self.copy_pairing_code).pack(
-            side=LEFT, padx=(10, 0)
-        )
-        ttk.Button(pairing, text="解除 Chrome 配对", command=self.unpair).pack(
-            side=LEFT, padx=(8, 0)
-        )
-        ttk.Button(pairing, textvariable=self.site_rules_text, command=self.show_site_rules).pack(
-            side=LEFT, padx=(8, 0)
-        )
+            statuses,
+            text=f"v{APP_VERSION}",
+            style="Muted.TLabel",
+            font=("Segoe UI", 9),
+        ).pack(side=LEFT)
         ttk.Button(
-            pairing,
-            textvariable=self.network_proxy_text,
-            command=self.show_proxy_settings,
-        ).pack(side=LEFT, padx=(8, 0))
-        self.update_button = ttk.Button(
-            pairing,
-            textvariable=self.update_button_text,
-            command=self.check_for_updates,
-        )
-        self.update_button.pack(side=RIGHT)
+            topbar,
+            text="刷新",
+            style="Quiet.TButton",
+            command=lambda: self.refresh(force=True),
+        ).pack(side=RIGHT)
 
-        self.notebook = ttk.Notebook(outer)
-        self.notebook.pack(fill=BOTH, expand=True)
-        self.notebook.bind(
-            "<<NotebookTabChanged>>",
-            lambda _event: self.main_scroller.scroll_to_top(),
-            add="+",
-        )
+        self.main_scroller = _VerticalScrolledFrame(workspace, padding=(24, 4, 24, 20))
+        self.main_scroller.pack(fill=BOTH, expand=True)
+        self.page_host = self.main_scroller.content
         self._build_media_tab()
         self._build_wechat_tab()
         self._build_idm_tab()
+        self._build_settings_tab()
+        self._build_diagnostics_tab()
+        self._show_page("media")
 
-        footer = ttk.Frame(outer, padding=(0, 10, 0, 0))
-        footer.pack(fill=X)
-        ttk.Button(footer, text="导出诊断", command=self.export_diagnostics).pack(side=LEFT)
-        if self.external_tray:
-            ttk.Button(footer, text="隐藏到右下角", command=self.hide).pack(side=RIGHT)
-        else:
-            ttk.Button(footer, text="最小化窗口", command=self.root.iconify).pack(side=RIGHT)
+    def _new_page(self, name: str) -> ttk.Frame:
+        page = ttk.Frame(self.page_host, style="Surface.TFrame")
+        self.page_frames[name] = page
+        return page
+
+    def _show_page(self, page: str) -> None:
+        if page not in self.page_frames:
+            return
+        titles = {
+            "media": "下载任务",
+            "wechat": "视频号",
+            "idm": "IDM 导入",
+            "settings": "设置",
+            "diagnostics": "诊断",
+        }
+        for name, frame in self.page_frames.items():
+            if name == page:
+                frame.pack(fill=BOTH, expand=True)
+            else:
+                frame.pack_forget()
+        for name, button in self.nav_buttons.items():
+            button.configure(style="NavSelected.TButton" if name == page else "Nav.TButton")
+        self.current_page = page
+        self.page_title_text.set(titles.get(page, page))
+        self.main_scroller.scroll_to_top()
+        if page == "settings":
+            self._refresh_settings()
+        elif page == "diagnostics":
+            self._refresh_diagnostics_summary()
 
     def _build_media_tab(self) -> None:
-        tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(tab, text="媒体下载")
-        columns = ("status", "progress", "title", "source", "updated")
-        self.plan_tree = ttk.Treeview(tab, columns=columns, show="headings", selectmode="browse", height=12)
+        tab = self._new_page("media")
+        toolbar = ttk.Frame(tab, style="Surface.TFrame")
+        toolbar.pack(fill=X, pady=(0, 12))
+        ttk.Label(
+            toolbar,
+            text="浏览器和视频号提交的媒体计划",
+            style="Muted.TLabel",
+        ).pack(side=LEFT)
+        ttk.Button(
+            toolbar,
+            text="清除终态记录",
+            style="Quiet.TButton",
+            command=self.clear_media_history,
+        ).pack(side=RIGHT)
+        ttk.Button(
+            toolbar,
+            text="刷新",
+            style="Quiet.TButton",
+            command=lambda: self.refresh(force=True),
+        ).pack(side=RIGHT, padx=(0, 8))
+
+        split = ttk.Panedwindow(tab, orient="horizontal")
+        split.pack(fill=BOTH, expand=True)
+        master = ttk.Frame(split, style="Surface.TFrame")
+        detail = ttk.Frame(split, style="Surface.TFrame", padding=(20, 18))
+        split.add(master, weight=3)
+        split.add(detail, weight=2)
+
+        columns = ("status", "title", "source", "progress")
+        self.plan_tree = ttk.Treeview(
+            master,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=16,
+        )
         for name, label in (
             ("status", "状态"),
-            ("progress", "进度"),
             ("title", "下载内容"),
             ("source", "来源网站"),
-            ("updated", "最近更新"),
+            ("progress", "进度"),
         ):
             self.plan_tree.heading(name, text=label)
-        self.plan_tree.column("status", width=125, anchor="center")
-        self.plan_tree.column("progress", width=75, anchor="center")
-        self.plan_tree.column("title", width=420)
-        self.plan_tree.column("source", width=170)
-        self.plan_tree.column("updated", width=135, anchor="center")
+        self.plan_tree.column("status", width=104, anchor="w")
+        self.plan_tree.column("title", width=190)
+        self.plan_tree.column("source", width=90)
+        self.plan_tree.column("progress", width=54, anchor="center")
         self.plan_tree.pack(fill=BOTH, expand=True)
-        self.plan_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_plan_detail())
+        self.plan_tree.bind(
+            "<<TreeviewSelect>>", lambda _event: self._update_plan_detail()
+        )
 
-        detail = ttk.LabelFrame(tab, text="任务详情", padding=10)
-        detail.pack(fill=X, pady=(10, 0))
-        self.preview_label = ttk.Label(detail, text="暂无预览", width=32, anchor="center")
-        self.preview_label.pack(side=LEFT, padx=(0, 14))
-        copy = ttk.Frame(detail)
-        copy.pack(side=LEFT, fill=BOTH, expand=True)
+        preview_surface = ttk.Frame(detail, style="Soft.TFrame", height=150)
+        preview_surface.pack(fill=X)
+        preview_surface.pack_propagate(False)
+        self.preview_label = ttk.Label(
+            preview_surface,
+            text="选择任务后显示本机预览",
+            anchor="center",
+            background=UI["surface_alt"],
+            foreground=UI["muted"],
+        )
+        self.preview_label.pack(fill=BOTH, expand=True)
         self.plan_title_text = StringVar(value="选择一项任务查看详情")
         self.plan_status_text = StringVar(value="")
         self.plan_source_text = StringVar(value="")
         self.plan_file_text = StringVar(value="")
-        ttk.Label(copy, textvariable=self.plan_title_text, font=("Microsoft YaHei UI", 12, "bold")).pack(fill=X)
-        ttk.Label(copy, textvariable=self.plan_status_text).pack(fill=X, pady=(5, 0))
-        self.plan_progress = ttk.Progressbar(copy, maximum=100)
-        self.plan_progress.pack(fill=X, pady=(6, 4))
-        ttk.Label(copy, textvariable=self.plan_source_text, foreground="#475569").pack(fill=X)
-        ttk.Label(copy, textvariable=self.plan_file_text, foreground="#475569").pack(fill=X, pady=(3, 0))
+        ttk.Label(
+            detail,
+            textvariable=self.plan_title_text,
+            style="Section.TLabel",
+            wraplength=360,
+        ).pack(fill=X, pady=(16, 0))
+        ttk.Label(
+            detail,
+            textvariable=self.plan_status_text,
+            style="Muted.TLabel",
+            wraplength=360,
+            justify=LEFT,
+        ).pack(fill=X, pady=(6, 0))
+        self.plan_progress = ttk.Progressbar(
+            detail,
+            maximum=100,
+            style="Warm.Horizontal.TProgressbar",
+        )
+        self.plan_progress.pack(fill=X, pady=(12, 5))
+        ttk.Label(
+            detail,
+            textvariable=self.plan_source_text,
+            style="Muted.TLabel",
+            wraplength=360,
+            justify=LEFT,
+        ).pack(fill=X, pady=(8, 0))
+        ttk.Label(
+            detail,
+            textvariable=self.plan_file_text,
+            style="Muted.TLabel",
+            wraplength=360,
+            justify=LEFT,
+        ).pack(fill=X, pady=(5, 0))
 
-        actions = ttk.Frame(tab, padding=(0, 10, 0, 0))
-        actions.pack(fill=X)
-        ttk.Button(actions, text="刷新", command=lambda: self.refresh(force=True)).pack(side=LEFT)
-        ttk.Button(actions, text="清除已完成记录", command=self.clear_media_history).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="停止任务", command=self.stop_selected_plan).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="重试下载", command=self.retry_selected_plan).pack(side=LEFT)
-        ttk.Button(actions, text="导入现有文件到 Eagle", command=self.import_selected_plan).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="打开文件位置", command=self.open_plan_location).pack(side=LEFT)
-        ttk.Button(actions, text="打开来源网页", command=self.open_plan_source).pack(side=LEFT, padx=6)
+        actions = ttk.Frame(detail, style="Surface.TFrame")
+        actions.pack(fill=X, pady=(18, 0))
+        self.plan_action_buttons = {
+            "stop": ttk.Button(
+                actions,
+                text="停止",
+                style="Accent.TButton",
+                command=self.stop_selected_plan,
+            ),
+            "retry": ttk.Button(
+                actions,
+                text="重试",
+                style="Accent.TButton",
+                command=self.retry_selected_plan,
+            ),
+            "import": ttk.Button(
+                actions,
+                text="补导到 Eagle",
+                style="Accent.TButton",
+                command=self.import_selected_plan,
+            ),
+            "open": ttk.Button(
+                actions,
+                text="打开文件位置",
+                style="Quiet.TButton",
+                command=self.open_plan_location,
+            ),
+            "source": ttk.Button(
+                actions,
+                text="打开来源网页",
+                style="Quiet.TButton",
+                command=self.open_plan_source,
+            ),
+        }
+        for button in self.plan_action_buttons.values():
+            button.pack(fill=X, pady=2)
 
     def _build_idm_tab(self) -> None:
-        tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(tab, text="IDM 导入记录")
+        tab = self._new_page("idm")
+        toolbar = ttk.Frame(tab, style="Surface.TFrame")
+        toolbar.pack(fill=X, pady=(0, 8))
+        ttk.Button(
+            toolbar,
+            text="清除终态记录",
+            style="Quiet.TButton",
+            command=self.clear_history,
+        ).pack(side=RIGHT)
+        ttk.Button(
+            toolbar,
+            text="刷新",
+            style="Quiet.TButton",
+            command=lambda: self.refresh(force=True),
+        ).pack(side=RIGHT, padx=(0, 8))
+        ttk.Label(
+            tab,
+            text="IDM 与用户原文件始终保留；没有可靠来源时仍会导入，Eagle 网站字段保持为空。",
+            style="Muted.TLabel",
+            wraplength=800,
+            justify=LEFT,
+        ).pack(fill=X, pady=(0, 12))
         columns = ("time", "status", "file", "source", "message")
-        self.job_tree = ttk.Treeview(tab, columns=columns, show="headings", selectmode="browse")
+        self.job_tree = ttk.Treeview(
+            tab,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=12,
+        )
         self.job_tree.heading("time", text="时间")
         self.job_tree.heading("status", text="状态")
         self.job_tree.heading("file", text="文件")
         self.job_tree.heading("source", text="来源网站")
         self.job_tree.heading("message", text="说明")
-        self.job_tree.column("time", width=130, anchor="center")
-        self.job_tree.column("status", width=100, anchor="center")
-        self.job_tree.column("file", width=300)
-        self.job_tree.column("source", width=180)
-        self.job_tree.column("message", width=260)
+        self.job_tree.column("time", width=118, anchor="center")
+        self.job_tree.column("status", width=102, anchor="w")
+        self.job_tree.column("file", width=235)
+        self.job_tree.column("source", width=120)
+        self.job_tree.column("message", width=275)
         self.job_tree.pack(fill=BOTH, expand=True)
-        actions = ttk.Frame(tab, padding=(0, 10, 0, 0))
+        self.job_tree.bind(
+            "<<TreeviewSelect>>", lambda _event: self._update_idm_actions()
+        )
+        actions = ttk.Frame(tab, style="Surface.TFrame", padding=(0, 12, 0, 0))
         actions.pack(fill=X)
-        ttk.Button(actions, text="刷新", command=lambda: self.refresh(force=True)).pack(side=LEFT)
-        ttk.Button(actions, text="重试导入", command=self.retry_selected).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="打开文件位置", command=self.open_file_location).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="打开来源网页", command=self.open_source).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="补充/修改来源", command=self.assign_source).pack(side=LEFT, padx=6)
-        ttk.Button(actions, text="清除已完成记录", command=self.clear_history).pack(side=LEFT, padx=6)
+        self.idm_action_buttons = {
+            "retry": ttk.Button(
+                actions,
+                text="重试导入",
+                style="Accent.TButton",
+                command=self.retry_selected,
+            ),
+            "open": ttk.Button(
+                actions,
+                text="打开原文件位置",
+                style="Quiet.TButton",
+                command=self.open_file_location,
+            ),
+            "source": ttk.Button(
+                actions,
+                text="打开可靠来源",
+                style="Quiet.TButton",
+                command=self.open_source,
+            ),
+            "assign": ttk.Button(
+                actions,
+                text="补充 / 修改来源",
+                style="Quiet.TButton",
+                command=self.assign_source,
+            ),
+        }
+        for button in self.idm_action_buttons.values():
+            button.pack(side=LEFT, padx=(0, 8))
 
     def _build_wechat_tab(self) -> None:
-        tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(tab, text="微信视频号")
-
-        header = ttk.Frame(tab)
-        header.pack(fill=X, pady=(0, 10))
+        tab = self._new_page("wechat")
+        header = ttk.Frame(tab, style="Surface.TFrame")
+        header.pack(fill=X, pady=(0, 12))
         self.wechat_status_text = StringVar(value="视频号捕获已关闭")
         self.wechat_action_text = StringVar(value="开始捕获")
         ttk.Label(
             header,
             textvariable=self.wechat_status_text,
-            font=("Microsoft YaHei UI", 11, "bold"),
+            style="Section.TLabel",
         ).pack(side=LEFT)
         self.wechat_action_button = ttk.Button(
             header,
             textvariable=self.wechat_action_text,
             command=self.toggle_wechat_capture,
+            style="Accent.TButton",
         )
         self.wechat_action_button.pack(side=RIGHT)
         ttk.Label(
             tab,
             text="仅在你点击开始后，本机才为微信桌面客户端启用受控 HTTPS 捕获；停止或退出会恢复开启前的系统代理。浏览器扩展与 IDM 不参与此过程。",
-            foreground="#475569",
+            style="Muted.TLabel",
             wraplength=1020,
             justify=LEFT,
         ).pack(fill=X, pady=(0, 10))
 
-        columns = ("title", "author", "duration", "quality", "updated")
+        split = ttk.Panedwindow(tab, orient="horizontal")
+        split.pack(fill=BOTH, expand=True)
+        master = ttk.Frame(split, style="Surface.TFrame")
+        detail = ttk.Frame(split, style="Surface.TFrame", padding=(20, 18))
+        split.add(master, weight=3)
+        split.add(detail, weight=2)
+
+        columns = ("title", "author", "duration", "quality")
         self.wechat_tree = ttk.Treeview(
-            tab, columns=columns, show="headings", selectmode="browse", height=13
+            master,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=15,
         )
         for name, label in (
             ("title", "视频内容"),
             ("author", "作者"),
             ("duration", "时长"),
             ("quality", "可用质量"),
-            ("updated", "最近识别"),
         ):
             self.wechat_tree.heading(name, text=label)
-        self.wechat_tree.column("title", width=420)
-        self.wechat_tree.column("author", width=150)
-        self.wechat_tree.column("duration", width=80, anchor="center")
-        self.wechat_tree.column("quality", width=190)
-        self.wechat_tree.column("updated", width=130, anchor="center")
+        self.wechat_tree.column("title", width=170)
+        self.wechat_tree.column("author", width=82)
+        self.wechat_tree.column("duration", width=52, anchor="center")
+        self.wechat_tree.column("quality", width=90)
         self.wechat_tree.pack(fill=BOTH, expand=True)
         self.wechat_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_wechat_detail())
 
-        detail = ttk.LabelFrame(tab, text="候选详情", padding=10)
-        detail.pack(fill=X, pady=(10, 0))
+        preview_surface = ttk.Frame(detail, style="Soft.TFrame", height=150)
+        preview_surface.pack(fill=X)
+        preview_surface.pack_propagate(False)
         self.wechat_preview_label = ttk.Label(
-            detail,
+            preview_surface,
             text="封面将在识别后显示",
-            width=34,
             anchor="center",
             compound="center",
+            background=UI["surface_alt"],
+            foreground=UI["muted"],
         )
-        self.wechat_preview_label.pack(side=LEFT, fill="y", padx=(0, 12))
-        detail_text = ttk.Frame(detail)
-        detail_text.pack(side=LEFT, fill=BOTH, expand=True)
+        self.wechat_preview_label.pack(fill=BOTH, expand=True)
         self.wechat_detail_text = StringVar(value="开始捕获后，在微信中打开视频号内容。")
         self.wechat_quality_text = StringVar(value="")
         self.wechat_variant_text = StringVar(value="")
         ttk.Label(
-            detail_text,
+            detail,
             textvariable=self.wechat_detail_text,
-            font=("Microsoft YaHei UI", 11, "bold"),
-            wraplength=980,
+            style="Section.TLabel",
+            wraplength=360,
             justify=LEFT,
-        ).pack(fill=X)
-        ttk.Label(detail_text, textvariable=self.wechat_quality_text, foreground="#475569").pack(fill=X, pady=(4, 0))
+        ).pack(fill=X, pady=(16, 0))
+        ttk.Label(
+            detail,
+            textvariable=self.wechat_quality_text,
+            style="Muted.TLabel",
+            wraplength=360,
+            justify=LEFT,
+        ).pack(fill=X, pady=(6, 0))
         self.wechat_variant_box = ttk.Combobox(
-            detail_text,
+            detail,
             state="readonly",
             textvariable=self.wechat_variant_text,
             values=(),
         )
         self.wechat_variant_box.pack(fill=X, pady=(8, 0))
 
-        actions = ttk.Frame(tab, padding=(0, 10, 0, 0))
-        actions.pack(fill=X)
+        delivery = ttk.LabelFrame(
+            detail,
+            text="交付方式",
+            style="Card.TLabelframe",
+            padding=12,
+        )
+        delivery.pack(fill=X, pady=(14, 0))
         self.wechat_import_to_eagle = BooleanVar(value=True)
-        ttk.Checkbutton(
-            actions,
-            text="导入 Eagle，成功后删除本机下载文件",
+        ttk.Radiobutton(
+            delivery,
+            text="导入 Eagle，成功后删除本程序创建的本机副本",
             variable=self.wechat_import_to_eagle,
-        ).pack(side=LEFT)
+            value=True,
+        ).pack(anchor="w", pady=2)
+        ttk.Radiobutton(
+            delivery,
+            text="仅下载并保留本机文件",
+            variable=self.wechat_import_to_eagle,
+            value=False,
+        ).pack(anchor="w", pady=2)
         ttk.Button(
-            actions,
+            detail,
             text="创建下载任务",
             command=self.submit_selected_wechat_candidate,
-        ).pack(side=LEFT, padx=8)
+            style="Accent.TButton",
+        ).pack(fill=X, pady=(14, 0))
+        row_actions = ttk.Frame(detail, style="Surface.TFrame")
+        row_actions.pack(fill=X, pady=(8, 0))
         ttk.Button(
-            actions,
+            row_actions,
             text="刷新候选",
             command=lambda: self.refresh(force=True),
+            style="Quiet.TButton",
         ).pack(side=LEFT)
         ttk.Button(
-            actions,
-            text="清除全部候选",
+            row_actions,
+            text="清空候选",
             command=self.clear_wechat_candidates,
+            style="Quiet.TButton",
         ).pack(side=LEFT, padx=8)
+
+    def _build_settings_tab(self) -> None:
+        tab = self._new_page("settings")
+        pairing = ttk.LabelFrame(
+            tab,
+            text="浏览器配对",
+            style="Card.TLabelframe",
+            padding=14,
+        )
+        pairing.pack(fill=X, pady=(0, 12))
+        ttk.Label(pairing, textvariable=self.pairing_text, style="Surface.TLabel").pack(
+            side=LEFT
+        )
+        ttk.Button(
+            pairing,
+            text="复制六位码",
+            style="Quiet.TButton",
+            command=self.copy_pairing_code,
+        ).pack(side=RIGHT)
+        ttk.Button(
+            pairing,
+            text="解除配对",
+            style="Quiet.TButton",
+            command=self.unpair,
+        ).pack(side=RIGHT, padx=(0, 8))
+
+        sites = ttk.LabelFrame(
+            tab,
+            text="网站规则",
+            style="Card.TLabelframe",
+            padding=14,
+        )
+        sites.pack(fill=BOTH, expand=True, pady=(0, 12))
+        ttk.Label(
+            sites,
+            textvariable=self.settings_site_summary_text,
+            style="Muted.TLabel",
+        ).pack(fill=X, pady=(0, 8))
+        self.settings_site_tree = ttk.Treeview(
+            sites,
+            columns=("domain", "status", "subdomains", "updated"),
+            show="headings",
+            selectmode="browse",
+            height=5,
+        )
+        for name, label in (
+            ("domain", "域名"),
+            ("status", "状态"),
+            ("subdomains", "子域名"),
+            ("updated", "修改时间"),
+        ):
+            self.settings_site_tree.heading(name, text=label)
+        self.settings_site_tree.column("domain", width=320)
+        self.settings_site_tree.column("status", width=90, anchor="center")
+        self.settings_site_tree.column("subdomains", width=115, anchor="center")
+        self.settings_site_tree.column("updated", width=150, anchor="center")
+        self.settings_site_tree.pack(fill=BOTH, expand=True)
+        site_actions = ttk.Frame(sites, style="Surface.TFrame", padding=(0, 10, 0, 0))
+        site_actions.pack(fill=X)
+        for label, command in (
+            ("新增", self._settings_add_rule),
+            ("启用 / 停用", self._settings_toggle_rule),
+            ("切换子域名", self._settings_toggle_subdomains),
+            ("删除", self._settings_delete_rule),
+            ("清空", self._settings_clear_rules),
+        ):
+            ttk.Button(
+                site_actions,
+                text=label,
+                style="Quiet.TButton",
+                command=command,
+            ).pack(side=LEFT, padx=(0, 7))
+
+        network = ttk.LabelFrame(
+            tab,
+            text="网络",
+            style="Card.TLabelframe",
+            padding=14,
+        )
+        network.pack(fill=X, pady=(0, 12))
+        configuration = self.media.network_proxy.configuration()
+        self.settings_proxy_mode = StringVar(value=configuration["mode"])
+        self.settings_proxy_manual = StringVar(value=configuration["manualUrl"])
+        modes = ttk.Frame(network, style="Surface.TFrame")
+        modes.pack(fill=X)
+        for value, label in (
+            ("auto", "自动（推荐）"),
+            ("direct", "始终直连"),
+            ("manual", "手动 HTTP / Mixed 代理"),
+        ):
+            ttk.Radiobutton(
+                modes,
+                text=label,
+                value=value,
+                variable=self.settings_proxy_mode,
+                command=self._settings_proxy_mode_changed,
+            ).pack(side=LEFT, padx=(0, 18))
+        manual = ttk.Frame(network, style="Surface.TFrame", padding=(0, 10, 0, 0))
+        manual.pack(fill=X)
+        ttk.Label(manual, text="代理地址", style="Muted.TLabel").pack(side=LEFT)
+        self.settings_proxy_entry = ttk.Entry(
+            manual,
+            textvariable=self.settings_proxy_manual,
+        )
+        self.settings_proxy_entry.pack(side=LEFT, fill=X, expand=True, padx=(10, 8))
+        ttk.Button(
+            manual,
+            text="保存并检测",
+            style="Quiet.TButton",
+            command=self._settings_save_proxy,
+        ).pack(side=RIGHT)
+        ttk.Label(
+            network,
+            textvariable=self.settings_proxy_status_text,
+            style="Muted.TLabel",
+        ).pack(fill=X, pady=(8, 0))
+        self._settings_proxy_mode_changed()
+
+        updates = ttk.LabelFrame(
+            tab,
+            text="更新",
+            style="Card.TLabelframe",
+            padding=14,
+        )
+        updates.pack(fill=X)
+        ttk.Label(
+            updates,
+            text="每天最多自动检查一次；发现新版本后必须由你确认下载和安装。",
+            style="Muted.TLabel",
+        ).pack(side=LEFT)
+        self.update_button = ttk.Button(
+            updates,
+            textvariable=self.update_button_text,
+            command=self.check_for_updates,
+            style="Quiet.TButton",
+        )
+        self.update_button.pack(side=RIGHT)
+
+    def _build_diagnostics_tab(self) -> None:
+        tab = self._new_page("diagnostics")
+        card = ttk.LabelFrame(
+            tab,
+            text="脱敏诊断",
+            style="Card.TLabelframe",
+            padding=18,
+        )
+        card.pack(fill=X)
+        self.diagnostics_summary_text = StringVar()
+        ttk.Label(
+            card,
+            text="导出内容只包含版本、状态、计数、错误码和脱敏端点。",
+            style="Section.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(
+            card,
+            text="不会包含令牌、Cookie、完整路径、完整来源网址、网站规则或代理认证信息。",
+            style="Muted.TLabel",
+            wraplength=760,
+            justify=LEFT,
+        ).pack(fill=X, pady=(7, 12))
+        ttk.Label(
+            card,
+            textvariable=self.diagnostics_summary_text,
+            style="Muted.TLabel",
+            wraplength=760,
+            justify=LEFT,
+        ).pack(fill=X, pady=(0, 14))
+        ttk.Button(
+            card,
+            text="导出脱敏诊断",
+            style="Accent.TButton",
+            command=self.export_diagnostics,
+        ).pack(anchor="w")
+        window = ttk.LabelFrame(
+            tab,
+            text="窗口",
+            style="Card.TLabelframe",
+            padding=14,
+        )
+        window.pack(fill=X, pady=(12, 0))
+        if self.external_tray:
+            ttk.Button(
+                window,
+                text="隐藏到右下角",
+                style="Quiet.TButton",
+                command=self.hide,
+            ).pack(side=LEFT)
+        else:
+            ttk.Button(
+                window,
+                text="最小化窗口",
+                style="Quiet.TButton",
+                command=self.root.iconify,
+            ).pack(side=LEFT)
+
+    def _selected_settings_rule(self) -> dict | None:
+        selected = self.settings_site_tree.selection()
+        if not selected:
+            messagebox.showinfo("提示", "请先选择一个网站", parent=self.root)
+            return None
+        return next(
+            (
+                rule
+                for rule in self.database.list_site_rules()
+                if str(rule["domain"]) == selected[0]
+            ),
+            None,
+        )
+
+    def _settings_add_rule(self) -> None:
+        value = simpledialog.askstring(
+            "新增网站",
+            "输入网站域名，例如：www.example.com",
+            parent=self.root,
+        )
+        if not value:
+            return
+        try:
+            domain = normalize_domain(value)
+            self.database.set_site_rule(domain, True, True)
+        except InvalidPageUrl as exc:
+            messagebox.showerror("域名无效", str(exc), parent=self.root)
+            return
+        self._refresh_settings(select_domain=domain)
+        self.refresh(force=True)
+
+    def _settings_toggle_rule(self) -> None:
+        rule = self._selected_settings_rule()
+        if not rule:
+            return
+        self.database.set_site_rule(
+            rule["domain"],
+            not bool(rule["enabled"]),
+            bool(rule["include_subdomains"]),
+        )
+        self._refresh_settings(select_domain=str(rule["domain"]))
+        self.refresh(force=True)
+
+    def _settings_toggle_subdomains(self) -> None:
+        rule = self._selected_settings_rule()
+        if not rule:
+            return
+        self.database.set_site_rule(
+            rule["domain"],
+            bool(rule["enabled"]),
+            not bool(rule["include_subdomains"]),
+        )
+        self._refresh_settings(select_domain=str(rule["domain"]))
+
+    def _settings_delete_rule(self) -> None:
+        rule = self._selected_settings_rule()
+        if not rule:
+            return
+        if not messagebox.askyesno(
+            "删除网站规则",
+            f"删除 {rule['domain']} 后，该网站恢复默认不自动导入。是否继续？",
+            parent=self.root,
+        ):
+            return
+        self.database.delete_site_rule(rule["domain"])
+        self._refresh_settings()
+        self.refresh(force=True)
+
+    def _settings_clear_rules(self) -> None:
+        rules = self.database.list_site_rules()
+        if not rules:
+            messagebox.showinfo("规则列表为空", "当前没有网站规则。", parent=self.root)
+            return
+        if not messagebox.askyesno(
+            "清空网站规则",
+            "所有网站将恢复默认不自动导入；文件、任务和 Eagle 内容不会受到影响。是否继续？",
+            parent=self.root,
+        ):
+            return
+        self.database.clear_site_rules()
+        self._refresh_settings()
+        self.refresh(force=True)
+
+    def _settings_proxy_mode_changed(self) -> None:
+        self.settings_proxy_entry.configure(
+            state="normal" if self.settings_proxy_mode.get() == "manual" else "disabled"
+        )
+
+    def _settings_save_proxy(self) -> None:
+        try:
+            self.media.network_proxy.configure(
+                self.settings_proxy_mode.get(),
+                self.settings_proxy_manual.get(),
+            )
+        except ProxyConfigurationError as exc:
+            messagebox.showerror("代理地址无效", str(exc), parent=self.root)
+            return
+        self.media._health_cache = None
+        self._refresh_settings()
+        self.refresh(force=True)
+
+    def _refresh_settings(self, select_domain: str | None = None) -> None:
+        if not hasattr(self, "settings_site_tree"):
+            return
+        selected = select_domain
+        if not selected and self.settings_site_tree.selection():
+            selected = self.settings_site_tree.selection()[0]
+        rules = self.database.list_site_rules()
+        rows = []
+        for rule in rules:
+            updated = time.strftime(
+                "%Y-%m-%d %H:%M",
+                time.localtime(rule["updated_at"]),
+            )
+            rows.append(
+                (
+                    str(rule["domain"]),
+                    (
+                        rule["domain"],
+                        "已启用" if rule["enabled"] else "已停用",
+                        "包含" if rule["include_subdomains"] else "不包含",
+                        updated,
+                    ),
+                )
+            )
+        _sync_tree_rows(self.settings_site_tree, rows)
+        if selected and self.settings_site_tree.exists(selected):
+            self.settings_site_tree.selection_set(selected)
+            self.settings_site_tree.see(selected)
+        enabled = sum(1 for rule in rules if rule["enabled"])
+        self.settings_site_summary_text.set(
+            f"共 {len(rules)} 条规则 · 已启用 {enabled} 条 · 未列出的网站默认不自动导入"
+        )
+        configuration = self.media.network_proxy.configuration()
+        self.settings_proxy_mode.set(configuration["mode"])
+        self.settings_proxy_manual.set(configuration["manualUrl"])
+        self._settings_proxy_mode_changed()
+        status = self.media.network_proxy.status()
+        self.settings_proxy_status_text.set(
+            f"检测来源：{status.get('source') or '无'} · 端点：{status.get('endpoint') or '直连'} · {status['summary']}"
+        )
+
+    def _refresh_diagnostics_summary(self) -> None:
+        if not hasattr(self, "diagnostics_summary_text"):
+            return
+        health = self.wechat_channels.health()
+        self.diagnostics_summary_text.set(
+            f"应用 v{APP_VERSION} · 数据库 schema 6 · "
+            f"媒体任务 {len(self.plan_rows)} 条 · 视频号状态 {health.get('state') or 'off'}"
+        )
 
     def run(self) -> None:
         self.root.mainloop()
@@ -936,7 +1746,7 @@ class MainWindow:
             self.show()
         if self.control_signals.poll_rules():
             self.show()
-            self.show_site_rules()
+            self._show_page("settings")
         if self.control_signals.poll_update():
             self.show()
             self.check_for_updates()
@@ -1103,14 +1913,20 @@ class MainWindow:
         if counts.get("failed_permanent", 0):
             status_parts.append(f"失败 {counts['failed_permanent']}")
         self.status_text.set(" · ".join(status_parts))
+        self.eagle_status_text.set(
+            "● Eagle 已连接" if self.eagle_connected else "○ Eagle 未连接"
+        )
+        self.service_status_text.set(f"● 本机服务 {host}:{port}")
         enabled_sites = dashboard["enabled_site_count"]
         self.site_rules_text.set(f"网站规则（已开启 {enabled_sites}）")
         proxy_status = self.media.network_proxy.status()
         self.network_proxy_text.set(f"网络：{proxy_status['summary']}")
         if self.pairing.paired_origin:
             self.pairing_text.set("Chrome 已安全配对")
+            self.chrome_status_text.set("● Chrome 已配对")
         else:
             self.pairing_text.set(f"Chrome 配对码：{self.pairing.pairing_code}")
+            self.chrome_status_text.set("○ Chrome 待配对")
 
         self._refresh_media_tasks(plans, force)
         self._refresh_wechat_candidates(wechat_health, force)
@@ -1143,6 +1959,11 @@ class MainWindow:
             if selected and self.job_tree.exists(selected):
                 self.job_tree.selection_set(selected)
             self.last_jobs_revision = revision
+        self._update_idm_actions()
+        if self.current_page == "settings":
+            self._refresh_settings()
+        if self.current_page == "diagnostics":
+            self._refresh_diagnostics_summary()
         self.refresh_after_id = self.root.after(
             1000 if media_active_count or wechat_health.get("running") else 4000,
             self.refresh,
@@ -1201,9 +2022,6 @@ class MainWindow:
                 qualities = "、".join(str(variant.get("quality") or "自动") for variant in variants[:6])
                 if len(variants) > 6:
                     qualities += f" 等 {len(variants)} 档"
-                updated = time.strftime(
-                    "%H:%M:%S", time.localtime(float(item.get("updatedAt") or 0))
-                )
                 rows.append(
                     (
                         str(item["objectId"]),
@@ -1212,7 +2030,6 @@ class MainWindow:
                         str(item.get("author") or "未知作者"),
                         self._duration_text(item.get("durationMs")),
                         qualities or "自动质量",
-                        updated,
                     ),
                     )
                 )
@@ -1376,7 +2193,7 @@ class MainWindow:
         except Exception as exc:
             messagebox.showerror("创建任务失败", str(exc), parent=self.root)
             return
-        self.notebook.select(0)
+        self._show_page("media")
         self.refresh(force=True)
 
     def clear_wechat_candidates(self) -> None:
@@ -1405,31 +2222,20 @@ class MainWindow:
         if force or revision != self.last_plans_revision:
             rows = []
             for plan in plans:
-                status = str(plan.get("status") or "")
-                job_status = str(plan.get("job_status") or "")
-                if status == "ready_to_import" and job_status == "waiting_eagle":
-                    status_label = "等待 Eagle"
-                elif status == "ready_to_import" and job_status == "failed_permanent":
-                    status_label = "Eagle 导入失败"
-                else:
-                    status_label = MEDIA_STATUS_TEXT.get(status, status)
+                view = _media_plan_view(plan)
                 source = "未记录"
                 if plan.get("page_url"):
                     source = urlsplit(str(plan["page_url"])).hostname or "已记录"
                 title = str(plan.get("title") or plan.get("output_name") or "未命名任务")
-                updated = time.strftime(
-                    "%Y-%m-%d %H:%M", time.localtime(float(plan.get("updated_at") or 0))
-                )
                 rows.append(
                     (
                         str(plan["id"]),
                         (
-                        status_label,
-                        f"{float(plan.get('progress') or 0):.0f}%",
-                        title,
-                        source,
-                        updated,
-                    ),
+                            view["status_label"],
+                            title,
+                            source,
+                            f"{view['progress']:.0f}%",
+                        ),
                     )
                 )
             _sync_tree_rows(self.plan_tree, rows)
@@ -1460,24 +2266,25 @@ class MainWindow:
             self.preview_image = None
             self.preview_cache.clear()
             self.preview_label.configure(image="", text="暂无预览")
+            self._update_plan_actions(None)
             return
-        status = str(plan.get("status") or "")
-        status_label = MEDIA_STATUS_TEXT.get(status, status)
-        if status == "ready_to_import" and plan.get("job_status") == "waiting_eagle":
-            status_label = "等待 Eagle"
-        elif status == "ready_to_import" and plan.get("job_status") == "failed_permanent":
-            status_label = "Eagle 导入失败"
+        view = _media_plan_view(plan)
         detail = str(plan.get("phase_detail") or "")
         error = str(plan.get("error_message") or plan.get("job_error") or "")
         self.plan_title_text.set(str(plan.get("title") or plan.get("output_name") or "未命名任务"))
-        self.plan_status_text.set(" · ".join(value for value in (status_label, detail, error) if value))
+        self.plan_status_text.set(
+            " · ".join(
+                value for value in (view["status_label"], detail, error) if value
+            )
+        )
         source = str(plan.get("page_url") or "未记录来源网页")
         self.plan_source_text.set(f"来源：{source}")
-        downloaded = _display_bytes(plan.get("downloaded_bytes"))
-        total = _display_bytes(plan.get("total_bytes"))
         output = str(plan.get("final_path") or plan.get("output_name") or "")
-        self.plan_file_text.set(f"文件：{output} · 已处理 {downloaded} / {total}")
-        self.plan_progress.configure(value=max(0.0, min(100.0, float(plan.get("progress") or 0))))
+        self.plan_file_text.set(
+            f"文件：{output} · 已处理 {view['processed']} / {view['total']}"
+        )
+        self.plan_progress.configure(value=view["progress"])
+        self._update_plan_actions(view)
         preview = Path(str(plan.get("preview_path") or ""))
         image = self.preview_cache.resolve(preview)
         if image is not None:
@@ -1486,6 +2293,22 @@ class MainWindow:
             return
         self.preview_image = None
         self.preview_label.configure(image="", text="下载完成后显示视频预览")
+
+    def _update_plan_actions(self, view: dict | None) -> None:
+        if not hasattr(self, "plan_action_buttons"):
+            return
+        plan = self.selected_plan()
+        final_path = str(plan.get("final_path") or "") if plan else ""
+        final_exists = bool(final_path and Path(final_path).is_file())
+        permissions = {
+            "stop": bool(view and view["active"]),
+            "retry": bool(view and view["can_retry"]),
+            "import": bool(view and view["can_import_existing"] and final_exists),
+            "open": bool(view and view["can_open_output"] and final_exists),
+            "source": bool(view and view["can_open_source"]),
+        }
+        for name, button in self.plan_action_buttons.items():
+            button.configure(state="normal" if permissions[name] else "disabled")
 
     def stop_selected_plan(self) -> None:
         plan = self.selected_plan()
@@ -1512,11 +2335,13 @@ class MainWindow:
 
     def open_plan_location(self) -> None:
         plan = self.selected_plan()
-        path = Path(str(plan.get("final_path") or "")) if plan else None
-        if not path or not path.is_file():
+        if not plan or not plan.get("final_path"):
             messagebox.showinfo("文件尚未完成", "任务完成下载后才能打开文件位置")
             return
-        subprocess.Popen(["explorer.exe", "/select,", str(path)])
+        try:
+            self.media.open_plan_output(str(plan["id"]))
+        except Exception as exc:
+            messagebox.showerror("无法打开文件位置", str(exc), parent=self.root)
 
     def import_selected_plan(self) -> None:
         plan = self.selected_plan()
@@ -1545,6 +2370,28 @@ class MainWindow:
     def selected_job(self) -> dict | None:
         job_id = self.selected_job_id()
         return self.database.get_job(job_id) if job_id else None
+
+    def _update_idm_actions(self) -> None:
+        if not hasattr(self, "idm_action_buttons"):
+            return
+        job = self.selected_job()
+        status = str(job.get("status") or "") if job else ""
+        retryable = status in {
+            "waiting_source",
+            "queued",
+            "waiting_eagle",
+            "retry",
+            "failed_permanent",
+        }
+        file_path = str(job.get("file_path") or "") if job else ""
+        permissions = {
+            "retry": retryable,
+            "open": bool(file_path and Path(file_path).exists()),
+            "source": bool(job and job.get("source_url")),
+            "assign": bool(job and status != "skipped_duplicate"),
+        }
+        for name, button in self.idm_action_buttons.items():
+            button.configure(state="normal" if permissions[name] else "disabled")
 
     def retry_selected(self) -> None:
         job_id = self.selected_job_id()
@@ -1716,10 +2563,7 @@ class MainWindow:
         self.root.update()
 
     def show_site_rules(self) -> None:
-        if self.site_rules_window and self.site_rules_window.window.winfo_exists():
-            self.site_rules_window.focus()
-            return
-        self.site_rules_window = SiteRulesWindow(self)
+        self._show_page("settings")
 
     def show_proxy_settings(self) -> None:
         if (

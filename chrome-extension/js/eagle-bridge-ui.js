@@ -34,7 +34,8 @@
         mediaType: "媒体类型", allTypes: "全部类型", otherType: "其他资源", extensionFilter: "扩展名（可用逗号分隔）", minimumSize: "最小大小（MB）",
         urlRegex: "网址正则", unsafeRegex: "正则表达式无效或可能造成卡顿，已停止应用。", hideDuplicateNames: "隐藏同名重复资源", showSegments: "显示未关联资源与播放分片", hiddenSegments: "已隐藏 {count} 个未关联播放资源",
         batchPartial: "已启动 {count} 个任务，另有任务失败。", actualFrame: "当前视频画面",
-        outputLocation: "保存位置：{path}", openFolder: "打开所在文件夹", folderOpened: "已打开下载文件夹", importExisting: "导入 Eagle，成功后删除本机文件", importQueued: "已加入 Eagle 导入队列；成功后将删除本机文件", segmentOnlyTitle: "无法确认归属的播放资源", syncInterrupted: "任务状态同步中断；本机下载仍可能继续，正在自动重连。"
+        outputLocation: "保存位置：{path}", openFolder: "打开所在文件夹", folderOpened: "已打开下载文件夹", openSource: "打开来源网页", importExisting: "导入 Eagle，成功后删除本机文件", importQueued: "已加入 Eagle 导入队列；成功后将删除本机文件", segmentOnlyTitle: "无法确认归属的播放资源", syncInterrupted: "任务状态同步中断；本机下载仍可能继续，正在自动重连。",
+        technicalInfo: "技术信息", processed: "已处理 {current} / {total}", invalidOutputName: "请输入有效的 Windows 文件名"
     };
     const zhHant = {
         product: "下載中轉站", media: "媒體", tasks: "任務", refresh: "重新整理", settings: "設定",
@@ -46,7 +47,7 @@
         batch: "批次", exitBatch: "退出批次", batchTitle: "批次操作", batchSelected: "已選擇 {count} 個內容", selectAll: "全選", invert: "反選",
         batchImport: "批次匯入（成功後刪除本機檔案）", batchDownload: "批次僅下載", mediaType: "媒體類型", allTypes: "全部類型", otherType: "其他資源",
         activeTaskCount: "{active} 個進行中，共 {count} 個任務", taskCount: "共 {count} 個任務",
-        qualityCountLabel: "影片品質（本影片 {count} 檔）", qualitySourceHint: "檔位來自目前影片；其他影片會依來源網站實際提供的品質變化。", showSegments: "顯示未關聯資源與播放分片", hiddenSegments: "已隱藏 {count} 個未關聯播放資源", importExisting: "匯入 Eagle，成功後刪除本機檔案", importQueued: "已加入 Eagle 匯入佇列；成功後將刪除本機檔案", segmentOnlyTitle: "無法確認歸屬的播放資源"
+        qualityCountLabel: "影片品質（本影片 {count} 檔）", qualitySourceHint: "檔位來自目前影片；其他影片會依來源網站實際提供的品質變化。", showSegments: "顯示未關聯資源與播放分片", hiddenSegments: "已隱藏 {count} 個未關聯播放資源", importExisting: "匯入 Eagle，成功後刪除本機檔案", importQueued: "已加入 Eagle 匯入佇列；成功後將刪除本機檔案", segmentOnlyTitle: "無法確認歸屬的播放資源", openSource: "開啟來源網頁", technicalInfo: "技術資訊", processed: "已處理 {current} / {total}", invalidOutputName: "請輸入有效的 Windows 檔案名稱"
     };
     const en = {
         product: "Download Transfer Station", media: "Media", tasks: "Tasks", refresh: "Refresh", settings: "Settings",
@@ -74,7 +75,8 @@
         mediaType: "Media type", allTypes: "All types", otherType: "Other", extensionFilter: "Extensions (comma-separated)", minimumSize: "Minimum size (MB)",
         urlRegex: "URL regular expression", unsafeRegex: "This expression is invalid or potentially unsafe and was not applied.", hideDuplicateNames: "Hide duplicate filenames", showSegments: "Show unbound resources and playback fragments", hiddenSegments: "{count} unbound playback resources hidden",
         batchPartial: "Started {count} tasks; one or more failed.",
-        outputLocation: "Saved to: {path}", openFolder: "Open folder", folderOpened: "Download folder opened", importExisting: "Import to Eagle, then delete local file", importQueued: "Queued for Eagle import; the local file will be deleted after success", segmentOnlyTitle: "Playback resource with unknown ownership", syncInterrupted: "Task sync was interrupted. The desktop download may still continue; reconnecting automatically."
+        outputLocation: "Saved to: {path}", openFolder: "Open folder", folderOpened: "Download folder opened", openSource: "Open source page", importExisting: "Import to Eagle, then delete local file", importQueued: "Queued for Eagle import; the local file will be deleted after success", segmentOnlyTitle: "Playback resource with unknown ownership", syncInterrupted: "Task sync was interrupted. The desktop download may still continue; reconnecting automatically.",
+        technicalInfo: "Technical information", processed: "Processed {current} / {total}", invalidOutputName: "Enter a valid Windows filename"
     };
 
     const uiLanguage = String(chrome.i18n?.getUILanguage?.() || "zh-CN").toLowerCase();
@@ -185,6 +187,30 @@
         try { return new URL(state.tab?.url || "").hostname; } catch (_error) { return ""; }
     }
 
+    function technicalUrl(value) {
+        try {
+            const url = new URL(String(value || ""));
+            url.search = "";
+            url.hash = "";
+            return url.href;
+        } catch (_error) {
+            return "";
+        }
+    }
+
+    function taskTime(value) {
+        const timestamp = Number(value || 0);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
+        try {
+            return new Intl.DateTimeFormat(
+                locale === "zhHant" ? "zh-Hant" : locale === "en" ? "en" : "zh-CN",
+                { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }
+            ).format(new Date(timestamp * 1000));
+        } catch (_error) {
+            return "";
+        }
+    }
+
     function showToast(message, kind = "info", timeout = 2400) {
         const element = root.querySelector("#bridgeToast");
         if (!element) return;
@@ -203,9 +229,14 @@
         root.innerHTML = `
             <div class="bridge-app">
                 <header class="bridge-header">
-                    <h1 class="bridge-brand">${escapeHtml(t("product"))}</h1>
-                    <span class="bridge-header-divider" aria-hidden="true"></span>
-                    <span id="bridgeDomain" class="bridge-domain"></span>
+                    <div class="bridge-brand-lockup">
+                        <img class="bridge-brand-icon" src="${escapeHtml(asset("icons/icon-32.png"))}" alt="">
+                        <h1 class="bridge-brand">${escapeHtml(t("product"))}</h1>
+                    </div>
+                    <div class="bridge-page-context">
+                        <strong id="bridgePageTitle" class="bridge-page-title"></strong>
+                        <span id="bridgeDomain" class="bridge-domain"></span>
+                    </div>
                     <button id="bridgeConnection" class="bridge-connection" data-action="settings" data-state="checking" aria-label="${escapeHtml(t("settings"))}">
                         <span class="bridge-connection-dot" aria-hidden="true"></span><span id="bridgeConnectionLabel">${escapeHtml(t("checking"))}</span>
                     </button>
@@ -249,8 +280,13 @@
 
     function patchHeader() {
         const domain = root.querySelector("#bridgeDomain");
+        const pageTitle = root.querySelector("#bridgePageTitle");
         const connection = root.querySelector("#bridgeConnection");
         const label = root.querySelector("#bridgeConnectionLabel");
+        if (pageTitle) {
+            pageTitle.textContent = state.tab?.title || t("currentPage");
+            pageTitle.title = state.tab?.title || "";
+        }
         if (domain) {
             domain.textContent = currentDomain() || t("currentPage");
             domain.title = state.tab?.url || "";
@@ -392,7 +428,11 @@
         }
         const selection = state.selections.get(group.id);
         const draft = state.drafts.get(group.id) || { outputName: logic.defaultOutputName(group, selection) };
-        const validation = logic.validateSelection(group, selection, { paired: state.paired, importToEagle: true });
+        const selectionValidation = logic.validateSelection(group, selection, { paired: state.paired, importToEagle: true });
+        const outputValidation = logic.normalizeOutputName(draft.outputName);
+        const validation = selectionValidation.ok && !outputValidation.ok
+            ? { ok: false, message: outputValidation.message || t("invalidOutputName") }
+            : selectionValidation;
         if (group.segmentOnly || group.technicalOnly) {
             inspector.innerHTML = `<div class="bridge-segment-inspector" role="status">
                 <div class="bridge-segment-glyph">技术</div>
@@ -431,6 +471,16 @@
                 : `<label class="bridge-field"><span class="bridge-field-label">${escapeHtml(t("selectVersion"))}</span><select class="bridge-field-select" data-selection="directId">${directOptions}</select></label>`);
         }
         const resolverCandidate = selection.mode === "resolver" ? selected[0] : null;
+        const technicalRows = selected.map(item => {
+            const summary = [
+                item.kind?.toUpperCase(),
+                item.extension?.toUpperCase(),
+                item.codec,
+                item.sourceDomain,
+                technicalUrl(item.url)
+            ].filter(Boolean).join(" · ");
+            return `<div class="bridge-technical-row">${escapeHtml(summary)}</div>`;
+        }).join("");
         const summaryText = selection.mode === "resolver"
             ? resolverCandidate?.resolver === "youtube"
                 ? "所选画质将由本机软件解析、下载并合并音轨。"
@@ -449,9 +499,10 @@
             ${validation.ok ? "" : `<div id="bridgeSelectionError" class="bridge-field-error" role="alert">${escapeHtml(validation.message)}</div>`}
             <label class="bridge-field"><span class="bridge-field-label">${escapeHtml(t("filename"))}</span><input class="bridge-field-input" data-draft="outputName" maxlength="160" value="${escapeHtml(draft.outputName)}"></label>
             <details class="bridge-advanced">
-                <summary>${escapeHtml(t("advanced"))}</summary>
+                <summary>${escapeHtml(t("technicalInfo"))}</summary>
                 <div class="bridge-advanced-body">
                     ${subtitles}
+                    <div class="bridge-technical-list">${technicalRows}</div>
                     <div class="bridge-technical-actions">
                         <button class="bridge-small-button" data-candidate-action="copy">${escapeHtml(t("copyLink"))}</button>
                     </div>
@@ -505,11 +556,12 @@
                     <div class="bridge-task-copy">
                         <div class="bridge-task-name" title="${escapeHtml(task.title)}">${escapeHtml(task.title)}</div>
                         <div class="bridge-task-state"><span>${escapeHtml(task.statusLabel)}</span><span class="bridge-progress-track" aria-label="${escapeHtml(`${Math.round(task.progress)}%`)}"><span class="bridge-progress-value" style="width:${task.progress}%"></span></span><span>${Math.round(task.progress)}%</span></div>
+                        <div class="bridge-task-meta"><span>${escapeHtml(t("processed", { current: task.processed, total: task.total }))}</span>${task.createdAt ? `<span>${escapeHtml(taskTime(task.createdAt))}</span>` : ""}</div>
                         ${task.detail ? `<div class="bridge-task-detail">${escapeHtml(task.detail)}</div>` : ""}
                         ${task.finalPath ? `<div class="bridge-task-path" title="${escapeHtml(task.finalPath)}">${escapeHtml(t("outputLocation", { path: task.finalPath }))}</div>` : ""}
                         ${task.error ? `<div class="bridge-task-error">${escapeHtml(task.error)}</div>` : ""}
                     </div>
-                    <div class="bridge-task-actions">${task.canImportExisting ? `<button class="bridge-small-button bridge-import-existing" data-action="import-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("importExisting"))}</button>` : ""}${task.canOpenOutput ? `<button class="bridge-small-button" data-action="open-task-folder" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openFolder"))}</button>` : ""}${task.active ? `<button class="bridge-small-button" data-action="stop-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("stop"))}</button>` : task.status === "retry" ? `<button class="bridge-small-button" data-action="retry-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("retry"))}</button>` : task.status === "import_failed" || task.status === "failed_permanent" ? `<button class="bridge-small-button" data-view="media">${escapeHtml(t("backToMedia"))}</button>` : ""}</div>
+                    <div class="bridge-task-actions">${task.canImportExisting ? `<button class="bridge-small-button bridge-import-existing" data-action="import-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("importExisting"))}</button>` : ""}${task.canOpenOutput ? `<button class="bridge-small-button" data-action="open-task-folder" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openFolder"))}</button>` : ""}${task.canOpenSource ? `<button class="bridge-small-button" data-action="open-task-source" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openSource"))}</button>` : ""}${task.active ? `<button class="bridge-small-button" data-action="stop-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("stop"))}</button>` : task.canRetry ? `<button class="bridge-small-button" data-action="retry-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("retry"))}</button>` : ["import_failed", "failed_permanent", "needs_rebuild"].includes(task.status) ? `<button class="bridge-small-button" data-view="media">${escapeHtml(t("backToMedia"))}</button>` : ""}</div>
                 </article>`).join("") : `<div class="bridge-empty-state"><h2>${escapeHtml(t("noTasks"))}</h2></div>`}</div>
         </div>`;
     }
@@ -594,7 +646,15 @@
         const selection = state.selections.get(group?.id);
         const validation = logic.validateSelection(group, selection, { paired: state.paired, importToEagle });
         if (!validation.ok) throw new Error(validation.message);
-        const outputName = state.drafts.get(group.id)?.outputName || logic.defaultOutputName(group, selection);
+        const outputNameResult = logic.normalizeOutputName(
+            state.drafts.get(group.id)?.outputName || logic.defaultOutputName(group, selection)
+        );
+        if (!outputNameResult.ok) throw new Error(outputNameResult.message || t("invalidOutputName"));
+        const outputName = outputNameResult.value;
+        state.drafts.set(group.id, {
+            ...(state.drafts.get(group.id) || {}),
+            outputName
+        });
         const response = await send({
             eagleBridge: "createPlan",
             items: selectedRawItemsForGroup(group),
@@ -949,6 +1009,17 @@
         }
     }
 
+    async function openTaskSource(planId) {
+        const task = state.plans.map(plan => logic.taskView(plan))
+            .find(item => item.id === String(planId || ""));
+        if (!task?.pageUrl) return;
+        try {
+            await chrome.tabs.create({ url: task.pageUrl });
+        } catch (error) {
+            showToast(error.message || error, "error", 4200);
+        }
+    }
+
     async function importExistingTask(planId) {
         try {
             const response = await send({ eagleBridge: "importPlan", planId });
@@ -1083,6 +1154,7 @@
         else if (action === "retry-task") retryTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "import-task") importExistingTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "open-task-folder") openTaskFolder(event.target.closest("[data-plan-id]")?.dataset.planId);
+        else if (action === "open-task-source") openTaskSource(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "pair") pair();
         else settingsAction(action).catch(error => showToast(error.message || error, "error"));
     });

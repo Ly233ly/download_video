@@ -646,6 +646,13 @@ async function testValidatedTaskStart() {
     assert.strictEqual(completed.canImportExisting, true, "a download-only result must be importable without downloading again");
     assert.strictEqual(completed.finalPath.endsWith("finished.mp4"), true);
     assert.strictEqual(completed.hasLocalPreview, true);
+
+    const validating = logic.taskView({ status: "validating", progress: 100 });
+    assert.strictEqual(validating.progress, 99, "validation must not look complete before local delivery");
+    const named = logic.normalizeOutputName("bad<>name.mp4");
+    assert.strictEqual(named.ok, true);
+    assert.strictEqual(named.value, "bad__name.mp4");
+    assert.strictEqual(logic.normalizeOutputName("...").ok, false);
 }
 
 {

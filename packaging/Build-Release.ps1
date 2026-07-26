@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Version = "1.3.1",
+    [string]$Version = "1.4.0",
     [switch]$SkipTests,
     [switch]$SkipFfmpegFetch,
     [switch]$SkipYoutubeResolverFetch
@@ -43,8 +43,8 @@ function Invoke-Checked([string]$Label, [scriptblock]$Action) {
     if ($LASTEXITCODE -ne 0) { throw "$Label 失败，退出码 $LASTEXITCODE" }
 }
 
-if ($Version -ne "1.3.1") {
-    throw "本分支只允许构建已经同步版本号的 1.3.1。"
+if ($Version -ne "1.4.0") {
+    throw "本分支只允许构建已经同步版本号的 1.4.0。"
 }
 
 if (-not $SkipTests) {
@@ -97,7 +97,7 @@ Invoke-Checked "安装固定 PyInstaller 6.21.0" { & $venvPython -m pip install 
 $installedVersion = (& $venvPython -m PyInstaller --version).Trim()
 if ($installedVersion -ne "6.21.0") { throw "PyInstaller 版本错误：$installedVersion" }
 
-$buildRoot = Reset-GeneratedDirectory (Join-Path $projectRoot "build\release-1.3.1")
+$buildRoot = Reset-GeneratedDirectory (Join-Path $projectRoot "build\release-1.4.0")
 $pyiDist = Join-Path $buildRoot "dist"
 $pyiWork = Join-Path $buildRoot "work"
 New-Item -ItemType Directory -Path $pyiDist, $pyiWork -Force | Out-Null
@@ -170,7 +170,7 @@ New-Item -ItemType Directory -Path (Join-Path $sourceRoot "installer"), (Join-Pa
 Copy-Item -LiteralPath (Join-Path $projectRoot "installer\Setup.cs"), (Join-Path $projectRoot "installer\THIRD_PARTY_NOTICES.txt"), (Join-Path $projectRoot "installer\给接收者的使用说明.txt") -Destination (Join-Path $sourceRoot "installer") -Force
 Copy-Item -Path (Join-Path $projectRoot "packaging\*.ps1"), (Join-Path $projectRoot "packaging\*.py"), (Join-Path $projectRoot "packaging\*.spec"), (Join-Path $projectRoot "packaging\*.txt") -Destination (Join-Path $sourceRoot "packaging") -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "media-tools\README.md"), (Join-Path $projectRoot "media-tools\FFMPEG-VERSION.json"), (Join-Path $projectRoot "media-tools\YOUTUBE-RESOLVER-VERSION.json") -Destination (Join-Path $sourceRoot "media-tools") -Force
-foreach ($file in @(".gitignore", "ACCEPTANCE.md", "AGENTS.md", "CONTEXT.md", "COPYING.md", "DEVELOPMENT.md", "LICENSE", "README.md", "SECURITY.md", "STATUS.md", "TASKS.md", "pyproject.toml")) {
+foreach ($file in @(".gitignore", "ACCEPTANCE.md", "AGENTS.md", "CONTEXT.md", "COPYING.md", "DEVELOPMENT.md", "design-qa.md", "LICENSE", "README.md", "SECURITY.md", "STATUS.md", "TASKS.md", "pyproject.toml")) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $sourceRoot -Force
 }
 

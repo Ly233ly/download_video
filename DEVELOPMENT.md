@@ -7,9 +7,9 @@
 - Chrome 扩展为 Manifest V3；Eagle 只通过官方本地 Web API 访问。
 - 发行后端使用 PyInstaller 6.21.0 `onedir` 打包，包含 Python 3.14.4 和 Tcl/Tk。
 
-## 1.3.1 实现边界
+## 1.4.0 实现边界
 
-1.0.0 曾按 [cat-catch 迁移总计划](docs/CAT_CATCH_MIGRATION_PLAN.md) 和 [功能对照矩阵](docs/FEATURE_PARITY_MATRIX.md) 完成研究与迁移。固定上游源码保存在 `third_party/cat-catch/source/` 作为 GPL 对应源码；1.3.1 活动浏览器载荷不再复制完整上游工具箱。浏览器只负责发现和提交；无直链候选由桌面固定 yt-dlp/Deno 解析，FFmpeg 继续执行实际下载与合并。桌面网络层默认按任务读取 Windows 系统代理，并将同一 HTTP 代理显式传给 FFmpeg/ffprobe、yt-dlp 与字幕请求；Eagle、本机 API 和控制信号不使用该代理。
+1.0.0 曾按 [cat-catch 迁移总计划](docs/CAT_CATCH_MIGRATION_PLAN.md) 和 [功能对照矩阵](docs/FEATURE_PARITY_MATRIX.md) 完成研究与迁移。固定上游源码保存在 `third_party/cat-catch/source/` 作为 GPL 对应源码；1.4.0 活动浏览器载荷不再复制完整上游工具箱。浏览器只负责发现和提交；无直链候选由桌面固定 yt-dlp/Deno 解析，FFmpeg 继续执行实际下载与合并。桌面网络层默认按任务读取 Windows 系统代理，并将同一 HTTP 代理显式传给 FFmpeg/ffprobe、yt-dlp 与字幕请求；Eagle、本机 API 和控制信号不使用该代理。
 
 - 浏览器捕获层只负责发现资源、形成媒体候选组、展示选择并经认证回环接口提交计划；专用 bridge 不调用 `chrome.downloads`。
 - 本机后端负责所有普通直链、分轨、HLS/DASH 下载，以及持久状态、FFmpeg/ffprobe、输出验证和现有 Eagle 导入。
@@ -42,7 +42,7 @@
 
 ## 发行结构
 
-`release/下载中转站-1.3.1-Windows-x64/下载中转站-1.3.1` 包含：
+`release/下载中转站-1.4.0-Windows-x64/下载中转站-1.4.0` 包含：
 
 - `一键安装.exe`：接收者唯一需要运行的入口；
 - `app/`：安装器载荷，包括两个 C# 启动器、Chrome/Firefox 扩展、FFmpeg/ffprobe、yt-dlp/Deno 和独立后端；

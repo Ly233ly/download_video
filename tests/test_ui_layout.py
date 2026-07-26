@@ -13,6 +13,7 @@ from idm_eagle_bridge.ui import (
     _AsyncProbe,
     _PreviewImageCache,
     _VerticalScrolledFrame,
+    _media_plan_view,
     _sync_tree_rows,
 )
 
@@ -57,6 +58,29 @@ class _FakeTree:
 
 
 class UiPerformanceHelpersTests(unittest.TestCase):
+    def test_media_plan_view_keeps_incomplete_phases_below_one_hundred(self) -> None:
+        validating = _media_plan_view(
+            {
+                "id": "plan-1",
+                "status": "validating",
+                "progress": 100,
+                "downloaded_bytes": 2048,
+                "total_bytes": 2048,
+            }
+        )
+        completed = _media_plan_view(
+            {
+                "id": "plan-2",
+                "status": "completed_local",
+                "progress": 82,
+                "final_path": r"C:\Downloads\video.mp4",
+            }
+        )
+
+        self.assertEqual(validating["progress"], 99)
+        self.assertEqual(completed["progress"], 100)
+        self.assertTrue(completed["can_import_existing"])
+
     def test_tree_sync_only_mutates_changed_rows(self) -> None:
         tree = _FakeTree()
         _sync_tree_rows(

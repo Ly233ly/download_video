@@ -17,12 +17,12 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("下载中转站一键安装程序")]
 [assembly: AssemblyProduct("下载中转站")]
 [assembly: AssemblyCompany("下载中转站")]
-[assembly: AssemblyVersion("1.3.1.0")]
-[assembly: AssemblyFileVersion("1.3.1.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 internal static class SetupProgram
 {
-    internal const string Version = "1.3.1";
+    internal const string Version = "1.4.0";
     internal const string ProductName = "下载中转站";
     internal const string QuitEventName = @"Local\IdmEagleAutoImportQuit";
     internal const string DefaultIdmRegistry = @"Software\DownloadManager";

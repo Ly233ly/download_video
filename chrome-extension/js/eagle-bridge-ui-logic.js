@@ -13,7 +13,7 @@
         "selected", "creating", "queued", "downloading", "merging",
         "validating", "ready_to_import", "waiting_eagle", "importing"
     ]);
-    const TERMINAL_TASK_STATUSES = new Set(["imported", "completed_local", "retry", "import_failed", "failed_permanent", "canceled", "blocked_drm"]);
+    const TERMINAL_TASK_STATUSES = new Set(["imported", "completed_local", "retry", "import_failed", "failed_permanent", "canceled", "blocked_drm", "needs_rebuild"]);
 
     function number(value) {
         const parsed = Number(value);
@@ -607,6 +607,22 @@
         return `${base}.${container}`;
     }
 
+    function normalizeOutputName(value) {
+        const name = cleanText(value, 180)
+            .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+            .replace(/[. ]+$/g, "")
+            .slice(0, 160);
+        const stem = name.replace(/\.[a-z0-9]{1,10}$/i, "");
+        if (!name || !stem || /^[. ]+$/.test(stem)) {
+            return {
+                ok: false,
+                value: "",
+                message: "请输入有效的 Windows 文件名"
+            };
+        }
+        return { ok: true, value: name, message: "" };
+    }
+
     function validateSelection(group, selection, options = {}) {
         if (!group) return { ok: false, code: "no_group", message: "请选择一个媒体内容" };
         if (group.drm) return { ok: false, code: "blocked_drm", message: "检测到 DRM 保护，无法下载或合并" };
@@ -742,12 +758,15 @@
             ready_to_import: "等待导入 Eagle", waiting_eagle: "正在等待 Eagle",
             importing: "正在导入 Eagle", imported: "已导入 Eagle", completed_local: "已下载到本机",
             retry: "下载失败", import_failed: "Eagle 导入失败",
-            failed_permanent: "无法继续", canceled: "已停止", blocked_drm: "DRM 已阻断"
+            failed_permanent: "无法继续", canceled: "已停止", blocked_drm: "DRM 已阻断",
+            needs_rebuild: "需要回到来源重建"
         };
         let progress = Math.max(0, Math.min(100, number(plan?.progress)));
         if (status === "imported" || status === "completed_local") progress = 100;
+        else progress = Math.min(progress, 99);
         const finalPath = String(plan?.final_path || plan?.finalPath || "").replaceAll("\x00", "").slice(0, 1200);
         const previewPath = String(plan?.preview_path || plan?.previewPath || "").replaceAll("\x00", "").slice(0, 1200);
+        const pageUrl = safeUrl(plan?.page_url || plan?.pageUrl);
         return {
             id: cleanText(plan?.id, 100),
             title: cleanText(plan?.output_name || plan?.outputName || plan?.title, 220) || "未命名任务",
@@ -758,10 +777,15 @@
             terminal: TERMINAL_TASK_STATUSES.has(status),
             error: cleanText(plan?.error_message || plan?.job_error, 500),
             detail: cleanText(plan?.phase_detail, 220),
+            processed: formatBytes(plan?.downloaded_bytes || plan?.downloadedBytes),
+            total: formatBytes(plan?.total_bytes || plan?.totalBytes),
             thumbnailUrl: safeUrl(plan?.thumbnail_url || plan?.thumbnailUrl),
             finalPath,
+            pageUrl,
             canOpenOutput: Boolean(finalPath),
+            canOpenSource: Boolean(pageUrl),
             canImportExisting: status === "completed_local" && Boolean(finalPath),
+            canRetry: status === "retry",
             hasLocalPreview: Boolean(previewPath),
             createdAt: number(plan?.created_at || plan?.createdAt),
             raw: plan
@@ -811,6 +835,7 @@
         validateSelection,
         outputContainer,
         defaultOutputName,
+        normalizeOutputName,
         formatBytes,
         formatDuration,
         qualityCatalogInfo,
