@@ -17,6 +17,8 @@ from typing import Callable
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from urllib.error import HTTPError
+
 from .constants import APP_VERSION
 from .paths import ensure_data_dir
 
@@ -154,6 +156,10 @@ def check_for_update(current_version: str = APP_VERSION) -> UpdateInfo | None:
     try:
         with urlopen(request, timeout=10) as response:
             payload = response.read(MAX_MANIFEST_BYTES + 1)
+    except HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise UpdateError("暂时无法连接更新服务器") from exc
     except OSError as exc:
         raise UpdateError("暂时无法连接更新服务器") from exc
     return parse_manifest(payload, current_version)
