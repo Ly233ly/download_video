@@ -1047,7 +1047,7 @@ class WechatLoopbackProxy:
                 parts.append(
                     name_only + b"(" + arguments + b"){"
                     b"var __download_station_finder_result__="
-                    b"(function(){" + original_body + b"})();"
+                    b"(()=>{" + original_body + b"})();"
                     b"try{if(typeof globalThis!==\"undefined\"&&"
                     b"typeof globalThis.__DOWNLOAD_STATION_WECHAT_OBSERVE__===\"function\"){"
                     b"globalThis.__DOWNLOAD_STATION_WECHAT_OBSERVE__(__download_station_finder_result__,"
