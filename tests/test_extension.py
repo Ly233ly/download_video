@@ -40,11 +40,11 @@ class ExtensionTests(unittest.TestCase):
         setup = (ROOT / "installer" / "Setup.cs").read_text(encoding="utf-8")
         launcher = (ROOT / "launcher" / "Launcher.cs").read_text(encoding="utf-8")
         self.assertIn('internal const string Version = "1.4.1"', setup)
-        self.assertIn('AssemblyFileVersion("1.4.0.0")', setup)
-        self.assertIn('AssemblyFileVersion("1.4.0.0")', launcher)
+        self.assertIn('AssemblyFileVersion("1.4.1.0")', setup)
+        self.assertIn('AssemblyFileVersion("1.4.1.0")', launcher)
         version_resource = (ROOT / "packaging" / "download-transfer-station-version.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(1, 4, 0, 0)", version_resource)
-        self.assertIn("prodvers=(1, 4, 0, 0)", version_resource)
+        self.assertIn("filevers=(1, 4, 1, 0)", version_resource)
+        self.assertIn("prodvers=(1, 4, 1, 0)", version_resource)
         self.assertGreaterEqual(setup.count("WriteBootstrapPairing(extensionDirectory"), 3)
 
     def test_bilibili_playinfo_becomes_grouped_video_and_audio(self) -> None:
