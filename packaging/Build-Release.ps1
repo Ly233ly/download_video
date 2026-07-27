@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Version = "1.4.1",
+    [string]$Version = "1.4.2",
     [switch]$SkipTests,
     [switch]$SkipFfmpegFetch,
     [switch]$SkipYoutubeResolverFetch
@@ -43,8 +43,8 @@ function Invoke-Checked([string]$Label, [scriptblock]$Action) {
     if ($LASTEXITCODE -ne 0) { throw "$Label 失败，退出码 $LASTEXITCODE" }
 }
 
-if ($Version -ne "1.4.1") {
-    throw "本分支只允许构建已经同步版本号的 1.4.1。"
+if ($Version -ne "1.4.2") {
+    throw "本分支只允许构建已经同步版本号的 1.4.2。"
 }
 
 if (-not $SkipTests) {
