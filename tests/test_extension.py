@@ -29,7 +29,7 @@ class ExtensionTests(unittest.TestCase):
     def test_manifests_are_versioned_and_include_structured_site_bridges(self) -> None:
         for name in ("manifest.json", "manifest.firefox.json"):
             manifest = json.loads((EXTENSION / name).read_text(encoding="utf-8"))
-            self.assertEqual(manifest["version"], "1.4.0")
+            self.assertEqual(manifest["version"], "1.4.1")
             self.assertEqual(manifest["name"], "下载中转站")
             scripts = [script for entry in manifest["content_scripts"] for script in entry["js"]]
             self.assertIn("js/bilibili-content.js", scripts)
@@ -39,7 +39,7 @@ class ExtensionTests(unittest.TestCase):
             self.assertIn("catch-script/youtube.js", resources)
         setup = (ROOT / "installer" / "Setup.cs").read_text(encoding="utf-8")
         launcher = (ROOT / "launcher" / "Launcher.cs").read_text(encoding="utf-8")
-        self.assertIn('internal const string Version = "1.4.0"', setup)
+        self.assertIn('internal const string Version = "1.4.1"', setup)
         self.assertIn('AssemblyFileVersion("1.4.0.0")', setup)
         self.assertIn('AssemblyFileVersion("1.4.0.0")', launcher)
         version_resource = (ROOT / "packaging" / "download-transfer-station-version.txt").read_text(encoding="utf-8")
