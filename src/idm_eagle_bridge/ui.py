@@ -79,19 +79,52 @@ MEDIA_ACTIVE_STATUSES = {"queued", "downloading", "merging", "validating", "read
 MEDIA_RETRYABLE_STATUSES = {"retry"}
 
 UI = {
-    "canvas": "#F4F2EF",
-    "sidebar": "#EEEAE6",
-    "surface": "#FCFBF9",
-    "surface_alt": "#F7F4F1",
-    "selected": "#EDE5E4",
-    "border": "#DED9D4",
-    "text": "#272522",
-    "muted": "#716C67",
-    "accent": "#9A6470",
-    "accent_dark": "#80515C",
-    "success": "#3F7D4B",
-    "warning": "#A66B24",
-    "danger": "#B24747",
+    "bg": "#0D0F16",
+    "sidebar_bg": "#111318",
+    "surface": "#161820",
+    "surface_raised": "#1A1D25",
+    "surface_overlay": "#1F222B",
+    "border": "#2A2D35",
+    "divider": "#1E2029",
+    "text": "#E2E8F0",
+    "text_secondary": "#A0A5B0",
+    "text_muted": "#6B7080",
+    "text_disabled": "#686E7A",
+    "accent": "#5D5FEE",
+    "accent_hover": "#5558E6",
+    "accent_subtle": "#1E1F3A",
+    "accent_text": "#A5B4FC",
+    "success": "#34D399",
+    "success_subtle": "#0F2F24",
+    "warning": "#FBBF24",
+    "warning_subtle": "#2F2508",
+    "danger": "#F87171",
+    "danger_subtle": "#2F1515",
+    "info": "#60A5FA",
+    "selected": "#1E2440",
+    "progress_track": "#1A1D25",
+
+    # ── state badge colors (fg, bg) ──
+    "status_queued": ("#9CA3AF", "#17191E"),
+    "status_downloading": ("#60A5FA", "#0F1F2F"),
+    "status_merging": ("#60A5FA", "#0F1F2F"),
+    "status_validating": ("#A78BFA", "#1A1430"),
+    "status_ready_to_import": ("#FBBF24", "#2F2508"),
+    "status_waiting_eagle": ("#FB923C", "#2F1A08"),
+    "status_imported": ("#34D399", "#0F2F24"),
+    "status_completed_local": ("#2DD4BF", "#0A2F2A"),
+    "status_retry": ("#FACC15", "#2F2A00"),
+    "status_failed_permanent": ("#F87171", "#2F1515"),
+    "status_import_failed": ("#FB7185", "#2F151A"),
+    "status_canceled": ("#6B7280", "#15171A"),
+    "status_needs_rebuild": ("#E879F9", "#2F1530"),
+
+    # ── idm job status colors ──
+    "job_imported": ("#34D399", "#0F2F24"),
+    "job_waiting": ("#FBBF24", "#2F2508"),
+    "job_active": ("#60A5FA", "#0F1F2F"),
+    "job_failed": ("#F87171", "#2F1515"),
+    "job_ignored": ("#9CA3AF", "#17191E"),
 }
 
 
@@ -145,54 +178,54 @@ def _media_plan_view(plan: dict) -> dict:
 def _configure_styles(root: Tk) -> None:
     style = ttk.Style(root)
     try:
-        # The native Vista theme ignores custom button and progress colours.
-        # Clam keeps the interface deterministic across Windows 10/11 while
-        # still using native Tk controls and accessibility semantics.
         style.theme_use("clam")
     except Exception:
         pass
     default_font = ("Microsoft YaHei UI", 10)
     style.configure(".", font=default_font, foreground=UI["text"])
-    style.configure("App.TFrame", background=UI["canvas"])
-    style.configure("Sidebar.TFrame", background=UI["sidebar"])
+    style.configure("App.TFrame", background=UI["bg"])
+    style.configure("Sidebar.TFrame", background=UI["sidebar_bg"])
     style.configure("Surface.TFrame", background=UI["surface"])
-    style.configure("Soft.TFrame", background=UI["surface_alt"])
-    style.configure("App.TLabel", background=UI["canvas"], foreground=UI["text"])
-    style.configure("Sidebar.TLabel", background=UI["sidebar"], foreground=UI["text"])
+    style.configure("SurfaceRaised.TFrame", background=UI["surface_raised"])
+    style.configure("Soft.TFrame", background=UI["surface_raised"])
+    style.configure("App.TLabel", background=UI["bg"], foreground=UI["text"])
+    style.configure("Sidebar.TLabel", background=UI["sidebar_bg"], foreground=UI["text"])
+    style.configure("SidebarMuted.TLabel", background=UI["sidebar_bg"], foreground=UI["text_muted"])
     style.configure("Surface.TLabel", background=UI["surface"], foreground=UI["text"])
-    style.configure("Muted.TLabel", background=UI["surface"], foreground=UI["muted"])
+    style.configure("SurfaceRaised.TLabel", background=UI["surface_raised"], foreground=UI["text"])
+    style.configure("Muted.TLabel", background=UI["surface"], foreground=UI["text_muted"])
     style.configure(
         "Title.TLabel",
         background=UI["surface"],
         foreground=UI["text"],
-        font=("Microsoft YaHei UI", 20, "bold"),
+        font=("Microsoft YaHei UI", 16, "bold"),
     )
     style.configure(
         "Section.TLabel",
-        background=UI["surface"],
+        background=UI["surface_raised"],
         foreground=UI["text"],
         font=("Microsoft YaHei UI", 12, "bold"),
     )
     style.configure(
         "Nav.TButton",
         anchor="w",
-        padding=(16, 11),
-        background=UI["sidebar"],
-        foreground=UI["text"],
+        padding=(12, 10),
+        background=UI["sidebar_bg"],
+        foreground=UI["text_secondary"],
         borderwidth=0,
         focusthickness=0,
     )
     style.map(
         "Nav.TButton",
-        background=[("active", UI["selected"]), ("pressed", UI["selected"])],
-        foreground=[("disabled", UI["muted"])],
+        background=[("active", UI["surface_overlay"]), ("pressed", UI["surface_overlay"])],
+        foreground=[("disabled", UI["text_disabled"])],
     )
     style.configure(
         "NavSelected.TButton",
         anchor="w",
-        padding=(16, 11),
+        padding=(12, 10),
         background=UI["selected"],
-        foreground=UI["accent_dark"],
+        foreground=UI["accent_text"],
         borderwidth=0,
         focusthickness=0,
         font=("Microsoft YaHei UI", 10, "bold"),
@@ -213,40 +246,52 @@ def _configure_styles(root: Tk) -> None:
     )
     style.map(
         "Accent.TButton",
-        foreground=[("disabled", "#8D8481")],
-        bordercolor=[("disabled", UI["border"])],
-        lightcolor=[("disabled", "#D6CBCB")],
-        darkcolor=[("disabled", "#D6CBCB")],
+        foreground=[("disabled", UI["text_disabled"])],
         background=[
-            ("disabled", "#D6CBCB"),
-            ("active", UI["accent_dark"]),
-            ("pressed", UI["accent_dark"]),
+            ("disabled", UI["border"]),
+            ("active", UI["accent_hover"]),
+            ("pressed", UI["accent_hover"]),
         ],
+    )
+    style.configure(
+        "Danger.TButton",
+        padding=(14, 8),
+        background=UI["danger_subtle"],
+        foreground=UI["danger"],
+        borderwidth=0,
+        focusthickness=0,
+        relief="flat",
+        font=("Microsoft YaHei UI", 10, "bold"),
+    )
+    style.map(
+        "Danger.TButton",
+        foreground=[("disabled", UI["text_disabled"])],
+        background=[("active", "#3F1A1A"), ("pressed", "#3F1A1A")],
     )
     style.configure(
         "Quiet.TButton",
         padding=(12, 7),
-        background=UI["surface_alt"],
-        foreground=UI["text"],
+        background=UI["surface_overlay"],
+        foreground=UI["text_secondary"],
         bordercolor=UI["border"],
         borderwidth=1,
         relief="flat",
     )
     style.map(
         "Quiet.TButton",
-        background=[("active", UI["selected"]), ("pressed", UI["selected"])],
-        foreground=[("disabled", UI["muted"])],
+        background=[("active", UI["surface_raised"]), ("pressed", UI["surface_raised"])],
+        foreground=[("disabled", UI["text_disabled"])],
     )
     style.configure(
         "Card.TLabelframe",
-        background=UI["surface"],
+        background=UI["surface_raised"],
         bordercolor=UI["border"],
         relief="solid",
         borderwidth=1,
     )
     style.configure(
         "Card.TLabelframe.Label",
-        background=UI["surface"],
+        background=UI["surface_raised"],
         foreground=UI["text"],
         font=("Microsoft YaHei UI", 11, "bold"),
     )
@@ -267,21 +312,47 @@ def _configure_styles(root: Tk) -> None:
     )
     style.configure(
         "Treeview.Heading",
-        background=UI["surface_alt"],
-        foreground=UI["muted"],
+        background=UI["sidebar_bg"],
+        foreground=UI["text_muted"],
         padding=(8, 7),
         borderwidth=0,
         relief="flat",
         font=("Microsoft YaHei UI", 9, "bold"),
     )
-    style.configure(
-        "Warm.Horizontal.TProgressbar",
-        troughcolor="#E7E1DE",
-        background=UI["accent"],
-        bordercolor="#E7E1DE",
-        lightcolor=UI["accent"],
-        darkcolor=UI["accent"],
-    )
+    # ── multi-colour progress bars ──
+    for name, color in (
+        ("Progress.Indigo", UI["accent"]),
+        ("Progress.Emerald", UI["success"]),
+        ("Progress.Orange", UI["status_waiting_eagle"][0]),
+    ):
+        style.configure(
+            f"{name}.Horizontal.TProgressbar",
+            troughcolor=UI["progress_track"],
+            background=color,
+            bordercolor=UI["progress_track"],
+            lightcolor=color,
+            darkcolor=color,
+        )
+    # ── Radiobutton ──
+    style.configure("TRadiobutton", background=UI["surface"], foreground=UI["text"])
+    style.map("TRadiobutton", foreground=[("disabled", UI["text_disabled"])])
+    # ── Entry ──
+    style.configure("TEntry", fieldbackground=UI["surface_raised"], foreground=UI["text"])
+    style.map("TEntry", fieldbackground=[("disabled", UI["surface"])], foreground=[("disabled", UI["text_disabled"])])
+    # ── Combobox ──
+    style.configure("TCombobox", fieldbackground=UI["surface_raised"], foreground=UI["text"], arrowcolor=UI["text_secondary"])
+    style.map("TCombobox", fieldbackground=[("readonly", UI["surface_raised"])], foreground=[("disabled", UI["text_disabled"])])
+    # ── Scrollbar ──
+    style.configure("TScrollbar", background=UI["surface"], troughcolor=UI["bg"], bordercolor=UI["bg"], arrowcolor=UI["text_muted"])
+    style.map("TScrollbar", background=[("active", UI["surface_overlay"])])
+    # ── TLabelframe ──
+    style.configure("TLabelframe", background=UI["surface_raised"], bordercolor=UI["border"])
+    style.configure("TLabelframe.Label", background=UI["surface_raised"], foreground=UI["text"])
+    # ── Combobox dropdown overrides ──
+    root.option_add("*TCombobox*Listbox.background", UI["surface_raised"])
+    root.option_add("*TCombobox*Listbox.foreground", UI["text"])
+    root.option_add("*TCombobox*Listbox.selectBackground", UI["selected"])
+    root.option_add("*TCombobox*Listbox.selectForeground", UI["accent_text"])
 
 
 class _AsyncProbe:
@@ -851,7 +922,7 @@ class MainWindow:
         _set_window_icon(self.root)
         _configure_styles(self.root)
         self.brand_image = _load_product_image()
-        self.root.configure(background=UI["canvas"])
+        self.root.configure(background=UI["bg"])
         if self.start_hidden:
             self.root.withdraw()
         self.root.title("下载中转站")
@@ -913,7 +984,7 @@ class MainWindow:
         shell = ttk.Frame(self.root, style="App.TFrame")
         shell.pack(fill=BOTH, expand=True)
 
-        sidebar = ttk.Frame(shell, style="Sidebar.TFrame", width=190, padding=(14, 18))
+        sidebar = ttk.Frame(shell, style="Sidebar.TFrame", width=200, padding=(12, 16))
         sidebar.pack(side=LEFT, fill=Y)
         sidebar.pack_propagate(False)
         brand = ttk.Frame(sidebar, style="Sidebar.TFrame")
@@ -1025,6 +1096,8 @@ class MainWindow:
         self.page_title_text.set(titles.get(page, page))
         self.main_scroller.scroll_to_top()
         if page == "settings":
+            if hasattr(self, "settings_tab_buttons"):
+                self._settings_show_tab("pairing")
             self._refresh_settings()
         elif page == "diagnostics":
             self._refresh_diagnostics_summary()
@@ -1054,7 +1127,7 @@ class MainWindow:
         split = ttk.Panedwindow(tab, orient="horizontal")
         split.pack(fill=BOTH, expand=True)
         master = ttk.Frame(split, style="Surface.TFrame")
-        detail = ttk.Frame(split, style="Surface.TFrame", padding=(20, 18))
+        detail = ttk.Frame(split, style="SurfaceRaised.TFrame", padding=(20, 18))
         split.add(master, weight=3)
         split.add(detail, weight=2)
 
@@ -1089,8 +1162,8 @@ class MainWindow:
             preview_surface,
             text="选择任务后显示本机预览",
             anchor="center",
-            background=UI["surface_alt"],
-            foreground=UI["muted"],
+            background=UI["surface_raised"],
+            foreground=UI["text_muted"],
         )
         self.preview_label.pack(fill=BOTH, expand=True)
         self.plan_title_text = StringVar(value="选择一项任务查看详情")
@@ -1113,7 +1186,7 @@ class MainWindow:
         self.plan_progress = ttk.Progressbar(
             detail,
             maximum=100,
-            style="Warm.Horizontal.TProgressbar",
+            style="Progress.Indigo.Horizontal.TProgressbar",
         )
         self.plan_progress.pack(fill=X, pady=(12, 5))
         ttk.Label(
@@ -1131,13 +1204,13 @@ class MainWindow:
             justify=LEFT,
         ).pack(fill=X, pady=(5, 0))
 
-        actions = ttk.Frame(detail, style="Surface.TFrame")
+        actions = ttk.Frame(detail, style="SurfaceRaised.TFrame")
         actions.pack(fill=X, pady=(18, 0))
         self.plan_action_buttons = {
             "stop": ttk.Button(
                 actions,
                 text="停止",
-                style="Accent.TButton",
+                style="Danger.TButton",
                 command=self.stop_selected_plan,
             ),
             "retry": ttk.Button(
@@ -1213,7 +1286,7 @@ class MainWindow:
         self.job_tree.bind(
             "<<TreeviewSelect>>", lambda _event: self._update_idm_actions()
         )
-        actions = ttk.Frame(tab, style="Surface.TFrame", padding=(0, 12, 0, 0))
+        actions = ttk.Frame(tab, style="SurfaceRaised.TFrame", padding=(12, 12, 12, 12))
         actions.pack(fill=X)
         self.idm_action_buttons = {
             "retry": ttk.Button(
@@ -1273,7 +1346,7 @@ class MainWindow:
         split = ttk.Panedwindow(tab, orient="horizontal")
         split.pack(fill=BOTH, expand=True)
         master = ttk.Frame(split, style="Surface.TFrame")
-        detail = ttk.Frame(split, style="Surface.TFrame", padding=(20, 18))
+        detail = ttk.Frame(split, style="SurfaceRaised.TFrame", padding=(20, 18))
         split.add(master, weight=3)
         split.add(detail, weight=2)
 
@@ -1307,8 +1380,8 @@ class MainWindow:
             text="封面将在识别后显示",
             anchor="center",
             compound="center",
-            background=UI["surface_alt"],
-            foreground=UI["muted"],
+            background=UI["surface_raised"],
+            foreground=UI["text_muted"],
         )
         self.wechat_preview_label.pack(fill=BOTH, expand=True)
         self.wechat_detail_text = StringVar(value="开始捕获后，在微信中打开视频号内容。")
@@ -1362,7 +1435,7 @@ class MainWindow:
             command=self.submit_selected_wechat_candidate,
             style="Accent.TButton",
         ).pack(fill=X, pady=(14, 0))
-        row_actions = ttk.Frame(detail, style="Surface.TFrame")
+        row_actions = ttk.Frame(detail, style="SurfaceRaised.TFrame")
         row_actions.pack(fill=X, pady=(8, 0))
         ttk.Button(
             row_actions,
@@ -1379,61 +1452,75 @@ class MainWindow:
 
     def _build_settings_tab(self) -> None:
         tab = self._new_page("settings")
-        pairing = ttk.LabelFrame(
-            tab,
-            text="浏览器配对",
-            style="Card.TLabelframe",
-            padding=14,
-        )
-        pairing.pack(fill=X, pady=(0, 12))
-        ttk.Label(pairing, textvariable=self.pairing_text, style="Surface.TLabel").pack(
-            side=LEFT
-        )
-        ttk.Button(
-            pairing,
-            text="复制六位码",
-            style="Quiet.TButton",
-            command=self.copy_pairing_code,
-        ).pack(side=RIGHT)
-        ttk.Button(
-            pairing,
-            text="解除配对",
-            style="Quiet.TButton",
-            command=self.unpair,
-        ).pack(side=RIGHT, padx=(0, 8))
 
-        sites = ttk.LabelFrame(
-            tab,
-            text="网站规则",
-            style="Card.TLabelframe",
-            padding=14,
-        )
-        sites.pack(fill=BOTH, expand=True, pady=(0, 12))
-        ttk.Label(
-            sites,
-            textvariable=self.settings_site_summary_text,
-            style="Muted.TLabel",
-        ).pack(fill=X, pady=(0, 8))
+        settings_nav = ttk.Frame(tab, style="Sidebar.TFrame", width=140)
+        settings_nav.pack(side=LEFT, fill=Y)
+        settings_nav.pack_propagate(False)
+        self.settings_tab_buttons: dict[str, ttk.Button] = {}
+        self.settings_sub_tabs: dict[str, ttk.Frame] = {}
+        for key, label in (
+            ("pairing", "浏览器配对"),
+            ("sites", "网站规则"),
+            ("network", "网络代理"),
+            ("updates", "更新"),
+        ):
+            btn = ttk.Button(
+                settings_nav,
+                text=label,
+                style="Nav.TButton",
+                command=lambda k=key: self._settings_show_tab(k),
+            )
+            btn.pack(fill=X, pady=1)
+            self.settings_tab_buttons[key] = btn
+
+        self.settings_panel = ttk.Frame(tab, style="Surface.TFrame")
+        self.settings_panel.pack(side=LEFT, fill=BOTH, expand=True)
+
+        self._build_settings_pairing()
+        self._build_settings_sites()
+        self._build_settings_network()
+        self._build_settings_updates()
+        self._settings_show_tab("pairing")
+
+    def _settings_show_tab(self, name: str) -> None:
+        for key, frame in self.settings_sub_tabs.items():
+            if key == name:
+                frame.pack(fill=BOTH, expand=True, padx=(16, 0), pady=8)
+            else:
+                frame.pack_forget()
+        for key, button in self.settings_tab_buttons.items():
+            button.configure(style="NavSelected.TButton" if key == name else "Nav.TButton")
+
+    def _build_settings_pairing(self) -> None:
+        frame = ttk.Frame(self.settings_panel, style="Surface.TFrame")
+        self.settings_sub_tabs["pairing"] = frame
+        card = ttk.LabelFrame(frame, text="浏览器配对", style="Card.TLabelframe", padding=14)
+        card.pack(fill=X)
+        ttk.Label(card, textvariable=self.pairing_text, style="SurfaceRaised.TLabel").pack(side=LEFT)
+        ttk.Button(card, text="复制六位码", style="Quiet.TButton", command=self.copy_pairing_code).pack(side=RIGHT)
+        ttk.Button(card, text="解除配对", style="Quiet.TButton", command=self.unpair).pack(side=RIGHT, padx=(0, 8))
+
+    def _build_settings_sites(self) -> None:
+        frame = ttk.Frame(self.settings_panel, style="Surface.TFrame")
+        self.settings_sub_tabs["sites"] = frame
+        card = ttk.LabelFrame(frame, text="网站规则", style="Card.TLabelframe", padding=14)
+        card.pack(fill=BOTH, expand=True)
+        ttk.Label(card, textvariable=self.settings_site_summary_text, style="Muted.TLabel").pack(fill=X, pady=(0, 8))
         self.settings_site_tree = ttk.Treeview(
-            sites,
+            card,
             columns=("domain", "status", "subdomains", "updated"),
             show="headings",
             selectmode="browse",
-            height=5,
+            height=8,
         )
-        for name, label in (
-            ("domain", "域名"),
-            ("status", "状态"),
-            ("subdomains", "子域名"),
-            ("updated", "修改时间"),
-        ):
+        for name, label in (("domain", "域名"), ("status", "状态"), ("subdomains", "子域名"), ("updated", "修改时间")):
             self.settings_site_tree.heading(name, text=label)
-        self.settings_site_tree.column("domain", width=320)
+        self.settings_site_tree.column("domain", width=280)
         self.settings_site_tree.column("status", width=90, anchor="center")
-        self.settings_site_tree.column("subdomains", width=115, anchor="center")
-        self.settings_site_tree.column("updated", width=150, anchor="center")
+        self.settings_site_tree.column("subdomains", width=100, anchor="center")
+        self.settings_site_tree.column("updated", width=130, anchor="center")
         self.settings_site_tree.pack(fill=BOTH, expand=True)
-        site_actions = ttk.Frame(sites, style="Surface.TFrame", padding=(0, 10, 0, 0))
+        site_actions = ttk.Frame(card, style="SurfaceRaised.TFrame", padding=(0, 10, 0, 0))
         site_actions.pack(fill=X)
         for label, command in (
             ("新增", self._settings_add_rule),
@@ -1442,76 +1529,43 @@ class MainWindow:
             ("删除", self._settings_delete_rule),
             ("清空", self._settings_clear_rules),
         ):
-            ttk.Button(
-                site_actions,
-                text=label,
-                style="Quiet.TButton",
-                command=command,
-            ).pack(side=LEFT, padx=(0, 7))
+            ttk.Button(site_actions, text=label, style="Quiet.TButton", command=command).pack(side=LEFT, padx=(0, 7))
 
-        network = ttk.LabelFrame(
-            tab,
-            text="网络",
-            style="Card.TLabelframe",
-            padding=14,
-        )
-        network.pack(fill=X, pady=(0, 12))
+    def _build_settings_network(self) -> None:
+        frame = ttk.Frame(self.settings_panel, style="Surface.TFrame")
+        self.settings_sub_tabs["network"] = frame
+        card = ttk.LabelFrame(frame, text="网络代理", style="Card.TLabelframe", padding=14)
+        card.pack(fill=X)
         configuration = self.media.network_proxy.configuration()
         self.settings_proxy_mode = StringVar(value=configuration["mode"])
         self.settings_proxy_manual = StringVar(value=configuration["manualUrl"])
-        modes = ttk.Frame(network, style="Surface.TFrame")
+        modes = ttk.Frame(card, style="SurfaceRaised.TFrame")
         modes.pack(fill=X)
         for value, label in (
             ("auto", "自动（推荐）"),
             ("direct", "始终直连"),
             ("manual", "手动 HTTP / Mixed 代理"),
         ):
-            ttk.Radiobutton(
-                modes,
-                text=label,
-                value=value,
-                variable=self.settings_proxy_mode,
-                command=self._settings_proxy_mode_changed,
-            ).pack(side=LEFT, padx=(0, 18))
-        manual = ttk.Frame(network, style="Surface.TFrame", padding=(0, 10, 0, 0))
+            ttk.Radiobutton(modes, text=label, value=value, variable=self.settings_proxy_mode,
+                            command=self._settings_proxy_mode_changed).pack(side=LEFT, padx=(0, 18))
+        manual = ttk.Frame(card, style="SurfaceRaised.TFrame", padding=(0, 10, 0, 0))
         manual.pack(fill=X)
         ttk.Label(manual, text="代理地址", style="Muted.TLabel").pack(side=LEFT)
-        self.settings_proxy_entry = ttk.Entry(
-            manual,
-            textvariable=self.settings_proxy_manual,
-        )
+        self.settings_proxy_entry = ttk.Entry(manual, textvariable=self.settings_proxy_manual)
         self.settings_proxy_entry.pack(side=LEFT, fill=X, expand=True, padx=(10, 8))
-        ttk.Button(
-            manual,
-            text="保存并检测",
-            style="Quiet.TButton",
-            command=self._settings_save_proxy,
-        ).pack(side=RIGHT)
-        ttk.Label(
-            network,
-            textvariable=self.settings_proxy_status_text,
-            style="Muted.TLabel",
-        ).pack(fill=X, pady=(8, 0))
+        ttk.Button(manual, text="保存并检测", style="Quiet.TButton", command=self._settings_save_proxy).pack(side=RIGHT)
+        ttk.Label(card, textvariable=self.settings_proxy_status_text, style="Muted.TLabel").pack(fill=X, pady=(8, 0))
         self._settings_proxy_mode_changed()
 
-        updates = ttk.LabelFrame(
-            tab,
-            text="更新",
-            style="Card.TLabelframe",
-            padding=14,
-        )
-        updates.pack(fill=X)
-        ttk.Label(
-            updates,
-            text="每天最多自动检查一次；发现新版本后必须由你确认下载和安装。",
-            style="Muted.TLabel",
-        ).pack(side=LEFT)
-        self.update_button = ttk.Button(
-            updates,
-            textvariable=self.update_button_text,
-            command=self.check_for_updates,
-            style="Quiet.TButton",
-        )
+    def _build_settings_updates(self) -> None:
+        frame = ttk.Frame(self.settings_panel, style="Surface.TFrame")
+        self.settings_sub_tabs["updates"] = frame
+        card = ttk.LabelFrame(frame, text="更新", style="Card.TLabelframe", padding=14)
+        card.pack(fill=X)
+        ttk.Label(card, text="每天最多自动检查一次；发现新版本后必须由你确认下载和安装。",
+                  style="Muted.TLabel").pack(side=LEFT)
+        self.update_button = ttk.Button(card, textvariable=self.update_button_text, command=self.check_for_updates,
+                                        style="Quiet.TButton")
         self.update_button.pack(side=RIGHT)
 
     def _build_diagnostics_tab(self) -> None:
@@ -2006,6 +2060,9 @@ class MainWindow:
             )
         self.wechat_status_text.set(summary)
         self.wechat_action_text.set("停止捕获" if health.get("running") else "开始捕获")
+        self.wechat_action_button.configure(
+            style="Danger.TButton" if health.get("running") else "Accent.TButton"
+        )
 
         candidates = self.wechat_channels.candidates()
         revision = (
@@ -2262,7 +2319,7 @@ class MainWindow:
             self.plan_status_text.set("")
             self.plan_source_text.set("")
             self.plan_file_text.set("")
-            self.plan_progress.configure(value=0)
+            self.plan_progress.configure(value=0, style="Progress.Indigo.Horizontal.TProgressbar")
             self.preview_image = None
             self.preview_cache.clear()
             self.preview_label.configure(image="", text="暂无预览")
@@ -2284,6 +2341,14 @@ class MainWindow:
             f"文件：{output} · 已处理 {view['processed']} / {view['total']}"
         )
         self.plan_progress.configure(value=view["progress"])
+        status = view.get("status", "")
+        if status in ("completed_local", "imported"):
+            prog_style = "Progress.Emerald.Horizontal.TProgressbar"
+        elif status == "waiting_eagle":
+            prog_style = "Progress.Orange.Horizontal.TProgressbar"
+        else:
+            prog_style = "Progress.Indigo.Horizontal.TProgressbar"
+        self.plan_progress.configure(style=prog_style)
         self._update_plan_actions(view)
         preview = Path(str(plan.get("preview_path") or ""))
         image = self.preview_cache.resolve(preview)
