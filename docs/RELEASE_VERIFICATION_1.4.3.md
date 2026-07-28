@@ -26,6 +26,9 @@
 - [冻结运行时证据](evidence/frozen-runtime-1.4.3.json)：健康版本 1.4.3、schema 6、扩展协议 1、`desktop_ffmpeg`、FFmpeg/ffprobe、yt-dlp/Deno 与 IDM 接收模式通过。
 - [隔离安装器证据](evidence/installer-1.4.3.json)：全新安装、成功升级、故障注入回滚和卸载通过。
 - 签名 `update.json` 已使用客户端内置公钥反向验签，版本、ASCII 下载地址、字节数和 SHA-256 一致。
+- GitHub Release 已确认是公开稳定版，三个资产名称、大小和 GitHub 摘要正确；`releases/latest/download/update.json` 可访问。
+- 客户端从 1.4.2 视角发现 1.4.3，并完成真实在线 ZIP 下载、大小/SHA-256 校验和唯一 `一键安装.exe` 解压。
+- 当前电脑已由 1.4.1 覆盖到 1.4.3；运行健康门返回 schema 6、扩展协议 1、`mediaReady=true`、`youtubeResolverReady=true`、`desktop_ffmpeg` 和有效视频号桥哈希，安装文件与发行载荷一致，网站规则和 Chrome 配对保留。
 
 ## 发行物
 
