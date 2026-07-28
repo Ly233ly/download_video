@@ -1,0 +1,33 @@
+﻿{
+    "version":  "1.4.3",
+    "testedAtUtc":  "2026-07-28T13:30:48.3375892Z",
+    "packageRoot":  "release/下载中转站-1.4.3-Windows-x64/下载中转站-1.4.3",
+    "fresh":  {
+                  "result":  "OK",
+                  "backend":  true,
+                  "ffmpeg":  true,
+                  "ffprobe":  true,
+                  "ytDlp":  true,
+                  "deno":  true,
+                  "extensionVersion":  "1.4.3",
+                  "bootstrap":  true,
+                  "idmProgramUnderTestRoot":  true
+              },
+    "update":  {
+                   "obsoleteRemoved":  true,
+                   "bootstrapRotated":  true,
+                   "bootstrapCredentialReady":  true,
+                   "backupRemoved":  true
+               },
+    "rollback":  {
+                     "failureExit":  1,
+                     "markerRestored":  true,
+                     "executableRestored":  true,
+                     "backupRemoved":  true
+                 },
+    "uninstall":  {
+                      "installRemoved":  true,
+                      "idmProgramRestoredToEmpty":  true,
+                      "stateRemoved":  true
+                  }
+}

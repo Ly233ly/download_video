@@ -8,8 +8,12 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$versionSource = Get-Content -LiteralPath (Join-Path $projectRoot "src\idm_eagle_bridge\constants.py") -Raw -Encoding UTF8
+$versionMatch = [regex]::Match($versionSource, 'APP_VERSION\s*=\s*"([^"]+)"')
+if (-not $versionMatch.Success) { throw "无法从 constants.py 读取当前版本号。" }
+$expectedVersion = $versionMatch.Groups[1].Value
 if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
-    $PackageRoot = Join-Path $projectRoot "release\下载中转站-1.4.0-Windows-x64\下载中转站-1.4.0"
+    $PackageRoot = Join-Path $projectRoot "release\下载中转站-$expectedVersion-Windows-x64\下载中转站-$expectedVersion"
 }
 $PackageRoot = [IO.Path]::GetFullPath($PackageRoot)
 $backend = Join-Path $PackageRoot "app\runtime\下载中转站后台\下载中转站后台.exe"
@@ -57,9 +61,9 @@ try {
     if ($null -eq $listener -or [int]$listener.OwningProcess -ne [int]$process.Id) {
         throw "端口 47652 的健康响应不属于待测冻结后端进程。"
     }
-    if ([string]$health.version -ne "1.4.0" -or [int]$health.extensionProtocol -ne 1 -or [int]$health.databaseSchema -ne 6 -or -not [bool]$health.mediaReady -or -not [bool]$health.youtubeResolverReady -or [string]$health.downloadEngine -ne "desktop_ffmpeg" -or [string]$health.wechatChannels.state -ne "off" -or [string]$health.wechatChannels.bridgeHash -notmatch "^[0-9a-f]{16}$") {
+    if ([string]$health.version -ne $expectedVersion -or [int]$health.extensionProtocol -ne 1 -or [int]$health.databaseSchema -ne 6 -or -not [bool]$health.mediaReady -or -not [bool]$health.youtubeResolverReady -or [string]$health.downloadEngine -ne "desktop_ffmpeg" -or [string]$health.wechatChannels.state -ne "off" -or [string]$health.wechatChannels.bridgeHash -notmatch "^[0-9a-f]{16}$") {
         $healthSummary = $health | ConvertTo-Json -Compress
-        throw "冻结后端健康门字段不符合 1.4.0 要求：$healthSummary"
+        throw "冻结后端健康门字段不符合 $expectedVersion 要求：$healthSummary"
     }
 
     $quotedSample = '"' + $sample.Replace('"', '\"') + '"'
@@ -73,7 +77,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $jobCount -ne 1) { throw "冻结接收模式未持久化唯一任务。" }
 
     $evidence = [ordered]@{
-        version = "1.4.0"
+        version = $expectedVersion
         testedAtUtc = [DateTime]::UtcNow.ToString("o")
         backend = "app/runtime/下载中转站后台/下载中转站后台.exe"
         processName = $process.ProcessName
@@ -93,7 +97,7 @@ try {
         denoBundled = (Test-Path -LiteralPath (Join-Path $PackageRoot "app\media-tools\deno.exe"))
     }
     if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
-        $EvidencePath = Join-Path $scratchRoot "frozen-runtime-1.4.0-evidence.json"
+        $EvidencePath = Join-Path $scratchRoot "frozen-runtime-$expectedVersion-evidence.json"
     }
     $evidence | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $EvidencePath -Encoding UTF8
     $evidence | ConvertTo-Json -Depth 4
@@ -104,4 +108,5 @@ finally {
         $process.WaitForExit()
     }
     Remove-Item Env:IDM_EAGLE_DATA_DIR, Env:IDM_EAGLE_DOWNLOAD_ROOT, Env:IDM_EAGLE_DISABLE_AUTO_START -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $dataRoot, $downloadRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

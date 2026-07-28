@@ -8,16 +8,29 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$versionSource = Get-Content -LiteralPath (Join-Path $projectRoot "src\idm_eagle_bridge\constants.py") -Raw -Encoding UTF8
+$versionMatch = [regex]::Match($versionSource, 'APP_VERSION\s*=\s*"([^"]+)"')
+if (-not $versionMatch.Success) { throw "无法从 constants.py 读取当前版本号。" }
+$currentVersion = $versionMatch.Groups[1].Value
 if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
-    $PackageRoot = Join-Path $projectRoot "release\下载中转站-1.4.0-Windows-x64\下载中转站-1.4.0"
+    $PackageRoot = Join-Path $projectRoot "release\下载中转站-$currentVersion-Windows-x64\下载中转站-$currentVersion"
 }
 $PackageRoot = [IO.Path]::GetFullPath($PackageRoot)
 $installer = Join-Path $PackageRoot "一键安装.exe"
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "找不到待测试安装器：$installer" }
+$payloadManifest = Join-Path $PackageRoot "app\chrome-extension\manifest.json"
+if (-not (Test-Path -LiteralPath $payloadManifest -PathType Leaf)) { throw "找不到安装载荷版本清单：$payloadManifest" }
+$expectedVersion = [string]((Get-Content -LiteralPath $payloadManifest -Raw -Encoding UTF8 | ConvertFrom-Json).version)
+if ([string]::IsNullOrWhiteSpace($expectedVersion)) { throw "安装载荷版本号为空。" }
+$projectPrefix = $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+$packageDisplay = $PackageRoot
+if ($PackageRoot.StartsWith($projectPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    $packageDisplay = $PackageRoot.Substring($projectPrefix.Length).Replace("\", "/")
+}
 
 $runId = [Guid]::NewGuid().ToString("N")
 $scratchRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot ".scratch"))
-$testRoot = [IO.Path]::GetFullPath((Join-Path $scratchRoot ("installer-1.4.0-" + $runId)))
+$testRoot = [IO.Path]::GetFullPath((Join-Path $scratchRoot ("installer-" + $expectedVersion + "-" + $runId)))
 $safePrefix = $scratchRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 if (-not $testRoot.StartsWith($safePrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw "测试目录不在项目专用临时目录中。"
@@ -25,8 +38,9 @@ if (-not $testRoot.StartsWith($safePrefix, [StringComparison]::OrdinalIgnoreCase
 New-Item -ItemType Directory -Path $scratchRoot -Force | Out-Null
 
 $resultPath = Join-Path $scratchRoot ("installer-result-" + $runId + ".txt")
-$idmSub = "Software\IDMEagleAutoImport\InstallerTest\V110-" + $runId + "-IDM"
-$stateSub = "Software\IDMEagleAutoImport\InstallerTest\V110-" + $runId + "-State"
+$versionKey = "V" + $expectedVersion.Replace(".", "")
+$idmSub = "Software\IDMEagleAutoImport\InstallerTest\" + $versionKey + "-" + $runId + "-IDM"
+$stateSub = "Software\IDMEagleAutoImport\InstallerTest\" + $versionKey + "-" + $runId + "-State"
 $idmPath = "HKCU:\" + $idmSub
 $statePath = "HKCU:\" + $stateSub
 
@@ -91,16 +105,16 @@ try {
     }
 
     $evidence = [ordered]@{
-        version = "1.4.0"
+        version = $expectedVersion
         testedAtUtc = [DateTime]::UtcNow.ToString("o")
-        packageRoot = "release/下载中转站-1.4.0-Windows-x64/下载中转站-1.4.0"
+        packageRoot = $packageDisplay
         fresh = $fresh
         update = $update
         rollback = $rollback
         uninstall = $uninstall
     }
     if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
-        $EvidencePath = Join-Path $scratchRoot "installer-1.4.0-evidence.json"
+        $EvidencePath = Join-Path $scratchRoot "installer-$expectedVersion-evidence.json"
     }
     $evidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $EvidencePath -Encoding UTF8
     $evidence | ConvertTo-Json -Depth 6

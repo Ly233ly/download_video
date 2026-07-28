@@ -7,12 +7,14 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 from idm_eagle_bridge.updater import (
     UpdateError,
     UpdateInfo,
     automatic_check_due,
+    check_for_update,
     parse_manifest,
     prepare_update,
     record_successful_check,
@@ -61,6 +63,17 @@ class UpdaterTests(unittest.TestCase):
 
         self.assertIsNone(parse_manifest(payload, "9.9.9"))
         self.assertIsNone(parse_manifest(payload, "10.0.0"))
+
+    def test_missing_manifest_is_treated_as_no_published_update(self) -> None:
+        missing = HTTPError(
+            "https://example.invalid/update.json",
+            404,
+            "Not Found",
+            None,
+            None,
+        )
+        with patch("idm_eagle_bridge.updater.urlopen", side_effect=missing):
+            self.assertIsNone(check_for_update("1.4.3"))
 
     def test_download_verifies_and_extracts_unique_installer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

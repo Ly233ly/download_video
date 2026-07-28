@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Version = "1.4.2",
+    [string]$Version = "1.4.3",
     [switch]$SkipTests,
     [switch]$SkipFfmpegFetch,
     [switch]$SkipYoutubeResolverFetch
@@ -43,8 +43,8 @@ function Invoke-Checked([string]$Label, [scriptblock]$Action) {
     if ($LASTEXITCODE -ne 0) { throw "$Label 失败，退出码 $LASTEXITCODE" }
 }
 
-if ($Version -ne "1.4.2") {
-    throw "本分支只允许构建已经同步版本号的 1.4.2。"
+if ($Version -ne "1.4.3") {
+    throw "本分支只允许构建已经同步版本号的 1.4.3。"
 }
 
 if (-not $SkipTests) {
@@ -97,7 +97,7 @@ Invoke-Checked "安装固定 PyInstaller 6.21.0" { & $venvPython -m pip install 
 $installedVersion = (& $venvPython -m PyInstaller --version).Trim()
 if ($installedVersion -ne "6.21.0") { throw "PyInstaller 版本错误：$installedVersion" }
 
-$buildRoot = Reset-GeneratedDirectory (Join-Path $projectRoot "build\release-1.4.0")
+$buildRoot = Reset-GeneratedDirectory (Join-Path $projectRoot "build\release-$Version")
 $pyiDist = Join-Path $buildRoot "dist"
 $pyiWork = Join-Path $buildRoot "work"
 New-Item -ItemType Directory -Path $pyiDist, $pyiWork -Force | Out-Null
@@ -190,7 +190,7 @@ $inventoryDocument = [ordered]@{
 }
 $inventoryDocument | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $releaseRoot "BINARY-INVENTORY.json") -Encoding UTF8
 
-$zipPath = Join-Path $releaseOuter "下载中转站-$Version-Windows-x64.zip"
+$zipPath = Join-Path $releaseOuter "download-transfer-station-$Version-windows-x64.zip"
 Compress-Archive -LiteralPath $releaseRoot -DestinationPath $zipPath -CompressionLevel Optimal
 $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText(
