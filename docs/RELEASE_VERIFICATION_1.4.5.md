@@ -39,7 +39,9 @@
 - 发行文件：`download-transfer-station-1.4.5-windows-x64.zip`
 - 字节数：`155801549`
 - SHA-256：`8f56eb693befa3e72146b402c6b750cecfb4a592b8231a3d16a9743591e4cafb`
-- 候选标签：`v1.4.5-rc.1`
+- 候选发行：[v1.4.5-rc.1](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.5-rc.1)
+- 发行提交：`f1454a1ecb702f15aa21f7b00f29fba388d72327`
+- GitHub 端 ZIP 状态为 `uploaded`，远端字节数与 SHA-256 和本机一致。
 
 ## 当前电脑覆盖证据
 
