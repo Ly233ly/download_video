@@ -26,7 +26,7 @@ Chrome 的最后一次加载确认属于浏览器安全边界，安装器不能�
 
 重新运行新版 `一键安装.exe` 即可覆盖程序文件并保留 `%LOCALAPPDATA%\IdmEagleAutoImport` 中的队列、网站规则和配对状态。更新扩展文件后，到 `Chrome > 扩展程序 > 管理扩展程序` 点击一次“重新加载”。
 
-1.4.4 保留桌面媒体的自动系统代理路由、默认关闭的视频号捕获和 Eagle 成功后的安全清理，并增加 DPI 逻辑缩放、有界列表投影、统一计划通知和扩展终态清理。数据库仍为 schema 6、扩展协议仍为 1；旧计划的导入后删除选择默认关闭。安装器校验 FFmpeg/ffprobe、yt-dlp/Deno 和视频号静态桥载荷；健康门要求 `version=1.4.4`、`databaseSchema=6`、`extensionProtocol=1`、`mediaReady=true`、`youtubeResolverReady=true`、`downloadEngine=desktop_ffmpeg`，同时验证视频号模块与桥脚本哈希。未开启捕获时不要求证书已安装；任一健康门失败都恢复覆盖前程序目录。
+1.4.5 保留桌面媒体的自动系统代理路由、默认关闭的视频号捕获、Eagle 成功后的安全清理、有界列表投影、统一计划通知和扩展终态清理，并把界面缩放修正为 DPI/分辨率合并比例与统一中文字体。数据库仍为 schema 6、扩展协议仍为 1；旧计划的导入后删除选择默认关闭。安装器校验 FFmpeg/ffprobe、yt-dlp/Deno 和视频号静态桥载荷；健康门要求 `version=1.4.5`、`databaseSchema=6`、`extensionProtocol=1`、`mediaReady=true`、`youtubeResolverReady=true`、`downloadEngine=desktop_ffmpeg`，同时验证视频号模块与桥脚本哈希。未开启捕获时不要求证书已安装；任一健康门失败都恢复覆盖前程序目录。
 
 ## 正常使用
 
@@ -103,14 +103,14 @@ Chrome 的最后一次加载确认属于浏览器安全边界，安装器不能�
 
 卸载不会删除下载视频、Eagle 项目或 Chrome 官方 IDM 扩展。Chrome 中加载的个人扩展需在扩展管理页手动移除。
 
-## 1.4.4 媒体运行时、统一界面、更新与回滚
+## 1.4.5 媒体运行时、统一界面、更新与回滚
 
-以下行为属于当前 1.4.4 载荷；历史验证值见各版本独立验证报告：
+以下行为属于当前 1.4.5 载荷；历史验证值见各版本独立验证报告：
 
 - 安装载荷包含固定 FFmpeg/ffprobe 8.1.2、yt-dlp 2026.06.09、Deno 2.8.1、Chrome/Edge/Firefox 扩展、许可证、二进制哈希和对应源码；所有解析、主下载和音视频合并都在本机执行，不依赖云服务。
 - 后端只解析固定安装目录的 FFmpeg/ffprobe。`/health` 同时报告产品版本、数据库 schema 6、扩展协议 1、`desktop_ffmpeg` 下载引擎和媒体工具就绪状态。
 - 数据库通过 `PRAGMA user_version=6` 保存捕获会话、候选组、本机下载计划和显式导入后删除选择；升级前使用 SQLite 在线备份，不删除 0.6.0 队列。旧 `component_files` 表在迁移中删除，无法恢复完整 URL 的活动任务标为上下文过期，旧计划的 `delete_after_import` 一律为 0。
-- 更新健康检查要求 `version=1.4.4`、`databaseSchema=6`、`extensionProtocol=1`、`mediaReady=true`、`youtubeResolverReady=true`，并校验视频号模块与桥脚本。任一失败都恢复旧程序，保留网站规则、Chrome 配对、普通媒体代理模式、任务、指纹和 Eagle 内容。
+- 更新健康检查要求 `version=1.4.5`、`databaseSchema=6`、`extensionProtocol=1`、`mediaReady=true`、`youtubeResolverReady=true`，并校验视频号模块与桥脚本。任一失败都恢复旧程序，保留网站规则、Chrome 配对、普通媒体代理模式、任务、指纹和 Eagle 内容。
 - 从 1.2.11 覆盖升级前，安装器会调用旧程序目录中可信的冻结后台执行视频号捕获清理；若存在捕获归属记录但无法恢复代理/证书，更新中止而不替换程序。全新安装和未使用视频号捕获的旧版本不会创建或信任证书。
 - 覆盖升级只有在新后台健康门、快捷方式和卸载注册全部成功后才轮换新的单次 Chrome bootstrap；故障注入回滚发生在轮换前，旧扩展与旧配对保持一致。
 - 程序临时目录与用户数据目录分离。卸载器只删除带安装归属的程序资产和可验证的临时中间文件；卸载本身不删除最终下载文件、用户下载或手动指定文件。运行时只有显式 `delete_after_import=1` 的新计划可在 Eagle 成功和路径归属复验后删除自己的最终副本。

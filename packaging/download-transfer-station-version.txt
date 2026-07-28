@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-        filevers=(1, 4, 4, 0),
-        prodvers=(1, 4, 4, 0),
+        filevers=(1, 4, 5, 0),
+        prodvers=(1, 4, 5, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,11 +16,11 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', '下载中转站'),
           StringStruct('FileDescription', '下载中转站'),
-          StringStruct('FileVersion', '1.4.4'),
+          StringStruct('FileVersion', '1.4.5'),
           StringStruct('InternalName', '下载中转站后台'),
           StringStruct('OriginalFilename', '下载中转站后台.exe'),
           StringStruct('ProductName', '下载中转站'),
-          StringStruct('ProductVersion', '1.4.4')
+          StringStruct('ProductVersion', '1.4.5')
         ]
       )
     ]),

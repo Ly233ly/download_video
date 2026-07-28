@@ -24,12 +24,15 @@ from idm_eagle_bridge.ui import (
     _ResponsiveTreeColumns,
     _VerticalScrolledFrame,
     _configure_styles,
+    _effective_ui_scale,
     _ellipsize,
     _layout_mode_for_width,
     _load_product_image,
     _load_ui_icons,
     _media_plan_view,
+    _pixel_ellipsize,
     _relative_time_label,
+    _resolution_scale,
     _scale_geometry,
     _sync_tree_rows,
     _ui_scale_from_dpi,
@@ -92,6 +95,15 @@ class UiPerformanceHelpersTests(unittest.TestCase):
         self.assertEqual(_ui_scale_from_dpi(192), 2.0)
         self.assertEqual(_scale_geometry("1120x720", 2.0), "2240x1440")
 
+    def test_resolution_scale_handles_4k_at_one_hundred_percent(self) -> None:
+        self.assertEqual(_resolution_scale(1920, 1080), 1.0)
+        self.assertEqual(_resolution_scale(2560, 1440), 1.333)
+        self.assertEqual(_resolution_scale(3840, 2160), 2.0)
+        self.assertEqual(_resolution_scale(1366, 768), 1.0)
+        self.assertEqual(_effective_ui_scale(96, 3840, 2160), 2.0)
+        self.assertEqual(_effective_ui_scale(144, 1920, 1080), 1.5)
+        self.assertEqual(_effective_ui_scale(192, 3840, 2160), 2.0)
+
     def test_page_slice_bounds_widget_projection_size(self) -> None:
         items = list(range(203))
         first, page, total_pages = _page_slice(items, 0, 12)
@@ -103,6 +115,16 @@ class UiPerformanceHelpersTests(unittest.TestCase):
         self.assertEqual(last, list(range(192, 203)))
         self.assertEqual(last_page, 16)
         self.assertEqual(last_total_pages, 17)
+
+    def test_pixel_ellipsize_keeps_text_inside_a_tree_column(self) -> None:
+        measure = lambda text: len(text) * 10
+
+        self.assertEqual(_pixel_ellipsize("短标题", 40, measure), "短标题")
+        self.assertEqual(
+            _pixel_ellipsize("这是一个很长的标题", 60, measure),
+            "这是一个很…",
+        )
+        self.assertEqual(_pixel_ellipsize("long title", 5, measure), "…")
 
     def test_layout_modes_follow_the_contract_breakpoints(self) -> None:
         self.assertEqual(_layout_mode_for_width(900), "compact")
@@ -316,7 +338,7 @@ class ResponsiveWidgetTests(unittest.TestCase):
         self.assertEqual(int(label.cget("wraplength")), 296)
 
     def test_named_fonts_survive_style_configuration(self) -> None:
-        _configure_styles(self.root)
+        _configure_styles(self.root, 1.0)
         gc.collect()
 
         self.assertGreater(tkfont.nametofont("Ui11").measure("媒体任务"), 0)
@@ -325,6 +347,18 @@ class ResponsiveWidgetTests(unittest.TestCase):
             0,
             "Positive point sizes are required for Windows DPI scaling",
         )
+
+    def test_named_fonts_use_one_readable_family_and_real_bold_weight(self) -> None:
+        _configure_styles(self.root, 1.0)
+        regular = tkfont.nametofont("Ui12")
+        emphasized = tkfont.nametofont("Ui12Bold")
+        available = set(tkfont.families(self.root))
+
+        self.assertGreaterEqual(int(regular.cget("size")), 11)
+        self.assertEqual(regular.actual("family"), emphasized.actual("family"))
+        self.assertEqual(emphasized.actual("weight"), "bold")
+        if "Microsoft YaHei UI" in available:
+            self.assertEqual(regular.actual("family"), "Microsoft YaHei UI")
 
     def test_named_fonts_follow_high_dpi_tk_scaling(self) -> None:
         self.root.tk.call("tk", "scaling", 96 / 72)

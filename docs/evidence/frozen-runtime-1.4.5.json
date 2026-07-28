@@ -1,0 +1,20 @@
+﻿{
+    "version":  "1.4.5",
+    "testedAtUtc":  "2026-07-28T15:54:20.7778450Z",
+    "backend":  "app/runtime/下载中转站后台/下载中转站后台.exe",
+    "processName":  "下载中转站后台",
+    "healthVersion":  "1.4.5",
+    "extensionProtocol":  1,
+    "databaseSchema":  6,
+    "mediaReady":  true,
+    "youtubeResolverReady":  true,
+    "downloadEngine":  "desktop_ffmpeg",
+    "wechatChannelsState":  "off",
+    "wechatChannelsBridgeHash":  "de2e5c6d5e24b4f4",
+    "receiverExit":  0,
+    "receiverJobCount":  1,
+    "ffmpegBundled":  true,
+    "ffprobeBundled":  true,
+    "ytDlpBundled":  true,
+    "denoBundled":  true
+}

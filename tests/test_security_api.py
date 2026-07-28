@@ -50,7 +50,7 @@ class SecurityApiTests(unittest.TestCase):
         try:
             with urlopen(f"http://{host}:{port}/health", timeout=3) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-            self.assertEqual(payload["version"], "1.4.4")
+            self.assertEqual(payload["version"], "1.4.5")
             self.assertEqual(payload["extensionProtocol"], 1)
             self.assertEqual(payload["databaseSchema"], 6)
             self.assertEqual(payload["downloadEngine"], "desktop_ffmpeg")

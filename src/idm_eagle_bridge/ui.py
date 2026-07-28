@@ -108,9 +108,9 @@ UI = {
     "border": "#2A2D35",
     "divider": "#1E2029",
     "text": "#E2E8F0",
-    "text_secondary": "#A0A5B0",
-    "text_muted": "#6B7080",
-    "text_disabled": "#686E7A",
+    "text_secondary": "#B3B8C3",
+    "text_muted": "#858B9C",
+    "text_disabled": "#73798A",
     "accent": "#6366F1",
     "accent_button": "#6265F1",
     "accent_hover": "#5558E6",
@@ -150,19 +150,19 @@ UI = {
 }
 
 METRICS = {
-    "topbar_height": 40,
-    "topbar_compact_height": 56,
-    "sidebar_width": 200,
-    "sidebar_compact_width": 168,
+    "topbar_height": 44,
+    "topbar_compact_height": 60,
+    "sidebar_width": 208,
+    "sidebar_compact_width": 176,
     "secondary_nav_width": 160,
     "secondary_nav_compact_width": 136,
     "master_width": 360,
     "master_compact_width": 300,
     "preview_max_width": 448,
-    "button_height": 34,
-    "task_row_height": 92,
-    "wechat_row_height": 80,
-    "table_row_height": 42,
+    "button_height": 38,
+    "task_row_height": 100,
+    "wechat_row_height": 88,
+    "table_row_height": 46,
 }
 
 RADII = {
@@ -174,17 +174,19 @@ RADII = {
 }
 
 FONT_FAMILIES = {
-    "ui": "OPPO Sans Medium",
-    "medium": "OPPOSans B",
-    "bold": "OPPOSans H",
-    "latin": "OPPO Sans Medium",
-    "mono": "OPPO Sans Medium",
+    "ui": "Microsoft YaHei UI",
+    "medium": "Microsoft YaHei UI",
+    "bold": "Microsoft YaHei UI",
+    "latin": "Microsoft YaHei UI",
+    "mono": "Microsoft YaHei UI",
 }
 
 LAYOUT_COMPACT = "compact"
 LAYOUT_NORMAL = "normal"
 LAYOUT_WIDE = "wide"
 BASE_WINDOWS_DPI = 96
+BASE_SCREEN_WIDTH = 1920
+BASE_SCREEN_HEIGHT = 1080
 CARD_PAGE_SIZE = 12
 TREE_PAGE_SIZE = 80
 
@@ -213,6 +215,32 @@ def _window_dpi(root: Tk) -> int:
         return max(1, round(float(root.winfo_fpixels("1i"))))
     except Exception:
         return BASE_WINDOWS_DPI
+
+
+def _resolution_scale(width: object, height: object) -> float:
+    """Keep the same physical UI footprint when Windows reports 96 DPI on 4K."""
+
+    try:
+        screen_width = int(width)
+        screen_height = int(height)
+    except (TypeError, ValueError):
+        return 1.0
+    if screen_width <= 0 or screen_height <= 0:
+        return 1.0
+    scale = min(
+        screen_width / BASE_SCREEN_WIDTH,
+        screen_height / BASE_SCREEN_HEIGHT,
+    )
+    return round(max(1.0, min(3.0, scale)), 3)
+
+
+def _effective_ui_scale(dpi: object, width: object, height: object) -> float:
+    """Combine the user's Windows scale with a resolution-density fallback."""
+
+    return max(
+        _ui_scale_from_dpi(dpi),
+        _resolution_scale(width, height),
+    )
 
 
 def _scale_geometry(geometry: str, scale: float) -> str:
@@ -295,6 +323,27 @@ def _ellipsize(value: object, max_characters: int) -> str:
     if max_characters <= 1 or len(text) <= max_characters:
         return text
     return text[: max_characters - 1].rstrip() + "…"
+
+
+def _pixel_ellipsize(value: object, maximum_width: int, measure) -> str:
+    """Fit one-line text to a rendered pixel width and keep an explicit ellipsis."""
+
+    text = " ".join(str(value or "").split())
+    width = max(1, int(maximum_width))
+    if not text or measure(text) <= width:
+        return text
+    ellipsis = "…"
+    if measure(ellipsis) >= width:
+        return ellipsis
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = text[:middle].rstrip() + ellipsis
+        if measure(candidate) <= width:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low].rstrip() + ellipsis
 
 
 def _display_bytes(value: object) -> str:
@@ -399,7 +448,15 @@ def _media_plan_view(plan: dict) -> dict:
 
 
 def _configure_styles(root: Tk, scale: float | None = None) -> None:
-    ui_scale = _ui_scale_from_dpi(_window_dpi(root)) if scale is None else scale
+    ui_scale = (
+        _effective_ui_scale(
+            _window_dpi(root),
+            root.winfo_screenwidth(),
+            root.winfo_screenheight(),
+        )
+        if scale is None
+        else scale
+    )
     try:
         root.tk.call("tk", "scaling", ui_scale * BASE_WINDOWS_DPI / 72)
     except Exception:
@@ -414,39 +471,17 @@ def _configure_styles(root: Tk, scale: float | None = None) -> None:
         (
             family
             for family in (
-                FONT_FAMILIES["ui"],
-                "OPPO Sans VF",
-                "Segoe UI",
                 "Microsoft YaHei UI",
+                "Microsoft YaHei",
+                "Segoe UI",
+                FONT_FAMILIES["ui"],
             )
             if family in available_families
         ),
         "TkDefaultFont",
     )
-    medium_family = next(
-        (
-            family
-            for family in (
-                FONT_FAMILIES["medium"],
-                "OPPOSans M",
-                ui_family,
-            )
-            if family in available_families
-        ),
-        ui_family,
-    )
-    bold_family = next(
-        (
-            family
-            for family in (
-                FONT_FAMILIES["bold"],
-                "OPPOSans H",
-                medium_family,
-            )
-            if family in available_families
-        ),
-        medium_family,
-    )
+    medium_family = ui_family
+    bold_family = ui_family
     FONT_FAMILIES["ui"] = ui_family
     FONT_FAMILIES["medium"] = medium_family
     FONT_FAMILIES["bold"] = bold_family
@@ -454,19 +489,19 @@ def _configure_styles(root: Tk, scale: float | None = None) -> None:
     FONT_FAMILIES["mono"] = ui_family
     # Positive sizes are typographic points. Negative Tk font sizes are fixed
     # device pixels and stay physically tiny on a 4K/200% monitor.
-    root.option_add("*Font", (ui_family, 10))
+    root.option_add("*Font", (ui_family, 11))
     named_fonts = {
-        "Ui10": (ui_family, 8),
-        "Ui11": (ui_family, 9),
-        "Ui11Bold": (medium_family, 10),
-        "Ui12": (ui_family, 10),
-        "Ui12Bold": (medium_family, 11),
-        "Ui13": (medium_family, 11),
-        "Ui13Bold": (bold_family, 11),
-        "Ui14Bold": (bold_family, 13),
-        "Mono10": (ui_family, 8),
-        "Mono11": (ui_family, 9),
-        "Mono24Bold": (bold_family, 21),
+        "Ui10": (ui_family, 9, "normal"),
+        "Ui11": (ui_family, 10, "normal"),
+        "Ui11Bold": (medium_family, 10, "bold"),
+        "Ui12": (ui_family, 11, "normal"),
+        "Ui12Bold": (medium_family, 11, "bold"),
+        "Ui13": (medium_family, 12, "normal"),
+        "Ui13Bold": (bold_family, 12, "bold"),
+        "Ui14Bold": (bold_family, 14, "bold"),
+        "Mono10": (ui_family, 9, "normal"),
+        "Mono11": (ui_family, 10, "normal"),
+        "Mono24Bold": (bold_family, 22, "bold"),
     }
     persistent_fonts: dict[str, tkfont.Font] = {}
     for name, definition in named_fonts.items():
@@ -1334,9 +1369,21 @@ class _RoundedButton(Canvas):
         width: int = 88,
     ) -> None:
         ui_scale = _widget_ui_scale(parent)
+        self._font = tkfont.Font(
+            root=parent,
+            family=FONT_FAMILIES["ui"],
+            size=10,
+            weight="normal" if kind == "quiet" else "bold",
+        )
+        content_width = self._font.measure(text)
+        if image is not None:
+            content_width += image.width() + round(6 * ui_scale)
         super().__init__(
             parent,
-            width=max(1, round(width * ui_scale)),
+            width=max(
+                round(width * ui_scale),
+                content_width + round(24 * ui_scale),
+            ),
             height=max(1, round(METRICS["button_height"] * ui_scale)),
             background=UI["surface_raised"],
             borderwidth=0,
@@ -1348,15 +1395,6 @@ class _RoundedButton(Canvas):
         self._command = command
         self._image = image
         self._kind = kind
-        self._font = tkfont.Font(
-            root=parent,
-            family=(
-                FONT_FAMILIES["ui"]
-                if kind == "quiet"
-                else FONT_FAMILIES["medium"]
-            ),
-            size=9,
-        )
         self._enabled = True
         self._hovered = False
         self.bind("<Configure>", self._draw, add="+")
@@ -1455,22 +1493,28 @@ class _RoundedBadge(Canvas):
         fill: str,
         outer_background: str,
     ) -> None:
+        ui_scale = _widget_ui_scale(parent)
         self._font = tkfont.Font(
             root=parent,
-            family=FONT_FAMILIES["medium"],
-            size=8,
+            family=FONT_FAMILIES["ui"],
+            size=9,
+            weight="bold",
         )
-        width = self._font.measure(text) + 12
+        width = self._font.measure(text) + round(14 * ui_scale)
+        height = max(
+            round(22 * ui_scale),
+            self._font.metrics("linespace") + round(4 * ui_scale),
+        )
         super().__init__(
             parent,
             width=width,
-            height=18,
+            height=height,
             background=outer_background,
             borderwidth=0,
             highlightthickness=0,
         )
         self.create_polygon(
-            _rounded_polygon_points(0, 1, width, 17, RADII["badge"]),
+            _rounded_polygon_points(0, 1, width, height - 1, RADII["badge"]),
             smooth=True,
             splinesteps=18,
             fill=fill,
@@ -1478,7 +1522,7 @@ class _RoundedBadge(Canvas):
         )
         self.create_text(
             width // 2,
-            9,
+            height // 2,
             text=text,
             fill=foreground,
             font=self._font,
@@ -1512,12 +1556,13 @@ class _RoundedNavButton(Canvas):
         self._font = tkfont.Font(
             root=parent,
             family=FONT_FAMILIES["ui"],
-            size=10,
+            size=11,
         )
         self._selected_font = tkfont.Font(
             root=parent,
-            family=FONT_FAMILIES["medium"],
-            size=10,
+            family=FONT_FAMILIES["ui"],
+            size=11,
+            weight="bold",
         )
         self.bind("<Configure>", self._draw, add="+")
         self.bind("<Enter>", self._enter, add="+")
@@ -2051,7 +2096,11 @@ class MainWindow:
         self.root = Tk()
         if visual_capture_hidden:
             self.root.withdraw()
-        self.ui_scale = _ui_scale_from_dpi(_window_dpi(self.root))
+        self.ui_scale = _effective_ui_scale(
+            _window_dpi(self.root),
+            self.root.winfo_screenwidth(),
+            self.root.winfo_screenheight(),
+        )
         self.metrics = _scaled_metrics(self.ui_scale)
         _set_window_icon(self.root)
         _configure_styles(self.root, self.ui_scale)
@@ -2786,17 +2835,17 @@ class MainWindow:
         self.idm_column_layout = _ResponsiveTreeColumns(
             self.job_tree,
             [
-                ("time", 90, 0),
-                ("status", 88, 0),
-                ("file", 150, 2),
-                ("source", 100, 1),
-                ("message", 160, 2),
+                ("time", 100, 0),
+                ("status", 112, 0),
+                ("file", 180, 2),
+                ("source", 110, 1),
+                ("message", 180, 2),
             ],
             compact_minimums={
-                "time": 82,
-                "status": 80,
+                "time": 90,
+                "status": 104,
                 "file": 140,
-                "source": 88,
+                "source": 90,
                 "message": 140,
             },
         )
@@ -3985,6 +4034,12 @@ class MainWindow:
         if force or revision != self.last_jobs_revision:
             selected = self.selected_job_id()
             job_rows = []
+            tree_font = tkfont.nametofont("Ui12")
+
+            def fit_column(value: object, column: str) -> str:
+                width = int(self.job_tree.column(column, "width") or 24)
+                return _pixel_ellipsize(value, max(24, width - 16), tree_font.measure)
+
             jobs = self.database.list_jobs(500)
             visible_jobs, self.idm_page, self.idm_page_count = _page_slice(
                 jobs,
@@ -3999,7 +4054,7 @@ class MainWindow:
                 self.idm_page_count,
             )
             for job in visible_jobs:
-                created = time.strftime("%Y-%m-%d %H:%M", time.localtime(job["created_at"]))
+                created = _relative_time_label(float(job["created_at"] or 0))
                 source = "未记录"
                 if job.get("source_url"):
                     source = urlsplit(job["source_url"]).hostname or "已记录"
@@ -4012,9 +4067,9 @@ class MainWindow:
                         (
                         created,
                         STATUS_TEXT.get(job["status"], job["status"]),
-                        _ellipsize(job["file_name"], 38),
-                        _ellipsize(source, 26),
-                        _ellipsize(message, 52),
+                        fit_column(job["file_name"], "file"),
+                        fit_column(source, "source"),
+                        fit_column(message, "message"),
                     ),
                     )
                 )
