@@ -68,6 +68,13 @@ IDM 下载完成：最终路径 ──┴─> SQLite 持久任务
 - 产品 PNG、导航和动作图标以 `src/idm_eagle_bridge/assets` 为唯一发行资源目录；仓库根只保留 README 使用的产品图，不再复制 UI 图标。wheel 和 PyInstaller 都携带包内目录，冻结后从 `_MEIPASS/idm_eagle_bridge/assets` 读取。
 - `tests/visual_ui_fixture.py` 仍只注入确定性替身用于视觉 QA；真实接线回归直接创建 `Database`、`LocalApiServer`、`ProcessingService` 与 `MainWindow`，不下载远程媒体、不操作用户数据库。
 
+### 1.4.4 DPI、列表投影与计划通知
+
+- Windows 进程保持 Per‑Monitor DPI aware；Tk 字体使用点值，`tk scaling`、窗口逻辑尺寸、主布局指标和图标共同取自当前窗口 DPI，避免清晰字体与固定像素容器采用两套比例。
+- SQLite 和视频号注册表仍是完整事实源；UI 只创建当前页控件。媒体/视频号每页 12 项、IDM 每页 80 项，翻页只替换有界投影，不删除领域记录或文件。
+- `MediaCoordinator` 的进程内变更监听只通知“计划事实已变化”，不传下载状态机副本。视频号代理线程和本机 API 创建任务后向 Tk 队列投递轻量信号，Tk 主线程再读取 SQLite 最新快照。
+- 视频号捕获分为后台证书预检和后台启动/停止两个阶段；只有确认对话框在 Tk 主线程显示。扩展任务清理调用认证本机 API，服务端重新应用终态集合和文件不删除约束。
+
 ### 一键安装器与独立运行时
 
 - `installer/Setup.cs` 是普通用户入口，安装范围仅为当前 Windows 用户，不需要管理员权限。

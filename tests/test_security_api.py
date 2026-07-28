@@ -50,7 +50,7 @@ class SecurityApiTests(unittest.TestCase):
         try:
             with urlopen(f"http://{host}:{port}/health", timeout=3) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-            self.assertEqual(payload["version"], "1.4.3")
+            self.assertEqual(payload["version"], "1.4.4")
             self.assertEqual(payload["extensionProtocol"], 1)
             self.assertEqual(payload["databaseSchema"], 6)
             self.assertEqual(payload["downloadEngine"], "desktop_ffmpeg")
@@ -184,6 +184,35 @@ class SecurityApiTests(unittest.TestCase):
             )
             self.assertTrue(health["data"]["ok"])
             self.assertEqual(plans["data"], [])
+        finally:
+            server.stop()
+
+    def test_authenticated_media_clear_endpoint_uses_safe_terminal_cleanup(self) -> None:
+        server = LocalApiServer(self.database, host="127.0.0.1", port=0)
+        server.start()
+        host, port = server.address
+        base = f"http://{host}:{port}"
+        try:
+            code = PairingManager(self.database).pairing_code
+            paired = self._json_request(
+                f"{base}/api/pair",
+                {"code": code},
+                origin=ORIGIN,
+            )
+            token = paired["data"]["token"]
+            with patch.object(
+                server.api.media,
+                "clear_terminal_history",
+                return_value=7,
+            ) as clear_history:
+                response = self._json_request(
+                    f"{base}/api/media/clear",
+                    {"authToken": token},
+                    origin=ORIGIN,
+                )
+
+            self.assertEqual(response["data"], {"removed": 7})
+            clear_history.assert_called_once_with()
         finally:
             server.stop()
 

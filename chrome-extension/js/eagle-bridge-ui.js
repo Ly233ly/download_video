@@ -20,7 +20,8 @@
         siteRule: "记录来源并自动导入 Eagle", recordPage: "记录当前页", ignoreNext: "忽略下一次导入",
         pauseCapture: "暂停/继续捕获", openWindow: "独立窗口", clearMedia: "清空当前页媒体",
         copyLink: "复制链接",
-        taskTitle: "下载任务", taskSubtitle: "每个任务独立显示下载、合并与导入状态。", refreshTasks: "刷新任务",
+        taskTitle: "下载任务", taskSubtitle: "浏览器与视频号任务统一显示在这里。", refreshTasks: "刷新任务", clearTasks: "清除完成",
+        clearTasksConfirm: "只清除已完成、失败和已停止的任务记录；进行中的任务与下载文件都会保留。是否继续？", tasksCleared: "已清除 {count} 条任务记录",
         noTasks: "还没有下载任务。", stop: "停止", backToMedia: "返回媒体重新创建",
         discoverBody: "按当前标签页启动增强发现，状态会在这里保持同步。",
         on: "已开启", off: "已关闭", unavailable: "不可用",
@@ -63,7 +64,8 @@
         pairBody: "Enter the six-digit code shown by the desktop helper to enable local merging and Eagle import.", pairPlaceholder: "Six-digit code", pair: "Pair",
         siteRule: "Save source and auto-import", recordPage: "Record page", ignoreNext: "Ignore next import", pauseCapture: "Pause/resume capture",
         openWindow: "Open window", clearMedia: "Clear current media", copyLink: "Copy link",
-        taskTitle: "Download tasks", taskSubtitle: "Each task keeps its own download, merge, and import state.", refreshTasks: "Refresh tasks", noTasks: "No download tasks yet.",
+        taskTitle: "Download tasks", taskSubtitle: "Browser and WeChat Channels tasks appear here together.", refreshTasks: "Refresh tasks", clearTasks: "Clear finished",
+        clearTasksConfirm: "Clear completed, failed, and stopped task records? Active tasks and downloaded files will be kept.", tasksCleared: "Cleared {count} task records", noTasks: "No download tasks yet.",
         stop: "Stop", backToMedia: "Return to media", discoverBody: "Enable enhanced discovery for the current tab.",
         on: "On", off: "Off", unavailable: "Unavailable", taskStarted: "Task started", stopped: "Task stopped", copied: "Link copied", siteUpdated: "Site rule updated",
         pageRecorded: "Page source recorded", nextIgnored: "Next import will be ignored", pairingDone: "Paired", clearConfirm: "Clear all captured media on this page?",
@@ -548,7 +550,7 @@
         if (!panel) return;
         const tasks = state.plans.map(plan => logic.taskView(plan));
         panel.innerHTML = `<div class="bridge-section-view">
-            <div class="bridge-section-header"><div><h2>${escapeHtml(t("taskTitle"))}</h2><p>${escapeHtml(t("taskSubtitle"))}</p></div><button class="bridge-small-button" data-action="refresh-tasks">${escapeHtml(t("refreshTasks"))}</button></div>
+            <div class="bridge-section-header"><div><h2>${escapeHtml(t("taskTitle"))}</h2><p>${escapeHtml(t("taskSubtitle"))}</p></div><div class="bridge-section-actions"><button class="bridge-small-button" data-action="refresh-tasks">${escapeHtml(t("refreshTasks"))}</button><button class="bridge-small-button bridge-danger-button" data-action="clear-tasks">${escapeHtml(t("clearTasks"))}</button></div></div>
             ${state.taskSyncError ? `<div class="bridge-sync-warning" role="status">${escapeHtml(state.taskSyncError)}</div>` : ""}
             <div class="bridge-task-list">${tasks.length ? tasks.map(task => `
                 <article class="bridge-task-row" data-task-id="${escapeHtml(task.id)}">
@@ -967,7 +969,7 @@
         state.taskTimer = setTimeout(async () => {
             try { await refreshPlans(); } catch (_error) { /* keep the last visible task state */ }
             scheduleTaskPoll();
-        }, delay ?? (active ? 1200 : 6000));
+        }, delay ?? (active ? 1200 : state.view === "tasks" ? 2000 : 6000));
     }
 
     async function stopTask(planId) {
@@ -988,6 +990,19 @@
             showToast(t("taskStarted"));
             await refreshPlans();
             scheduleTaskPoll(500);
+        } catch (error) {
+            showToast(error.message || error, "error", 4200);
+        }
+    }
+
+    async function clearTasks() {
+        if (!window.confirm(t("clearTasksConfirm"))) return;
+        try {
+            const response = await send({ eagleBridge: "clearPlans" });
+            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+            const removed = Number(response.data?.removed || 0);
+            await refreshPlans();
+            showToast(t("tasksCleared", { count: removed }));
         } catch (error) {
             showToast(error.message || error, "error", 4200);
         }
@@ -1144,6 +1159,7 @@
         } else if (action === "create-plan") createPlan();
         else if (action === "download-only") downloadOnly();
         else if (action === "refresh-tasks") refreshPlans().catch(error => showToast(error.message, "error"));
+        else if (action === "clear-tasks") clearTasks();
         else if (action === "stop-task") stopTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "retry-task") retryTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "import-task") importExistingTask(event.target.closest("[data-plan-id]")?.dataset.planId);

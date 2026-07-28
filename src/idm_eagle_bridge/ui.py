@@ -5,6 +5,7 @@ import sys
 import time
 import webbrowser
 import json
+import re
 import threading
 import ctypes
 from fractions import Fraction
@@ -183,6 +184,79 @@ FONT_FAMILIES = {
 LAYOUT_COMPACT = "compact"
 LAYOUT_NORMAL = "normal"
 LAYOUT_WIDE = "wide"
+BASE_WINDOWS_DPI = 96
+CARD_PAGE_SIZE = 12
+TREE_PAGE_SIZE = 80
+
+
+def _ui_scale_from_dpi(dpi: object) -> float:
+    """Convert a Windows monitor DPI to a bounded UI scale."""
+
+    try:
+        value = float(dpi)
+    except (TypeError, ValueError):
+        value = BASE_WINDOWS_DPI
+    if not 48 <= value <= 480:
+        value = BASE_WINDOWS_DPI
+    return round(max(0.75, min(5.0, value / BASE_WINDOWS_DPI)), 3)
+
+
+def _window_dpi(root: Tk) -> int:
+    if sys.platform == "win32":
+        try:
+            dpi = int(ctypes.windll.user32.GetDpiForWindow(root.winfo_id()))
+            if dpi > 0:
+                return dpi
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+    try:
+        return max(1, round(float(root.winfo_fpixels("1i"))))
+    except Exception:
+        return BASE_WINDOWS_DPI
+
+
+def _scale_geometry(geometry: str, scale: float) -> str:
+    """Scale only the size portion of a Tk geometry string."""
+
+    match = re.fullmatch(
+        r"\s*(\d+)x(\d+)(?:(?P<x>[+-]\d+)(?P<y>[+-]\d+))?\s*",
+        str(geometry or ""),
+    )
+    if not match:
+        return geometry
+    width = max(1, round(int(match.group(1)) * scale))
+    height = max(1, round(int(match.group(2)) * scale))
+    position = f"{match.group('x')}{match.group('y')}" if match.group("x") else ""
+    return f"{width}x{height}{position}"
+
+
+def _scaled_metrics(scale: float) -> dict[str, int]:
+    return {
+        name: max(1, round(value * scale))
+        for name, value in METRICS.items()
+    }
+
+
+def _widget_ui_scale(widget: object) -> float:
+    try:
+        scaling = float(widget.tk.call("tk", "scaling"))
+    except Exception:
+        return 1.0
+    return max(0.75, min(5.0, scaling / (BASE_WINDOWS_DPI / 72)))
+
+
+def _page_slice(
+    items: list[object],
+    page: int,
+    page_size: int,
+) -> tuple[list[object], int, int]:
+    """Return one bounded projection page and its clamped page metadata."""
+
+    size = max(1, int(page_size))
+    total_pages = max(1, (len(items) + size - 1) // size)
+    current = max(0, min(int(page), total_pages - 1))
+    start = current * size
+    return items[start : start + size], current, total_pages
 
 
 def _enable_windows_dpi_awareness() -> bool:
@@ -281,6 +355,16 @@ def _fit_photo_image(
     )
 
 
+def _scale_photo_image(image: PhotoImage, scale: float) -> PhotoImage:
+    if abs(scale - 1.0) < 0.01:
+        return image
+    ratio = Fraction(scale).limit_denominator(4)
+    return image.zoom(ratio.numerator, ratio.numerator).subsample(
+        ratio.denominator,
+        ratio.denominator,
+    )
+
+
 def _media_plan_view(plan: dict) -> dict:
     status = str(plan.get("status") or "")
     job_status = str(plan.get("job_status") or "")
@@ -314,7 +398,12 @@ def _media_plan_view(plan: dict) -> dict:
     }
 
 
-def _configure_styles(root: Tk) -> None:
+def _configure_styles(root: Tk, scale: float | None = None) -> None:
+    ui_scale = _ui_scale_from_dpi(_window_dpi(root)) if scale is None else scale
+    try:
+        root.tk.call("tk", "scaling", ui_scale * BASE_WINDOWS_DPI / 72)
+    except Exception:
+        pass
     style = ttk.Style(root)
     try:
         style.theme_use("clam")
@@ -363,19 +452,21 @@ def _configure_styles(root: Tk) -> None:
     FONT_FAMILIES["bold"] = bold_family
     FONT_FAMILIES["latin"] = ui_family
     FONT_FAMILIES["mono"] = ui_family
-    root.option_add("*Font", (ui_family, -13))
+    # Positive sizes are typographic points. Negative Tk font sizes are fixed
+    # device pixels and stay physically tiny on a 4K/200% monitor.
+    root.option_add("*Font", (ui_family, 10))
     named_fonts = {
-        "Ui10": (ui_family, -11),
-        "Ui11": (ui_family, -12),
-        "Ui11Bold": (medium_family, -13),
-        "Ui12": (ui_family, -13),
-        "Ui12Bold": (medium_family, -14),
-        "Ui13": (medium_family, -14),
-        "Ui13Bold": (bold_family, -15),
-        "Ui14Bold": (bold_family, -17),
-        "Mono10": (ui_family, -11),
-        "Mono11": (ui_family, -12),
-        "Mono24Bold": (bold_family, -28),
+        "Ui10": (ui_family, 8),
+        "Ui11": (ui_family, 9),
+        "Ui11Bold": (medium_family, 10),
+        "Ui12": (ui_family, 10),
+        "Ui12Bold": (medium_family, 11),
+        "Ui13": (medium_family, 11),
+        "Ui13Bold": (bold_family, 11),
+        "Ui14Bold": (bold_family, 13),
+        "Mono10": (ui_family, 8),
+        "Mono11": (ui_family, 9),
+        "Mono24Bold": (bold_family, 21),
     }
     persistent_fonts: dict[str, tkfont.Font] = {}
     for name, definition in named_fonts.items():
@@ -697,7 +788,7 @@ def _configure_styles(root: Tk) -> None:
         bordercolor=UI["border"],
         borderwidth=1,
         relief="flat",
-        rowheight=METRICS["table_row_height"],
+        rowheight=max(1, round(METRICS["table_row_height"] * ui_scale)),
         font="Ui12",
     )
     style.map(
@@ -1242,10 +1333,11 @@ class _RoundedButton(Canvas):
         kind: str = "quiet",
         width: int = 88,
     ) -> None:
+        ui_scale = _widget_ui_scale(parent)
         super().__init__(
             parent,
-            width=width,
-            height=METRICS["button_height"],
+            width=max(1, round(width * ui_scale)),
+            height=max(1, round(METRICS["button_height"] * ui_scale)),
             background=UI["surface_raised"],
             borderwidth=0,
             highlightthickness=0,
@@ -1263,7 +1355,7 @@ class _RoundedButton(Canvas):
                 if kind == "quiet"
                 else FONT_FAMILIES["medium"]
             ),
-            size=-12,
+            size=9,
         )
         self._enabled = True
         self._hovered = False
@@ -1366,7 +1458,7 @@ class _RoundedBadge(Canvas):
         self._font = tkfont.Font(
             root=parent,
             family=FONT_FAMILIES["medium"],
-            size=-11,
+            size=8,
         )
         width = self._font.measure(text) + 12
         super().__init__(
@@ -1402,9 +1494,10 @@ class _RoundedNavButton(Canvas):
         image: PhotoImage | None,
         command,
     ) -> None:
+        ui_scale = _widget_ui_scale(parent)
         super().__init__(
             parent,
-            height=36,
+            height=max(36, round(36 * ui_scale)),
             background=UI["sidebar_bg"],
             borderwidth=0,
             highlightthickness=0,
@@ -1419,12 +1512,12 @@ class _RoundedNavButton(Canvas):
         self._font = tkfont.Font(
             root=parent,
             family=FONT_FAMILIES["ui"],
-            size=-13,
+            size=10,
         )
         self._selected_font = tkfont.Font(
             root=parent,
             family=FONT_FAMILIES["medium"],
-            size=-13,
+            size=10,
         )
         self.bind("<Configure>", self._draw, add="+")
         self.bind("<Enter>", self._enter, add="+")
@@ -1795,7 +1888,7 @@ def _load_product_image(maximum_size: int = 30) -> PhotoImage | None:
     return None
 
 
-def _load_ui_icons() -> dict[str, PhotoImage]:
+def _load_ui_icons(scale: float = 1.0) -> dict[str, PhotoImage]:
     bundle_value = str(getattr(sys, "_MEIPASS", "") or "")
     roots = []
     if bundle_value:
@@ -1815,7 +1908,10 @@ def _load_ui_icons() -> dict[str, PhotoImage]:
             if path.stem in loaded:
                 continue
             try:
-                loaded[path.stem] = PhotoImage(file=str(path))
+                loaded[path.stem] = _scale_photo_image(
+                    PhotoImage(file=str(path)),
+                    scale,
+                )
             except Exception:
                 continue
     return loaded
@@ -1955,17 +2051,25 @@ class MainWindow:
         self.root = Tk()
         if visual_capture_hidden:
             self.root.withdraw()
+        self.ui_scale = _ui_scale_from_dpi(_window_dpi(self.root))
+        self.metrics = _scaled_metrics(self.ui_scale)
         _set_window_icon(self.root)
-        _configure_styles(self.root)
-        self.brand_image = _load_product_image(16)
-        self.ui_icons = _load_ui_icons()
+        _configure_styles(self.root, self.ui_scale)
+        self.brand_image = _load_product_image(max(16, round(16 * self.ui_scale)))
+        self.ui_icons = _load_ui_icons(self.ui_scale)
         self.root.configure(background=UI["bg"])
         if self.start_hidden:
             self.root.withdraw()
         self.root.title("下载中转站")
-        initial_geometry = visual_capture_geometry or "1120x720"
+        initial_geometry = visual_capture_geometry or _scale_geometry(
+            "1120x720",
+            self.ui_scale,
+        )
         self.root.geometry(initial_geometry)
-        self.root.minsize(900, 600)
+        self.root.minsize(
+            round(900 * self.ui_scale),
+            round(600 * self.ui_scale),
+        )
         self.root.protocol("WM_DELETE_WINDOW", self.hide if external_tray else self.quit)
         self.status_text = StringVar()
         self.page_title_text = StringVar(value="下载任务")
@@ -1987,12 +2091,17 @@ class MainWindow:
         self.update_poll_after_id: str | None = None
         self.auto_update_after_id: str | None = None
         self.copy_feedback_after_id: str | None = None
+        self.media_change_after_id: str | None = None
+        self.media_change_events: Queue[None] = Queue()
+        self._media_change_listener = self._queue_media_change
         self.update_events: Queue[tuple[str, object]] = Queue()
         self.update_checking = False
         self.update_downloading = False
         self.visible = not self.start_hidden
         try:
-            initial_width = int(initial_geometry.lower().split("x", 1)[0])
+            initial_width = round(
+                int(initial_geometry.lower().split("x", 1)[0]) / self.ui_scale
+            )
         except (ValueError, AttributeError):
             initial_width = 1120
         self.layout_mode = _layout_mode_for_width(initial_width)
@@ -2005,6 +2114,8 @@ class MainWindow:
         self.selected_plan_card_id = ""
         self.plan_card_widgets: dict[str, tuple[ttk.Frame, list[ttk.Label], Canvas]] = {}
         self.plan_thumbnail_images: dict[str, PhotoImage] = {}
+        self.media_page = 0
+        self.media_page_count = 1
         self.preview_image: PhotoImage | None = None
         self.preview_cache = _PreviewImageCache()
         self.wechat_rows: dict[str, dict] = {}
@@ -2016,8 +2127,12 @@ class MainWindow:
         self.wechat_preview_requests: set[str] = set()
         self.wechat_preview_object_id = ""
         self.wechat_preview_image: PhotoImage | None = None
-        self.wechat_operation_results: Queue[tuple[bool, str]] = Queue()
+        self.wechat_page = 0
+        self.wechat_page_count = 1
+        self.wechat_operation_results: Queue[tuple[str, object]] = Queue()
         self.wechat_operation_busy = False
+        self.idm_page = 0
+        self.idm_page_count = 1
         self.last_eagle_check = 0.0
         self.eagle_connected = False
         self.eagle_probe = _AsyncProbe(
@@ -2025,6 +2140,13 @@ class MainWindow:
             name="eagle-health-probe",
         )
         self._build()
+        add_change_listener = getattr(self.media, "add_change_listener", None)
+        if callable(add_change_listener):
+            add_change_listener(self._media_change_listener)
+            self.media_change_after_id = self.root.after(
+                150,
+                self._poll_media_changes,
+            )
         self.root.bind("<Configure>", self._queue_responsive_layout, add="+")
         self.root.after_idle(self._apply_responsive_layout)
         self.refresh()
@@ -2039,7 +2161,7 @@ class MainWindow:
         self.topbar = ttk.Frame(
             shell,
             style="Topbar.TFrame",
-            height=METRICS["topbar_height"],
+            height=self.metrics["topbar_height"],
         )
         self.topbar.pack(fill=X)
         self.topbar.grid_propagate(False)
@@ -2086,7 +2208,7 @@ class MainWindow:
         self.sidebar = ttk.Frame(
             body,
             style="Sidebar.TFrame",
-            width=METRICS["sidebar_width"],
+            width=self.metrics["sidebar_width"],
             padding=(8, 8),
         )
         self.sidebar.pack(side=LEFT, fill=Y)
@@ -2184,22 +2306,23 @@ class MainWindow:
     def _apply_responsive_layout(self) -> None:
         self.layout_after_id = None
         width = max(self.root.winfo_width(), 1)
-        mode = _layout_mode_for_width(width)
+        logical_width = max(1, round(width / self.ui_scale))
+        mode = _layout_mode_for_width(logical_width)
         mode_changed = mode != self.layout_mode
         self.layout_mode = mode
         compact = mode == LAYOUT_COMPACT
         self.sidebar.configure(
             width=(
-                METRICS["sidebar_compact_width"]
+                self.metrics["sidebar_compact_width"]
                 if compact
-                else METRICS["sidebar_width"]
+                else self.metrics["sidebar_width"]
             )
         )
         self.topbar.configure(
             height=(
-                METRICS["topbar_compact_height"]
+                self.metrics["topbar_compact_height"]
                 if compact
-                else METRICS["topbar_height"]
+                else self.metrics["topbar_height"]
             )
         )
         if compact:
@@ -2239,9 +2362,9 @@ class MainWindow:
         if hasattr(self, "settings_nav"):
             self.settings_nav.configure(
                 width=(
-                    METRICS["secondary_nav_compact_width"]
+                    self.metrics["secondary_nav_compact_width"]
                     if compact
-                    else METRICS["secondary_nav_width"]
+                    else self.metrics["secondary_nav_width"]
                 )
             )
         if mode_changed or not self.responsive_initialized:
@@ -2250,6 +2373,8 @@ class MainWindow:
 
     def _apply_mode_to_page_layouts(self) -> None:
         compact = self.layout_mode == LAYOUT_COMPACT
+        metrics = getattr(self, "metrics", METRICS)
+        ui_scale = getattr(self, "ui_scale", 1.0)
         split_name = {
             "media": "media_split",
             "wechat": "wechat_split",
@@ -2261,12 +2386,12 @@ class MainWindow:
         if split is None:
             return
         if self.current_page == "idm":
-            target = 250 if compact else 330
+            target = round((250 if compact else 330) * ui_scale)
         else:
             target = (
-                METRICS["master_compact_width"]
+                metrics["master_compact_width"]
                 if compact
-                else METRICS["master_width"]
+                else metrics["master_width"]
             )
         try:
             split.sashpos(0, target)
@@ -2279,10 +2404,10 @@ class MainWindow:
         self.media_split.pack(fill=BOTH, expand=True)
         compact = self.layout_mode == LAYOUT_COMPACT
         master_width = (
-            METRICS["master_compact_width"] if compact else METRICS["master_width"]
+            self.metrics["master_compact_width"] if compact else self.metrics["master_width"]
         )
         sidebar_width = (
-            METRICS["sidebar_compact_width"] if compact else METRICS["sidebar_width"]
+            self.metrics["sidebar_compact_width"] if compact else self.metrics["sidebar_width"]
         )
         detail_width = max(
             1,
@@ -2305,7 +2430,7 @@ class MainWindow:
             master,
             style="Surface.TFrame",
             padding=(14, 0),
-            height=36,
+            height=max(36, round(36 * self.ui_scale)),
         )
         toolbar.pack(fill=X)
         toolbar.pack_propagate(False)
@@ -2320,12 +2445,28 @@ class MainWindow:
             style="MediaToolbar.TButton",
             command=self.clear_media_history,
         ).pack(side=RIGHT)
-        ttk.Button(
+        self.media_next_button = ttk.Button(
             toolbar,
-            text="刷新",
+            text="›",
+            width=2,
             style="MediaToolbar.TButton",
-            command=lambda: self.refresh(force=True),
-        ).pack(side=RIGHT, padx=(0, 4))
+            command=lambda: self._change_media_page(1),
+        )
+        self.media_next_button.pack(side=RIGHT)
+        self.media_page_text = StringVar(value="1/1")
+        ttk.Label(
+            toolbar,
+            textvariable=self.media_page_text,
+            style="MediaToolbarTitle.TLabel",
+        ).pack(side=RIGHT, padx=3)
+        self.media_previous_button = ttk.Button(
+            toolbar,
+            text="‹",
+            width=2,
+            style="MediaToolbar.TButton",
+            command=lambda: self._change_media_page(-1),
+        )
+        self.media_previous_button.pack(side=RIGHT)
 
         self.plan_card_list = _ScrollableCardList(
             master,
@@ -2471,7 +2612,7 @@ class MainWindow:
 
         def resize_preview(event: object) -> None:
             available = max(1, int(getattr(event, "width", 1)))
-            width = min(METRICS["preview_max_width"], available)
+            width = min(self.metrics["preview_max_width"], available)
             self.preview_surface.configure(width=width, height=max(1, width * 9 // 16))
 
         detail_content.bind("<Configure>", resize_preview, add="+")
@@ -2572,6 +2713,28 @@ class MainWindow:
             style="Link.TButton",
             command=lambda: self.refresh(force=True),
         ).pack(side=RIGHT, padx=(0, 4))
+        self.idm_next_button = ttk.Button(
+            toolbar,
+            text="›",
+            width=2,
+            style="Link.TButton",
+            command=lambda: self._change_idm_page(1),
+        )
+        self.idm_next_button.pack(side=RIGHT)
+        self.idm_page_text = StringVar(value="1/1")
+        ttk.Label(
+            toolbar,
+            textvariable=self.idm_page_text,
+            style="SectionOnSurface.TLabel",
+        ).pack(side=RIGHT, padx=3)
+        self.idm_previous_button = ttk.Button(
+            toolbar,
+            text="‹",
+            width=2,
+            style="Link.TButton",
+            command=lambda: self._change_idm_page(-1),
+        )
+        self.idm_previous_button.pack(side=RIGHT)
         ttk.Label(
             toolbar,
             text="IDM 导入",
@@ -2746,10 +2909,10 @@ class MainWindow:
         self.wechat_split.pack(fill=BOTH, expand=True)
         compact = self.layout_mode == LAYOUT_COMPACT
         master_width = (
-            METRICS["master_compact_width"] if compact else METRICS["master_width"]
+            self.metrics["master_compact_width"] if compact else self.metrics["master_width"]
         )
         sidebar_width = (
-            METRICS["sidebar_compact_width"] if compact else METRICS["sidebar_width"]
+            self.metrics["sidebar_compact_width"] if compact else self.metrics["sidebar_width"]
         )
         detail_width = max(1, self.initial_client_width - sidebar_width - master_width)
         master = ttk.Frame(
@@ -2808,12 +2971,28 @@ class MainWindow:
             command=self.clear_wechat_candidates,
             style="Link.TButton",
         ).pack(side=RIGHT)
-        ttk.Button(
+        self.wechat_next_button = ttk.Button(
             candidate_toolbar,
-            text="刷新",
-            command=lambda: self.refresh(force=True),
+            text="›",
+            width=2,
+            command=lambda: self._change_wechat_page(1),
             style="Link.TButton",
-        ).pack(side=RIGHT, padx=(0, 4))
+        )
+        self.wechat_next_button.pack(side=RIGHT)
+        self.wechat_page_text = StringVar(value="1/1")
+        ttk.Label(
+            candidate_toolbar,
+            textvariable=self.wechat_page_text,
+            style="Muted.TLabel",
+        ).pack(side=RIGHT, padx=3)
+        self.wechat_previous_button = ttk.Button(
+            candidate_toolbar,
+            text="‹",
+            width=2,
+            command=lambda: self._change_wechat_page(-1),
+            style="Link.TButton",
+        )
+        self.wechat_previous_button.pack(side=RIGHT)
 
         self.wechat_card_list = _ScrollableCardList(
             master,
@@ -2835,7 +3014,7 @@ class MainWindow:
         self.wechat_preview_surface = ttk.Frame(
             detail_content,
             style="Soft.TFrame",
-            width=METRICS["preview_max_width"],
+            width=self.metrics["preview_max_width"],
             height=252,
         )
         self.wechat_preview_surface.pack(anchor="center")
@@ -2935,7 +3114,7 @@ class MainWindow:
 
         def resize_preview(event: object) -> None:
             available = max(1, int(getattr(event, "width", 1)))
-            width = min(METRICS["preview_max_width"], available)
+            width = min(self.metrics["preview_max_width"], available)
             self.wechat_preview_surface.configure(
                 width=width,
                 height=max(1, width * 9 // 16),
@@ -2949,7 +3128,7 @@ class MainWindow:
         self.settings_nav = ttk.Frame(
             tab,
             style="Sidebar.TFrame",
-            width=METRICS["secondary_nav_width"],
+            width=self.metrics["secondary_nav_width"],
         )
         self.settings_nav.pack(side=LEFT, fill=Y)
         self.settings_nav.pack_propagate(False)
@@ -3024,7 +3203,7 @@ class MainWindow:
         self.pairing_code_font = tkfont.Font(
             root=self.root,
             family=FONT_FAMILIES["mono"],
-            size=-32,
+            size=24,
             weight="bold",
         )
         ttk.Label(
@@ -3607,6 +3786,27 @@ class MainWindow:
         except Exception as exc:
             self.update_events.put(("check_error", (silent, exc)))
 
+    def _queue_media_change(self) -> None:
+        self.media_change_events.put(None)
+
+    def _poll_media_changes(self) -> None:
+        self.media_change_after_id = None
+        changed = False
+        while True:
+            try:
+                self.media_change_events.get_nowait()
+                changed = True
+            except Empty:
+                break
+        if changed:
+            self.media_page = 0
+            self.refresh(force=True)
+        if callable(getattr(self.media, "add_change_listener", None)):
+            self.media_change_after_id = self.root.after(
+                150,
+                self._poll_media_changes,
+            )
+
     def _ensure_update_poll(self) -> None:
         if self.update_poll_after_id is None:
             self.update_poll_after_id = self.root.after(150, self._poll_update_events)
@@ -3785,7 +3985,20 @@ class MainWindow:
         if force or revision != self.last_jobs_revision:
             selected = self.selected_job_id()
             job_rows = []
-            for job in self.database.list_jobs(500):
+            jobs = self.database.list_jobs(500)
+            visible_jobs, self.idm_page, self.idm_page_count = _page_slice(
+                jobs,
+                self.idm_page,
+                TREE_PAGE_SIZE,
+            )
+            self._update_pager(
+                self.idm_previous_button,
+                self.idm_next_button,
+                self.idm_page_text,
+                self.idm_page,
+                self.idm_page_count,
+            )
+            for job in visible_jobs:
                 created = time.strftime("%Y-%m-%d %H:%M", time.localtime(job["created_at"]))
                 source = "未记录"
                 if job.get("source_url"):
@@ -3820,6 +4033,39 @@ class MainWindow:
             1000 if media_active_count or wechat_health.get("running") else 4000,
             self.refresh,
         )
+
+    @staticmethod
+    def _update_pager(
+        previous: ttk.Button,
+        following: ttk.Button,
+        text: StringVar,
+        page: int,
+        total_pages: int,
+    ) -> None:
+        text.set(f"{page + 1}/{total_pages}")
+        previous.state(["!disabled"] if page > 0 else ["disabled"])
+        following.state(["!disabled"] if page + 1 < total_pages else ["disabled"])
+
+    def _change_media_page(self, delta: int) -> None:
+        target = max(0, min(self.media_page + delta, self.media_page_count - 1))
+        if target == self.media_page:
+            return
+        self.media_page = target
+        self.refresh(force=True)
+
+    def _change_wechat_page(self, delta: int) -> None:
+        target = max(0, min(self.wechat_page + delta, self.wechat_page_count - 1))
+        if target == self.wechat_page:
+            return
+        self.wechat_page = target
+        self.refresh(force=True)
+
+    def _change_idm_page(self, delta: int) -> None:
+        target = max(0, min(self.idm_page + delta, self.idm_page_count - 1))
+        if target == self.idm_page:
+            return
+        self.idm_page = target
+        self.refresh(force=True)
 
     @staticmethod
     def _duration_text(milliseconds: object) -> str:
@@ -3878,7 +4124,7 @@ class MainWindow:
             row = ttk.Frame(
                 self.wechat_card_list.content,
                 style=frame_style,
-                height=METRICS["wechat_row_height"],
+                height=self.metrics["wechat_row_height"],
                 takefocus=True,
             )
             row.pack(fill=X)
@@ -4017,10 +4263,38 @@ class MainWindow:
         self.wechat_rows = {str(item["objectId"]): item for item in candidates}
         selected_id = self.selected_wechat_card_id
         if force or revision != self.wechat_revision:
+            previous_count = self.wechat_revision[0] if self.wechat_revision else 0
+            if len(candidates) > previous_count:
+                self.wechat_page = max(
+                    0,
+                    (len(candidates) - 1) // CARD_PAGE_SIZE,
+                )
+            visible_candidates, self.wechat_page, self.wechat_page_count = _page_slice(
+                candidates,
+                self.wechat_page,
+                CARD_PAGE_SIZE,
+            )
+            self._update_pager(
+                self.wechat_previous_button,
+                self.wechat_next_button,
+                self.wechat_page_text,
+                self.wechat_page,
+                self.wechat_page_count,
+            )
             if selected_id not in self.wechat_rows:
                 selected_id = str(candidates[-1]["objectId"]) if candidates else ""
+            visible_ids = {
+                str(candidate["objectId"])
+                for candidate in visible_candidates
+            }
+            if selected_id not in visible_ids:
+                selected_id = (
+                    str(visible_candidates[-1]["objectId"])
+                    if visible_candidates
+                    else ""
+                )
             self.selected_wechat_card_id = selected_id
-            self._render_wechat_cards(candidates)
+            self._render_wechat_cards(visible_candidates)
             self.wechat_revision = revision
         self._update_wechat_detail()
 
@@ -4138,8 +4412,8 @@ class MainWindow:
             target_height = 220 if self.layout_mode == LAYOUT_COMPACT else 252
             factor = max(
                 1,
-                (image.width() + METRICS["preview_max_width"] - 1)
-                // METRICS["preview_max_width"],
+                (image.width() + self.metrics["preview_max_width"] - 1)
+                // self.metrics["preview_max_width"],
                 (image.height() + target_height - 1) // target_height,
             )
             self.wechat_preview_image = (
@@ -4155,33 +4429,39 @@ class MainWindow:
         if self.wechat_operation_busy:
             return
         running = bool(self.wechat_channels.health().get("running"))
-        if not running:
-            try:
-                existing = self.wechat_channels.certificate.existing()
-                needs_trust = not existing or not self.wechat_channels.certificate.is_trusted(
-                    existing.fingerprint
-                )
-            except Exception as exc:
-                messagebox.showerror("无法检查视频号证书", str(exc), parent=self.root)
-                return
-            if needs_trust and not messagebox.askokcancel(
-                "首次启用视频号捕获",
-                "下载中转站将为当前 Windows 用户生成并信任一张仅用于微信视频号本机捕获的根证书。\n\n"
-                "Windows 随后会显示“安全警告”，请核对证书名称为“下载中转站 微信视频号本机捕获根证书”后亲自确认。停止捕获会恢复系统代理；卸载会按精确指纹移除此证书。\n\n"
-                "是否继续？",
-                parent=self.root,
-            ):
-                return
         self.wechat_operation_busy = True
         self.wechat_action_button.state(["disabled"])
-        self.wechat_status_text.set("正在停止视频号捕获…" if running else "正在准备视频号捕获…")
+        self.wechat_status_text.set(
+            "正在停止视频号捕获…"
+            if running
+            else "正在后台检查视频号捕获环境…"
+        )
+        target = self._run_wechat_operation if running else self._run_wechat_preflight
         threading.Thread(
-            target=self._run_wechat_operation,
-            args=(running,),
-            name="wechat-capture-toggle",
+            target=target,
+            args=(running,) if running else (),
+            name=(
+                "wechat-capture-toggle"
+                if running
+                else "wechat-capture-preflight"
+            ),
             daemon=True,
         ).start()
         self.root.after(200, self._poll_wechat_operation)
+
+    def _run_wechat_preflight(self) -> None:
+        try:
+            existing = self.wechat_channels.certificate.existing()
+            needs_trust = (
+                not existing
+                or not self.wechat_channels.certificate.is_trusted(
+                    existing.fingerprint
+                )
+            )
+        except Exception as exc:
+            self.wechat_operation_results.put(("preflight_error", str(exc)))
+            return
+        self.wechat_operation_results.put(("preflight", needs_trust))
 
     def _run_wechat_operation(self, was_running: bool) -> None:
         try:
@@ -4190,17 +4470,49 @@ class MainWindow:
             else:
                 self.wechat_channels.start()
         except Exception as exc:
-            self.wechat_operation_results.put((False, str(exc)))
+            self.wechat_operation_results.put(("completed", (False, str(exc))))
             return
-        self.wechat_operation_results.put((True, ""))
+        self.wechat_operation_results.put(("completed", (True, "")))
 
     def _poll_wechat_operation(self) -> None:
         try:
-            succeeded, error = self.wechat_operation_results.get_nowait()
+            event, payload = self.wechat_operation_results.get_nowait()
         except Empty:
             if self.wechat_operation_busy:
                 self.root.after(200, self._poll_wechat_operation)
             return
+        if event == "preflight_error":
+            self.wechat_operation_busy = False
+            self.wechat_action_button.state(["!disabled"])
+            messagebox.showerror(
+                "无法检查视频号证书",
+                str(payload),
+                parent=self.root,
+            )
+            self.refresh(force=True)
+            return
+        if event == "preflight":
+            if bool(payload) and not messagebox.askokcancel(
+                "首次启用视频号捕获",
+                "下载中转站将为当前 Windows 用户生成并信任一张仅用于微信视频号本机捕获的根证书。\n\n"
+                "Windows 随后会显示“安全警告”，请核对证书名称为“下载中转站 微信视频号本机捕获根证书”后亲自确认。停止捕获会恢复系统代理；卸载会按精确指纹移除此证书。\n\n"
+                "是否继续？",
+                parent=self.root,
+            ):
+                self.wechat_operation_busy = False
+                self.wechat_action_button.state(["!disabled"])
+                self.refresh(force=True)
+                return
+            self.wechat_status_text.set("正在准备视频号捕获…")
+            threading.Thread(
+                target=self._run_wechat_operation,
+                args=(False,),
+                name="wechat-capture-toggle",
+                daemon=True,
+            ).start()
+            self.root.after(200, self._poll_wechat_operation)
+            return
+        succeeded, error = payload
         self.wechat_operation_busy = False
         self.wechat_action_button.state(["!disabled"])
         if not succeeded:
@@ -4301,7 +4613,7 @@ class MainWindow:
                 outer_background=UI["surface"],
                 style=frame_style,
                 radius=RADII["card"],
-                height=METRICS["task_row_height"] - 4,
+                height=self.metrics["task_row_height"] - max(1, round(4 * self.ui_scale)),
                 inset=4,
                 takefocus=True,
             )
@@ -4508,10 +4820,29 @@ class MainWindow:
         self.plan_rows = {str(plan["id"]): plan for plan in plans}
         selected = self.selected_plan_id()
         if force or revision != self.last_plans_revision:
+            previous_count = self.last_plans_revision[0] if self.last_plans_revision else 0
+            if len(plans) > previous_count:
+                self.media_page = 0
+                selected = str(plans[0]["id"]) if plans else ""
+            visible_plans, self.media_page, self.media_page_count = _page_slice(
+                plans,
+                self.media_page,
+                CARD_PAGE_SIZE,
+            )
+            self._update_pager(
+                self.media_previous_button,
+                self.media_next_button,
+                self.media_page_text,
+                self.media_page,
+                self.media_page_count,
+            )
             if selected not in self.plan_rows:
                 selected = str(plans[0]["id"]) if plans else ""
+            visible_ids = {str(plan["id"]) for plan in visible_plans}
+            if selected not in visible_ids:
+                selected = str(visible_plans[0]["id"]) if visible_plans else ""
             self.selected_plan_card_id = selected or ""
-            self._render_plan_cards(plans)
+            self._render_plan_cards(visible_plans)
             self.last_plans_revision = revision
         self._update_plan_detail()
 
@@ -4593,7 +4924,7 @@ class MainWindow:
             target_height = 180 if self.layout_mode == LAYOUT_COMPACT else 252
             self.preview_image = _fit_photo_image(
                 image,
-                METRICS["preview_max_width"],
+                self.metrics["preview_max_width"],
                 target_height,
             )
             self.preview_label.configure(image=self.preview_image, text="")
@@ -4945,6 +5276,12 @@ class MainWindow:
         if self.copy_feedback_after_id:
             self.root.after_cancel(self.copy_feedback_after_id)
             self.copy_feedback_after_id = None
+        if self.media_change_after_id:
+            self.root.after_cancel(self.media_change_after_id)
+            self.media_change_after_id = None
+        remove_change_listener = getattr(self.media, "remove_change_listener", None)
+        if callable(remove_change_listener):
+            remove_change_listener(self._media_change_listener)
         if self.control_signals:
             self.control_signals.close()
             self.control_signals = None

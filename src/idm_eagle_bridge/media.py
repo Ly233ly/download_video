@@ -223,8 +223,28 @@ class MediaCoordinator:
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._stop_requested: set[str] = set()
         self._health_cache: tuple[float, dict[str, Any]] | None = None
+        self._change_listeners: list[Callable[[], None]] = []
         self._lock = threading.Lock()
         self._recover_interrupted_plans()
+
+    def add_change_listener(self, listener: Callable[[], None]) -> None:
+        with self._lock:
+            if listener not in self._change_listeners:
+                self._change_listeners.append(listener)
+
+    def remove_change_listener(self, listener: Callable[[], None]) -> None:
+        with self._lock:
+            if listener in self._change_listeners:
+                self._change_listeners.remove(listener)
+
+    def _notify_changed(self) -> None:
+        with self._lock:
+            listeners = tuple(self._change_listeners)
+        for listener in listeners:
+            try:
+                listener()
+            except Exception:
+                pass
 
     def _recover_interrupted_plans(self) -> None:
         """Full signed URLs are memory-only, so an interrupted task cannot be guessed."""
@@ -506,6 +526,7 @@ class MediaCoordinator:
 
         with self._lock:
             self._remote_inputs[plan_id] = {"streams": contexts}
+        self._notify_changed()
         self.schedule(plan_id)
         return {
             "id": plan_id,
@@ -1857,6 +1878,7 @@ class MediaCoordinator:
                 self._remote_inputs.pop(plan_id, None)
                 self._scheduled.discard(plan_id)
                 self._stop_requested.discard(plan_id)
+        self._notify_changed()
         return len(plan_ids)
 
     def _owned_plan_file(self, plan_id: str, field: str, directory: str) -> Path:

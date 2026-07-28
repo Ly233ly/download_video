@@ -29,7 +29,7 @@ class ExtensionTests(unittest.TestCase):
     def test_manifests_are_versioned_and_include_structured_site_bridges(self) -> None:
         for name in ("manifest.json", "manifest.firefox.json"):
             manifest = json.loads((EXTENSION / name).read_text(encoding="utf-8"))
-            self.assertEqual(manifest["version"], "1.4.3")
+            self.assertEqual(manifest["version"], "1.4.4")
             self.assertEqual(manifest["name"], "下载中转站")
             scripts = [script for entry in manifest["content_scripts"] for script in entry["js"]]
             self.assertIn("js/bilibili-content.js", scripts)
@@ -39,12 +39,12 @@ class ExtensionTests(unittest.TestCase):
             self.assertIn("catch-script/youtube.js", resources)
         setup = (ROOT / "installer" / "Setup.cs").read_text(encoding="utf-8")
         launcher = (ROOT / "launcher" / "Launcher.cs").read_text(encoding="utf-8")
-        self.assertIn('internal const string Version = "1.4.3"', setup)
-        self.assertIn('AssemblyFileVersion("1.4.3.0")', setup)
-        self.assertIn('AssemblyFileVersion("1.4.3.0")', launcher)
+        self.assertIn('internal const string Version = "1.4.4"', setup)
+        self.assertIn('AssemblyFileVersion("1.4.4.0")', setup)
+        self.assertIn('AssemblyFileVersion("1.4.4.0")', launcher)
         version_resource = (ROOT / "packaging" / "download-transfer-station-version.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(1, 4, 3, 0)", version_resource)
-        self.assertIn("prodvers=(1, 4, 3, 0)", version_resource)
+        self.assertIn("filevers=(1, 4, 4, 0)", version_resource)
+        self.assertIn("prodvers=(1, 4, 4, 0)", version_resource)
         self.assertGreaterEqual(setup.count("WriteBootstrapPairing(extensionDirectory"), 3)
 
     def test_bilibili_playinfo_becomes_grouped_video_and_audio(self) -> None:
@@ -125,6 +125,15 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("fixedByteRange(candidate)", logic)
         self.assertIn('item.name == "content-md5"', background)
         self.assertIn("contentIdentity: data.header?.contentIdentity", background)
+
+    def test_task_history_can_be_cleared_from_the_popup(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        bridge = (EXTENSION / "js" / "eagle-bridge.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-action="clear-tasks"', ui)
+        self.assertIn('eagleBridge: "clearPlans"', ui)
+        self.assertIn('case "clearPlans"', bridge)
+        self.assertIn('"/api/media/clear"', bridge)
 
     def test_large_candidate_bursts_do_not_regroup_or_load_every_preview_eagerly(self) -> None:
         background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")

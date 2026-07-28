@@ -485,6 +485,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     method: "POST",
                     body: JSON.stringify({ planId: message.planId })
                 });
+            case "clearPlans":
+                return eagleBridgeApi("/api/media/clear", {
+                    method: "POST",
+                    body: JSON.stringify({})
+                });
             default:
                 throw new Error("未知的下载中转站扩展操作");
         }

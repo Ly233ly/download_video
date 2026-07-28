@@ -1000,6 +1000,22 @@ body.popupBody {
     margin-left: auto;
 }
 
+.bridge-section-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.bridge-section-actions .bridge-small-button {
+    margin-left: 0;
+}
+
+.bridge-danger-button {
+    color: var(--bridge-danger);
+    border-color: color-mix(in srgb, var(--bridge-danger) 30%, var(--bridge-border));
+}
+
 .bridge-task-list {
     display: grid;
     gap: 0;

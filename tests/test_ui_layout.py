@@ -30,7 +30,10 @@ from idm_eagle_bridge.ui import (
     _load_ui_icons,
     _media_plan_view,
     _relative_time_label,
+    _scale_geometry,
     _sync_tree_rows,
+    _ui_scale_from_dpi,
+    _page_slice,
     MainWindow,
 )
 
@@ -83,6 +86,24 @@ class _FakeSplit:
 
 
 class UiPerformanceHelpersTests(unittest.TestCase):
+    def test_dpi_scale_keeps_logical_window_size_across_monitors(self) -> None:
+        self.assertEqual(_ui_scale_from_dpi(96), 1.0)
+        self.assertEqual(_ui_scale_from_dpi(144), 1.5)
+        self.assertEqual(_ui_scale_from_dpi(192), 2.0)
+        self.assertEqual(_scale_geometry("1120x720", 2.0), "2240x1440")
+
+    def test_page_slice_bounds_widget_projection_size(self) -> None:
+        items = list(range(203))
+        first, page, total_pages = _page_slice(items, 0, 12)
+        last, last_page, last_total_pages = _page_slice(items, 99, 12)
+
+        self.assertEqual(first, list(range(12)))
+        self.assertEqual(page, 0)
+        self.assertEqual(total_pages, 17)
+        self.assertEqual(last, list(range(192, 203)))
+        self.assertEqual(last_page, 16)
+        self.assertEqual(last_total_pages, 17)
+
     def test_layout_modes_follow_the_contract_breakpoints(self) -> None:
         self.assertEqual(_layout_mode_for_width(900), "compact")
         self.assertEqual(_layout_mode_for_width(1023), "compact")
@@ -299,6 +320,65 @@ class ResponsiveWidgetTests(unittest.TestCase):
         gc.collect()
 
         self.assertGreater(tkfont.nametofont("Ui11").measure("媒体任务"), 0)
+        self.assertGreater(
+            int(tkfont.nametofont("Ui11").cget("size")),
+            0,
+            "Positive point sizes are required for Windows DPI scaling",
+        )
+
+    def test_named_fonts_follow_high_dpi_tk_scaling(self) -> None:
+        self.root.tk.call("tk", "scaling", 96 / 72)
+        font = tkfont.Font(self.root, family="Segoe UI", size=10)
+        normal = font.metrics("linespace")
+        self.root.tk.call("tk", "scaling", 192 / 72)
+        high_dpi = font.metrics("linespace")
+
+        self.assertGreater(high_dpi, normal * 1.7)
+
+    def test_wechat_capture_preflight_never_blocks_the_tk_callback(self) -> None:
+        class SlowCertificate:
+            def existing(self):
+                time.sleep(0.25)
+                return None
+
+            def is_trusted(self, _fingerprint: str) -> bool:
+                return False
+
+        class Channels:
+            certificate = SlowCertificate()
+
+            @staticmethod
+            def health() -> dict[str, bool]:
+                return {"running": False}
+
+            @staticmethod
+            def start() -> None:
+                return None
+
+        class Button:
+            def state(self, _value) -> None:
+                return None
+
+        class Text:
+            def set(self, _value: str) -> None:
+                return None
+
+        class Root:
+            def after(self, _delay: int, _callback) -> str:
+                return "after-id"
+
+        window = object.__new__(MainWindow)
+        window.wechat_channels = Channels()
+        window.wechat_operation_busy = False
+        window.wechat_operation_results = __import__("queue").Queue()
+        window.wechat_action_button = Button()
+        window.wechat_status_text = Text()
+        window.root = Root()
+
+        started = time.perf_counter()
+        window.toggle_wechat_capture()
+
+        self.assertLess(time.perf_counter() - started, 0.1)
 
     def test_production_ui_assets_load_from_the_python_package(self) -> None:
         package_assets = (
@@ -455,6 +535,35 @@ class ProductionUiIntegrationTests(unittest.TestCase):
             self.assertEqual(window.plan_secondary_actions.winfo_manager(), "pack")
             self.assertTrue(window.plan_action_buttons["stop"]._enabled)
             self.assertFalse(window.plan_action_buttons["retry"]._enabled)
+
+            with patch.object(server.api.media, "schedule"):
+                wechat_plan = server.api.media.create_plan(
+                    {
+                        "sourceType": "wechat_channels",
+                        "pageUrl": "https://channels.weixin.qq.com/",
+                        "pageTitle": "视频号统一任务",
+                        "outputName": "视频号统一任务.mp4",
+                        "outputContainer": "mp4",
+                        "mergeMode": "direct",
+                        "importToEagle": True,
+                        "streams": [
+                            {
+                                "url": "https://finder.video.qq.com/video.mp4",
+                                "role": "video",
+                                "name": "video.mp4",
+                                "extension": "mp4",
+                                "mimeType": "video/mp4",
+                            }
+                        ],
+                    }
+                )
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and wechat_plan["id"] not in window.plan_rows:
+                window.root.update()
+                time.sleep(0.01)
+
+            self.assertIn(wechat_plan["id"], window.plan_rows)
+            self.assertEqual(window.selected_plan_id(), wechat_plan["id"])
         finally:
             if window is not None:
                 window.quit()
