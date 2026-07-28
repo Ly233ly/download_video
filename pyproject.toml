@@ -21,4 +21,8 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-idm_eagle_bridge = ["assets/*.js"]
+idm_eagle_bridge = [
+    "assets/*.js",
+    "assets/*.png",
+    "assets/ui-icons/*.png",
+]

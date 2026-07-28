@@ -229,10 +229,6 @@
             const match = cleanText(value, 300).match(/^(?:range|bytes)=(\d+)-(\d+)$/i);
             return Boolean(match && matchesSize(match[1], match[2]));
         };
-        const parseBareRange = value => {
-            const match = cleanText(value, 100).match(/^(\d+)-(\d+)$/);
-            return Boolean(match && matchesSize(match[1], match[2]));
-        };
         const explicitBareRange = value => {
             const match = cleanText(value, 100).match(/^(\d+)-(\d+)$/);
             if (!match) return false;

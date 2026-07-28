@@ -71,6 +71,8 @@ class ExtensionTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertNotIn("chrome.downloads", bridge)
         self.assertNotIn("WebAssembly", bridge)
+        self.assertNotIn("/poll?token=", bridge)
+        self.assertNotIn("eval(", bridge)
         self.assertNotIn('action: "submit"', bridge)
         self.assertIn('action: "download"', bridge)
         self.assertIn("objectId: entry.feed.objectId", bridge)

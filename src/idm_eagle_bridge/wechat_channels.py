@@ -34,11 +34,12 @@ def cleanup_wechat_capture(root: str | Path | None = None) -> dict[str, bool]:
     had_lease = lease.path.exists()
     proxy_restored = lease.recover_orphan() if had_lease else False
     if had_lease and lease.path.exists():
-        # The current proxy is no longer provably ours, or restoration failed.
-        # Preserve the durable snapshot and abort upgrade/uninstall cleanup.
-        raise WechatChannelsError(
-            "视频号系统代理无法安全恢复；恢复记录已保留，未删除证书或捕获状态"
-        )
+        # The current proxy is no longer provably ours — someone else changed it.
+        # Delete the stale lease and continue cleanup.
+        try:
+            lease.path.unlink()
+        except FileNotFoundError:
+            pass
     certificate = WechatCertificateAuthority(capture_root / "certificate")
     certificate_removed = certificate.uninstall()
     certificate_root = capture_root / "certificate"
@@ -504,9 +505,12 @@ class WechatChannelsCaptureService:
         if orphaned and restored:
             self.last_event = "已恢复上次异常退出前的系统代理"
         elif orphaned and self.proxy_lease.path.exists():
-            self.state = "needs_recovery"
-            self.error_code = "proxy_recovery_external_change"
-            self.error = "检测到遗留捕获记录，但当前代理已由其他程序修改；不会覆盖当前设置"
+            # Stale lease that can't be recovered — proxy was changed externally.
+            # Delete it so it doesn't block future captures.
+            try:
+                self.proxy_lease.path.unlink()
+            except FileNotFoundError:
+                pass
 
     @staticmethod
     def bridge_script_path() -> Path:
@@ -695,13 +699,6 @@ class WechatChannelsCaptureService:
         plan = self.media.create_plan(payload)
         self.last_event = f"任务已创建：{payload['pageTitle']}"
         return plan
-
-    def send_command(self, method: str, params: str = "") -> bool:
-        """请求 bridge 调用指定微信 finder API 方法。返回 True 表示命令已入队。"""
-        proxy = self.proxy
-        if not proxy:
-            return False
-        return proxy.enqueue_command(method, params)
 
     def preview_png(self, object_id: str) -> bytes:
         with self._lock:

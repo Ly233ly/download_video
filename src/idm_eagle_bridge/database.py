@@ -790,9 +790,6 @@ class Database:
                 )
         return cursor.rowcount == 1
 
-    def fingerprint_exists(self, fingerprint: str) -> bool:
-        return self.fingerprint_owner(fingerprint) is not None
-
     def fingerprint_owner(self, fingerprint: str) -> str | None:
         with self.session() as connection:
             row = connection.execute(
@@ -820,13 +817,6 @@ class Database:
                 "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(row) for row in rows]
-
-    def job_status_counts(self) -> dict[str, int]:
-        with self.session() as connection:
-            rows = connection.execute(
-                "SELECT status, COUNT(*) AS count FROM jobs GROUP BY status"
-            ).fetchall()
-        return {str(row["status"]): int(row["count"]) for row in rows}
 
     def jobs_revision(self) -> tuple[int, float]:
         with self.session() as connection:

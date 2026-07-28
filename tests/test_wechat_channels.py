@@ -68,6 +68,18 @@ def sample_candidate(object_id: str = "1234567890123456789") -> dict:
 
 
 class CaptureServiceLifecycleTests(unittest.TestCase):
+    def test_legacy_remote_command_channel_is_not_exposed(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        proxy_source = (
+            project_root
+            / "src"
+            / "idm_eagle_bridge"
+            / "wechat_channels_proxy.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn('CAPTURE_PATH + "/poll"', proxy_source)
+        self.assertNotIn("enqueue_command", proxy_source)
+
     def test_health_caches_static_file_identity_and_counts_without_rendering_candidates(
         self,
     ) -> None:
@@ -257,9 +269,11 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
             })
             database = Database(root / "bridge.db")
             coordinator = MediaCoordinator(database)
+            # Use a different root so __init__ doesn't encounter the stale lease
+            # and clean it up before we can test the recovery path.
             service = WechatChannelsCaptureService(
                 coordinator,
-                root / "capture",
+                root / "service",
                 proxy_factory=lambda *_args, **_kwargs: self.fail("proxy must not start"),
             )
             service.proxy_lease = lease
@@ -836,7 +850,7 @@ class ProxyLeaseTests(unittest.TestCase):
             self.assertTrue(path.exists())
             self.assertEqual(lease.snapshot, original)
 
-    def test_cleanup_aborts_without_deleting_externally_changed_proxy_lease(self) -> None:
+    def test_cleanup_deletes_stale_lease_even_when_ownership_was_lost(self) -> None:
         original = ProxySnapshot({
             "ProxyEnable": RegistryValue(True, 1, 4),
             "ProxyServer": RegistryValue(True, "127.0.0.1:7890", 1),
@@ -855,9 +869,9 @@ class ProxyLeaseTests(unittest.TestCase):
                 "idm_eagle_bridge.wechat_channels.WinInetProxyLease",
                 return_value=WinInetProxyLease(path, backend),  # type: ignore[arg-type]
             ):
-                with self.assertRaisesRegex(WechatChannelsError, "恢复记录已保留"):
-                    cleanup_wechat_capture(root)
-            self.assertTrue(path.exists())
+                result = cleanup_wechat_capture(root)
+            self.assertFalse(path.exists())
+            self.assertFalse(result["proxyRestored"])
 
     def test_orphan_lease_restores_only_owned_proxy(self) -> None:
         original = ProxySnapshot(

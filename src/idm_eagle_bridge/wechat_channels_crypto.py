@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 
 
 _MASK64 = (1 << 64) - 1
@@ -109,11 +109,3 @@ class WechatVideoDecryptor:
             result[index] ^= next(self._stream)
         self.offset += len(result)
         return bytes(result)
-
-
-def decrypt_chunks(
-    chunks: Iterable[bytes], key: int, encrypted_length: int = 131_072, offset: int = 0
-) -> Iterator[bytes]:
-    decryptor = WechatVideoDecryptor(key, encrypted_length, offset)
-    for chunk in chunks:
-        yield decryptor.transform(chunk)

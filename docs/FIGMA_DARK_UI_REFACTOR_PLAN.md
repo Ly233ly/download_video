@@ -6,6 +6,8 @@ Figma 原型：Figma-test-download（React + TypeScript + Tailwind，只读参�
 状态：分析完成，等待确认后进入阶段 0
 
 > 本文档是分析产物，不是实现。所有修改必须经过用户确认后方可开始。
+>
+> 2026-07-28 实施后说明：网站规则和网络设置已经完整内嵌到正式设置页，本文分析阶段提到的 `SiteRulesWindow` / `ProxySettingsWindow` 旧独立窗口已作为无引用代码删除。
 
 ---
 

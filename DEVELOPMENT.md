@@ -31,10 +31,11 @@
 - 一键安装器：`installer/Setup.cs`
 - PyInstaller 统一入口：`launcher/assistant.pyw`；`--receive` 进入 IDM 接收模式。
 - PyInstaller 公开构建配置：`packaging/DownloadTransferStation.spec`。
+- 深色桌面 UI 的产品图、导航图标和动作图标位于 `src/idm_eagle_bridge/assets/`。`pyproject.toml` 的 package-data 负责普通安装，PyInstaller spec 把同一目录放入 `_internal/idm_eagle_bridge/assets/`；不要只把资源留在仓库根目录。
 
 ## 验证
 
-把 `src` 加入 `PYTHONPATH` 后运行 `python -m unittest discover -s tests -p "test_*.py" -v`。当前测试覆盖原有后端/安装/安全能力，以及候选归组、默认隐藏播放分片、信息流内容绑定、SABR 全画质目录、通用页面解析、统一下载、Windows 系统代理检测、本机绕过、FFmpeg/yt-dlp 代理参数、手动/直连持久化、单次线路切换上限、主窗口外层滚动、四类列表安全清理、桌面异步 Eagle 探测、列表增量投影、预览/代理/静态健康缓存、schema 6 旧计划安全迁移，以及 Eagle 成功后显式清理程序自有副本的成功/未勾选/离线/目录外/文件锁定边界。另运行 `node tests/js/test_youtube.js`、`node tests/js/test_popup_logic.js`、`node tests/js/test_candidate_presentation.js`、`node tests/js/test_auth_race.js`、`node tests/js/test_bilibili.js` 与 `node tests/js/test_wechat_channels_bridge.js`。视频号测试还覆盖证书叶配置原地轮换、页面/资源双 TLS 入口、内部 `finder*` 返回值改写语义、模块缓存键、透明代理、二进制代理快照、动态质量、签名查询保真、候选、候选清理不停止捕获、秘密不落盘、ISAAC-64、真实 FFmpeg/ffprobe 纵向闭环，以及退出时先恢复系统代理再等待其他工作线程的顺序门禁。
+把 `src` 加入 `PYTHONPATH` 后运行 `python -m unittest discover -s tests -p "test_*.py" -v`。当前测试覆盖原有后端/安装/安全能力，以及候选归组、默认隐藏播放分片、信息流内容绑定、SABR 全画质目录、通用页面解析、统一下载、Windows 系统代理检测、本机绕过、FFmpeg/yt-dlp 代理参数、手动/直连持久化、单次线路切换上限、主窗口外层滚动、四类列表安全清理、桌面异步 Eagle 探测、列表增量投影、预览/代理/静态健康缓存、schema 6 旧计划安全迁移、Eagle 成功后显式清理程序自有副本的安全边界，以及真实服务对象到深色 `MainWindow` 的任务投影和 UI 包资源声明。另运行 `node tests/js/test_youtube.js`、`node tests/js/test_popup_logic.js`、`node tests/js/test_candidate_presentation.js`、`node tests/js/test_auth_race.js`、`node tests/js/test_bilibili.js` 与 `node tests/js/test_wechat_channels_bridge.js`。视频号测试还覆盖证书叶配置原地轮换、页面/资源双 TLS 入口、内部 `finder*` 返回值改写语义、模块缓存键、透明代理、二进制代理快照、动态质量、签名查询保真、候选、候选清理不停止捕获、秘密不落盘、ISAAC-64、真实 FFmpeg/ffprobe 纵向闭环，以及退出时先恢复系统代理再等待其他工作线程的顺序门禁。
 
 扩展的 JavaScript 使用 `node --check` 检查；`manifest.json` 需通过 JSON 解析。`constants.py`、`pyproject.toml`、扩展清单、弹窗版本、托盘菜单和安装器版本必须同步。
 

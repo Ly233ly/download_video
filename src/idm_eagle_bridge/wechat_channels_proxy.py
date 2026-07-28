@@ -541,8 +541,6 @@ class WechatLoopbackProxy:
             "resourceScriptsInstrumented": 0,
             "finderHooksInstalled": 0,
         }
-        self._pending_commands: dict[str, tuple[threading.Event, str]] = {}
-        self._command_lock = threading.Lock()
         self.server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.server_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self.server_context.set_alpn_protocols(["http/1.1"])
@@ -719,9 +717,6 @@ class WechatLoopbackProxy:
             if path.startswith(CAPTURE_PATH + "/bridge.js"):
                 self._send_bridge(client)
                 return
-            if path.startswith(CAPTURE_PATH + "/poll"):
-                self._handle_poll(client, target)
-                return
             if path.startswith(CAPTURE_PATH + "/candidate"):
                 self._accept_candidate(client, target, body, headers)
                 return
@@ -770,39 +765,6 @@ class WechatLoopbackProxy:
             + b"\r\n\r\n"
             + response_body
         )
-
-    def _handle_poll(self, client: socket.socket, target: str) -> None:
-        query = urlsplit(target).query
-        if f"token={self.session_token}" not in query.split("&"):
-            client.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            return
-        event = threading.Event()
-        with self._command_lock:
-            self._pending_commands[self.session_token] = (event, "")
-        try:
-            event.wait(timeout=25)
-            with self._command_lock:
-                _, command = self._pending_commands.pop(self.session_token, (None, ""))
-            body = command.encode("utf-8") if command else b"{}"
-            client.sendall(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n"
-                b"Cache-Control: no-store\r\nConnection: close\r\n"
-                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body
-            )
-        finally:
-            with self._command_lock:
-                self._pending_commands.pop(self.session_token, None)
-
-    def enqueue_command(self, method: str, params: str = "") -> bool:
-        command = json.dumps({"method": method, "params": params})
-        with self._command_lock:
-            entry = self._pending_commands.get(self.session_token)
-            if entry is None:
-                return False
-            event, _ = entry
-            self._pending_commands[self.session_token] = (event, command)
-            event.set()
-            return True
 
     def _forward(
         self,

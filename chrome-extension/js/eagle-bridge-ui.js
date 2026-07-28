@@ -631,12 +631,6 @@
         return raw;
     }
 
-    function selectedRawItems() {
-        const group = activeGroup();
-        const selection = state.selections.get(group?.id);
-        return selectedRawItemsForGroup(group);
-    }
-
     function selectedRawItemsForGroup(group) {
         const selection = state.selections.get(group?.id);
         return logic.selectedCandidates(group, selection).map(candidate => rawItem(candidate, group, selection)).filter(Boolean);

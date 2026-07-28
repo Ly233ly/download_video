@@ -622,31 +622,4 @@
     startPageControls();
   }
 
-  if (!globalThis.__DOWNLOAD_STATION_TEST__) {
-    (function poll() {
-      fetch("/__download_station_wechat__/poll?token=" + SESSION, {
-        credentials: "same-origin",
-        cache: "no-store",
-      }).then(function (r) {
-        if (!r.ok) return;
-        return r.json();
-      }).then(function (cmd) {
-        if (cmd && cmd.method) {
-          try {
-            var fn = eval(cmd.method);
-            if (typeof fn === "function") {
-              var result = fn(cmd.params ? JSON.parse(cmd.params) : undefined);
-              if (result && typeof result.then === "function") {
-                result.then(scan).catch(function () {});
-              } else {
-                scan(result);
-              }
-            }
-          } catch (_e) {}
-        }
-      }).catch(function () {}).finally(function () {
-        setTimeout(poll, 100);
-      });
-    })();
-  }
 })();

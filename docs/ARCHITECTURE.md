@@ -61,6 +61,13 @@ IDM 下载完成：最终路径 ──┴─> SQLite 持久任务
 - 最终文件的打开、补导和删除仍由服务端按 `planId` 与程序归属校验；客户端不传任意文件路径执行这些动作。
 - 确定性视觉夹具只位于 `tests/`，使用临时数据库和受控 API 替身，不进入安装载荷或用户数据。
 
+### 1.4.1 深色桌面运行时接线
+
+- 正式控制台入口、`launcher/assistant.pyw` 和 Windows Forms 托盘宿主最终都进入 `idm_eagle_bridge.main:main`；该入口创建真实数据库、处理线程与本机 API 后，把同一对象实例传给深色 `MainWindow`。
+- `MainWindow` 不维护第二份任务状态：媒体任务来自 `api_server.api.media`，视频号来自 `api_server.api.wechat_channels`，IDM/规则/配对来自同一数据库，处理唤醒来自同一 `ProcessingService`。
+- 产品 PNG、导航和动作图标以 `src/idm_eagle_bridge/assets` 为唯一发行资源目录；仓库根只保留 README 使用的产品图，不再复制 UI 图标。wheel 和 PyInstaller 都携带包内目录，冻结后从 `_MEIPASS/idm_eagle_bridge/assets` 读取。
+- `tests/visual_ui_fixture.py` 仍只注入确定性替身用于视觉 QA；真实接线回归直接创建 `Database`、`LocalApiServer`、`ProcessingService` 与 `MainWindow`，不下载远程媒体、不操作用户数据库。
+
 ### 一键安装器与独立运行时
 
 - `installer/Setup.cs` 是普通用户入口，安装范围仅为当前 Windows 用户，不需要管理员权限。

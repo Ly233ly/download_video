@@ -1355,8 +1355,7 @@ body.popupBody {
         padding: 0 12px;
     }
 
-    .bridge-expanded .bridge-domain,
-    .bridge-expanded .bridge-header-divider {
+    .bridge-expanded .bridge-domain {
         display: none;
     }
 
