@@ -1,10 +1,10 @@
 # 1.4.5 发布验证报告
 
-验证日期：2026-07-28
+验证日期：2026-07-29
 
 ## 结论
 
-1.4.5 已通过源码回归、长列表压力、视觉检查、冻结运行时、安装器事务和当前电脑覆盖验证。当前电脑正在运行 1.4.5；启动器、冻结后端和 Chrome 扩展清单与发行包逐字节一致，原任务数据库未改变。
+1.4.5 已通过源码回归、长列表压力、视觉检查、冻结运行时、安装器事务、稳定更新签名和当前电脑覆盖验证。当前电脑正在运行 1.4.5；启动器、冻结后端和 Chrome 扩展清单与发行包逐字节一致，原任务、浏览器配对和数据库逻辑记录均已保留。
 
 1.4.4 确实曾覆盖安装，但它只把字体从负像素改成了近似大小的正点值，在 1920×1080/96 DPI 上视觉变化很小，并混用了 Segoe UI 与 OPPOSans B/H 中文粗体。1.4.5 根据这张真实失败截图重新定义了显示比例、字体族、字重、字号、行高和文字对比度，不把“版本号已更新”当作界面修复已完成。
 
@@ -21,7 +21,7 @@
 
 ## 性能与行为回归
 
-- 197 项 Python `unittest`：通过。
+- 236 项 Python 通过、2 项按环境设计跳过；20 个专项子场景通过。
 - 6 组 Node 回归：通过。
 - 活动扩展 JavaScript `node --check` 与 Chrome/Firefox 双清单 JSON：通过。
 - 三列表初始化：约 0.343 秒。
@@ -34,23 +34,25 @@
 
 ## 发行与安装器
 
-- 冻结运行时证据：[frozen-runtime-1.4.5.json](evidence/frozen-runtime-1.4.5.json)：健康版本 1.4.5、schema 6、扩展协议 1、FFmpeg/ffprobe、yt-dlp/Deno 和视频号桥均通过。
-- 隔离安装器证据：[installer-1.4.5.json](evidence/installer-1.4.5.json)：全新安装、覆盖更新、注入失败回滚和卸载恢复均通过。
+- 最终冻结运行时证据：[release-final-frozen-runtime-evidence.json](performance/release-final-frozen-runtime-evidence.json)：健康版本 1.4.5、schema 6、扩展协议 1、FFmpeg/ffprobe、yt-dlp/Deno、视频号桥和 IDM 接收均通过。
+- 最终隔离安装器证据：[release-final-installer-evidence.json](performance/release-final-installer-evidence.json)：全新安装、覆盖更新、注入失败回滚和卸载恢复均通过。
 - 发行文件：`download-transfer-station-1.4.5-windows-x64.zip`
-- 字节数：`155801549`
-- SHA-256：`8f56eb693befa3e72146b402c6b750cecfb4a592b8231a3d16a9743591e4cafb`
-- 候选发行：[v1.4.5-rc.1](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.5-rc.1)
-- 发行提交：`f1454a1ecb702f15aa21f7b00f29fba388d72327`
+- 字节数：`155857576`
+- SHA-256：`c5bd1287d0d52f14fe3476fd114dde088e78a1dd7988884c62f189c80142b13f`
+- 稳定发行：[v1.4.5](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.5)
+- 发行提交：`ee1bf964ab15487edf8385a590f473d1a1392068`
 - GitHub 端 ZIP 状态为 `uploaded`，远端字节数与 SHA-256 和本机一致。
+- GitHub `releases/latest` 指向 v1.4.5；同一发行包含经原私钥签署并由客户端内置公钥复验通过的 `update.json`。
 
 ## 当前电脑覆盖证据
 
 - 健康接口返回 `version=1.4.5`、`databaseSchema=6`、`extensionProtocol=1`、`mediaReady=true`、`youtubeResolverReady=true`、`downloadEngine=desktop_ffmpeg`。
 - 已安装产品版本为 `1.4.5.0`。
 - 已安装启动器、冻结后端和 Chrome 扩展清单的 SHA-256 均与发行包相同。
-- 用户数据库仍为 290816 字节，SHA-256 仍为 `75BBBE802878BAF98D131183CAA119372675201FCB5035AC38DFD9D1EB93EB19`。
+- 覆盖前已在 `%LOCALAPPDATA%\IdmEagleAutoImport\backups` 创建数据库备份；覆盖后 `integrity_check=ok`、schema 6、配对状态和各业务表记录数与覆盖前一致。
 - 安装目录没有残留 `.update-backup`。
+- 首次覆盖因旧后端退出超时返回失败，安装事务已自动回滚；确认旧进程退出后的第二次覆盖成功，证明正式环境也走通了失败可恢复路径。
 
 ## 稳定自动更新边界
 
-`v1.4.5-rc.1` 不替换 GitHub 的稳定 `latest`，因此不会让现有客户端接受未经签名的新清单。本机没有仓库内现有更新公钥所对应的原离线私钥；恢复该私钥并签署 `update.json` 后，才能把同一发行包晋升为稳定自动更新。
+`v1.4.5` 已替换 GitHub 的稳定 `latest`。发布用离线私钥只保存在本机忽略目录，没有提交到 Git；`update.json` 已使用该私钥签署，并由客户端内置公钥、版本号、下载地址、字节数和 SHA-256 完整复验。Chrome 扩展文件已随安装目录替换；受 Chrome 保护页限制，当前已打开的浏览器进程需要重启 Chrome，或由用户在 `chrome://extensions` 点击一次“重新加载”，才会立即启用新 service worker。
