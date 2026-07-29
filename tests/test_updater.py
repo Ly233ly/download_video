@@ -73,7 +73,7 @@ class UpdaterTests(unittest.TestCase):
             None,
         )
         with patch("idm_eagle_bridge.updater.urlopen", side_effect=missing):
-            self.assertIsNone(check_for_update("1.4.5"))
+            self.assertIsNone(check_for_update("1.4.6"))
 
     def test_download_verifies_and_extracts_unique_installer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
