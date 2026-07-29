@@ -268,6 +268,8 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
                     data = api.media.open_plan_output(str(payload.get("planId", "")))
                 elif parsed.path == "/api/media/import":
                     data = api.media.import_completed_plan(str(payload.get("planId", "")))
+                elif parsed.path == "/api/media/remove":
+                    data = api.media.remove_plan(str(payload.get("planId", "")))
                 elif parsed.path == "/api/media/clear":
                     data = {"removed": api.media.clear_terminal_history()}
                 else:

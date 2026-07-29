@@ -20,6 +20,18 @@
 
 桌面截图来自真实 Tk 窗口与确定性 SQLite/任务夹具；扩展截图来自实际 popup HTML、CSS、逻辑脚本和受控 Chrome API 夹具。扩展控制台没有 error/warning。
 
+## 2026-07-29 性能审计视觉证据
+
+| 流程 | 当前运行证据 | 健康状态 |
+| --- | --- | --- |
+| 下载任务连续缩放 | `docs/performance/audit/01-media-after-resize.png` | 通过；无残影、重复控件或双滚动条，窄详情头自动换行 |
+| 视频号捕获 | `docs/performance/audit/02-wechat-capture.png` | 通过；捕获控制、候选、质量和交付动作完整 |
+| IDM 密集记录 | `docs/performance/audit/03-idm-import.png` | 通过；表格与详情同步，操作无重叠 |
+| 设置网络页 | `docs/performance/audit/04-settings-network.png` | 通过；延迟创建后布局完整 |
+| 诊断页 | `docs/performance/audit/05-diagnostics.png` | 通过；页面清晰且导出入口可达 |
+
+这些截图由本轮代码重新生成，只证明确定性 Tk 绘制结果；安装版的 DWM/GPU 合成和真实鼠标、触控板手感仍需覆盖安装后复验。完整时间、内存和回调数据见 `docs/PERFORMANCE_AUDIT_2026-07-29.md`。
+
 ## 1.4.0 对照结果与修复历史
 
 1. 第一轮 P1：Windows `vista` 主题忽略紫灰按钮与进度色，禁用动作文字几乎不可见。改用确定性的 `clam` 主题并补齐 enabled/disabled 映射。
@@ -104,6 +116,70 @@ Final result: passed
 - [ ] 与 Figma 参考同画布对照
 
 > 注：以上 6 项需在 Windows 桌面环境运行 `python tests/visual_ui_fixture.py` 完成。
+
+---
+
+# Windows 深色标题栏 Design QA
+
+日期：2026-07-29
+
+## 证据与归一化
+
+- 视觉真相：`docs/visual-qa/titlebar-dark/reference-dark-titlebar.png`，1059×733；本轮只参考顶部 42 px 的深色系统标题栏形式。
+- 实现截图：`docs/visual-qa/titlebar-dark/implementation-media-full-window.png`，1216×839；Windows 有效 UI 比例约 1.333，客户区为 900×600 逻辑尺寸的真实 Tk 下载任务页，截图包含完整 Windows 非客户区。
+- 同画布重点对照：`docs/visual-qa/titlebar-dark/focused-titlebar-comparison.png`，1216×140；两条标题栏按相同 1216 px 宽度归一化，未把整页内容比例作为本轮判断依据。
+- 状态：普通窗口，深色主题，显示应用图标、标题、最小化、最大化和关闭。
+
+## 全视图与重点区域
+
+- 全视图确认标题栏与 `#0D0F16` 顶部外壳连续，不再出现浅色横条；正文、侧栏、列表、详情、图像和文案未因标题栏调整发生位移或裁切。
+- 重点对照确认参考图和实现均为深色标题背景、浅色系统图标、右对齐窗口控制。实现保持本软件蓝色产品图标与“下载中转站”标题。
+- 参考应用标题栏更高并额外提供置顶按钮；实现使用当前 Windows 原生高度且不新增产品未要求的置顶功能。这是保留系统行为的有意差异，归为 P3，不阻塞本轮。
+
+## 必查视觉面
+
+- **字体与排版**：标题使用 Windows 原生标题字体和抗锯齿，正文继续使用项目字体层级；没有新增字体混排、换行或截断。
+- **间距与布局**：标题、图标和三项窗口控制沿系统网格对齐；非客户区不占用 Tk 客户区，900×600 逻辑布局保持不变。
+- **颜色与视觉令牌**：标题背景映射 `UI.bg=#0D0F16`，标题文字映射 `UI.text=#E2E8F0`，边框映射 `UI.border=#2A2D35`；与参考图的暖灰深色存在品牌化差异，但与当前应用自身更一致。
+- **图像与资产**：复用已有产品 ICO；最小化、最大化和关闭使用 Windows 原生资源，没有字符画、手绘 SVG 或占位图标。
+- **文案与内容**：标题保持“下载中转站”，页面业务文案和数据未改动。
+- **交互与兼容**：真实 Windows 窗口样式位保留系统菜单、缩放边框、最小化框和最大化框；DWM 不支持时安全回退，不阻止窗口创建。
+
+## 对照历史
+
+- 第一轮发现：原窗口使用浅色系统标题栏，与深色应用形成明显 P1 割裂。
+- 修复：启用 Windows 沉浸式深色标题栏，并在支持的系统上设置标题、文字和边框颜色；继续保留原生窗口框架。
+- 复查证据：`implementation-media-full-window.png` 与 `focused-titlebar-comparison.png`。未发现遗留 P0/P1/P2 问题。
+
+## 验证
+
+- 完整 Tk 界面测试：35/35 通过。
+- 标题栏窗口行为：原生系统菜单、缩放边框、最小化和最大化样式位全部存在。
+- 真实窗口截图：通过后台 `PrintWindow` 捕获，不监听输入、不激活或抢占用户窗口。
+
+final result: passed
+
+## 用户验收回流：窗口拖动与重绘性能 Round 7
+
+日期：2026-07-29
+
+### 修正
+
+- 圆角面板、按钮、导航、徽章、滚动条和进度条改为状态签名驱动的合并重绘；连续尺寸事件只在空闲时画一次，相同状态不再删除并重建 Canvas 图层。
+- 动态换行、表格列宽、预览比例和两类滚动容器统一合并尺寸事件，移除会不断排队的嵌套 `after_idle` 布局链。
+- 列表与详情滚动条只在内容真实溢出时出现，避免无溢出页面仍占用宽度；媒体列表和详情各自滚动时仍保持独立。
+- Windows 窗口拖动/缩放期间暂停后台数据刷新，停止交互 180ms 后恢复，并让系统一次性重绘完整客户区。
+- 媒体任务卡、视频号候选和三类详情改为增量投影；任务进度、状态和文本变化只更新对应控件，不再每秒销毁并重建整页卡片。
+
+### 证据
+
+- `docs/visual-qa/ui-performance/before-after-resize.png`
+- `docs/visual-qa/ui-performance/media-resize-stress.png`
+- `docs/visual-qa/ui-performance/media-compact-stress.png`
+
+1070×985 与 900×600 两种窗口在四轮连续缩放后完成后台窗口截图；未出现文字重影、重复标签或相邻双滚动条。连续 50 次布局事件合并为一次，圆角画布元素数量保持稳定。全量 225 项 Python 测试通过，2 项按环境设计跳过，20 个子场景通过。
+
+final result: passed
 
 ---
 

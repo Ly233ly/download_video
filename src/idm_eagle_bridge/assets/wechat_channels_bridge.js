@@ -3,6 +3,7 @@
 
   const SESSION = "__DOWNLOAD_STATION_SESSION__";
   const ENDPOINT = `/__download_station_wechat__/candidate?token=${SESSION}`;
+  const MAX_SEEN = 64;
   const seen = new Map();
   const downloadsInFlight = new Set();
   const ACTIVE_DETAIL_METHODS = new Set([
@@ -12,7 +13,10 @@
     "loadLocalPlaylist",
   ]);
   let activeObjectId = "";
+  let activeVersion = 0;
+  let publishedActiveObjectId = "";
   let uiRefreshTimer = 0;
+  let activeRefreshTimer = 0;
   let menuCloseTimer = 0;
 
   function text(value, maxLength) {
@@ -135,17 +139,59 @@
   }
 
   function markActive(objectId) {
-    if (objectId && seen.has(objectId)) activeObjectId = objectId;
-    scheduleUiRefresh();
+    let changed = false;
+    if (objectId && seen.has(objectId)) {
+      if (activeObjectId !== objectId) {
+        activeObjectId = objectId;
+        activeVersion = Math.max(activeVersion + 1, Date.now() * 1000);
+        changed = true;
+      }
+      syncCandidate(seen.get(objectId));
+    }
+    if (changed) scheduleUiRefresh();
+  }
+
+  function publishActive(entry) {
+    if (!entry || activeObjectId !== entry.feed.objectId) return;
+    if (publishedActiveObjectId === entry.feed.objectId || entry.activating) return;
+    const version = activeVersion;
+    entry.activating = true;
+    request({
+      action: "active",
+      objectId: entry.feed.objectId,
+      version,
+    }).then(function (result) {
+      if (
+        activeObjectId === entry.feed.objectId
+        && version === activeVersion
+        && result
+        && result.action === "active"
+        && result.accepted !== false
+      ) {
+        publishedActiveObjectId = entry.feed.objectId;
+        scheduleUiRefresh();
+      }
+    }).catch(function () {
+      // 当前视频可能仍在提交媒体信息；下一次播放/识别事件会自动重试。
+    }).finally(function () {
+      entry.activating = false;
+    });
   }
 
   function syncCandidate(entry) {
-    if (!entry || entry.pending || entry.candidate) return;
+    if (!entry) return;
+    if (entry.candidate && !entry.dirty) {
+      publishActive(entry);
+      return;
+    }
+    if (entry.pending) return;
     entry.pending = true;
-    request(entry.feed).then(function (result) {
+    request(Object.assign({}, entry.feed, { current: false })).then(function (result) {
       const current = seen.get(entry.feed.objectId);
       if (current && result && result.candidate) {
         current.candidate = result.candidate;
+        current.dirty = false;
+        publishActive(current);
         scheduleUiRefresh();
       }
     }).catch(function (err) {
@@ -173,7 +219,6 @@
     const previous = seen.get(feed.objectId);
     if (previous && previous.signature === signature) {
       if (objectIdFromLocation() === feed.objectId) markActive(feed.objectId);
-      syncCandidate(previous);
       return;
     }
     seen.delete(feed.objectId);
@@ -182,11 +227,21 @@
       feed,
       candidate: previous && previous.candidate || null,
       pending: false,
+      activating: false,
+      dirty: true,
     };
     seen.set(feed.objectId, entry);
-    while (seen.size > 500) seen.delete(seen.keys().next().value);
-    if (objectIdFromLocation() === feed.objectId) activeObjectId = feed.objectId;
-    syncCandidate(entry);
+    while (seen.size > MAX_SEEN) {
+      const oldest = seen.keys().next().value;
+      if (oldest === activeObjectId) {
+        const active = seen.get(oldest);
+        seen.delete(oldest);
+        seen.set(oldest, active);
+        continue;
+      }
+      seen.delete(oldest);
+    }
+    if (objectIdFromLocation() === feed.objectId) markActive(feed.objectId);
     scheduleUiRefresh();
   }
 
@@ -196,8 +251,10 @@
     const matched = [];
     let count = 0;
     let unmatched = 0;
-    while (queue.length && count < 6000) {
-      const item = queue.shift();
+    let cursor = 0;
+    while (cursor < queue.length && count < 2000) {
+      const item = queue[cursor];
+      cursor += 1;
       if (!item || typeof item !== "object" || visited.has(item)) continue;
       visited.add(item);
       count += 1;
@@ -210,7 +267,7 @@
         if (Array.isArray(media) && media.some(mediaItem)) unmatched += 1;
       }
       if (Array.isArray(item)) {
-        for (const child of item.slice(0, 500)) queue.push(child);
+        for (const child of item.slice(0, 200)) queue.push(child);
       } else {
         for (const [key, child] of Object.entries(item)) {
           if (/cookie|authorization|token|trace|buffer/i.test(key)) continue;
@@ -225,6 +282,7 @@
       const located = objectIdFromLocation();
       if (located) markActive(located);
     }
+    markActivePlayingVideo();
     if (unmatched) {
       postDiagnostic({
         action: "diagnostic",
@@ -238,8 +296,12 @@
   let internalApiObservations = 0;
   function observeInternalApi(value, sourceMethod) {
     internalApiObservations += 1;
-    if (internalApiObservations <= 1000) {
-      postDiagnostic({ action: "diagnostic", reason: "internal_api_observed", count: 1 });
+    if (internalApiObservations === 1 || internalApiObservations % 25 === 0) {
+      postDiagnostic({
+        action: "diagnostic",
+        reason: "internal_api_observed",
+        count: internalApiObservations === 1 ? 1 : 25,
+      });
     }
     scan(value, sourceMethod);
   }
@@ -261,6 +323,7 @@
       scan,
       selectDefaultVariant,
       activeObjectId: function () { return activeObjectId; },
+      seenCount: function () { return seen.size; },
     };
   }
 
@@ -328,6 +391,39 @@
     return result;
   }
 
+  function entryMatchingSources(sources) {
+    const paths = new Set(sources.map(comparableMediaPath).filter(Boolean));
+    if (!paths.size) return null;
+    const matches = Array.from(seen.values()).filter(function (entry) {
+      return entry.feed.media.some(function (media) {
+        return paths.has(comparableMediaPath(media.url));
+      });
+    });
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function markActiveFromVideo(video) {
+    if (!video) return;
+    const sources = [video.currentSrc, video.src];
+    if (typeof video.querySelectorAll === "function") {
+      for (const source of video.querySelectorAll("source")) sources.push(source.src);
+    }
+    const entry = entryMatchingSources(
+      sources.map(function (value) { return text(value, 8192); }).filter(Boolean),
+    );
+    if (entry) markActive(entry.feed.objectId);
+  }
+
+  function markActivePlayingVideo() {
+    if (!document || typeof document.querySelectorAll !== "function") return;
+    for (const video of document.querySelectorAll("video")) {
+      if (!video.paused && !video.ended) {
+        markActiveFromVideo(video);
+        return;
+      }
+    }
+  }
+
   function entryFromTrigger(trigger) {
     const located = objectIdFromLocation();
     if (located) return seen.get(located) || null;
@@ -336,15 +432,8 @@
       ? trigger.closest(".slides-item") || document
       : document;
     const sources = videoSources(scope);
-    const paths = new Set(sources.map(comparableMediaPath).filter(Boolean));
-    if (paths.size) {
-      const matches = Array.from(seen.values()).filter(function (entry) {
-        return entry.feed.media.some(function (media) {
-          return paths.has(comparableMediaPath(media.url));
-        });
-      });
-      if (matches.length === 1) return matches[0];
-    }
+    const sourceMatch = entryMatchingSources(sources);
+    if (sourceMatch) return sourceMatch;
 
     const scopeText = text(scope && scope.textContent, 20000);
     if (scopeText) {
@@ -608,10 +697,34 @@
     }, 80);
   }
 
+  function scheduleActiveRefresh() {
+    if (activeRefreshTimer) return;
+    activeRefreshTimer = setTimeout(function () {
+      activeRefreshTimer = 0;
+      markActivePlayingVideo();
+    }, 120);
+  }
+
   function startPageControls() {
     renderControls();
+    markActivePlayingVideo();
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("play", function (event) {
+        if (event && event.target && String(event.target.tagName).toLowerCase() === "video") {
+          markActiveFromVideo(event.target);
+        }
+      }, true);
+      document.addEventListener("playing", function (event) {
+        if (event && event.target && String(event.target.tagName).toLowerCase() === "video") {
+          markActiveFromVideo(event.target);
+        }
+      }, true);
+    }
     if (typeof MutationObserver !== "undefined" && document.documentElement) {
-      const observer = new MutationObserver(scheduleUiRefresh);
+      const observer = new MutationObserver(function () {
+        scheduleUiRefresh();
+        scheduleActiveRefresh();
+      });
       observer.observe(document.documentElement, { childList: true, subtree: true });
     }
   }

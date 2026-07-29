@@ -19,6 +19,8 @@ from .wechat_channels_certificate import WechatCertificateAuthority
 from .wechat_channels_proxy import (
     WechatLoopbackProxy,
     WinInetProxyLease,
+    proxy_endpoint_is_loopback,
+    proxy_endpoint_reachable,
     upstream_http_proxy,
     upstream_proxy_bypass,
 )
@@ -246,14 +248,20 @@ class WechatCandidate:
 
 
 class WechatCandidateRegistry:
-    MAX_CANDIDATES = 500
+    MAX_CANDIDATES = 24
 
     def __init__(self) -> None:
         self._items: dict[str, WechatCandidate] = {}
+        self._current_object_id = ""
+        self._active_version = 0
         self._lock = threading.RLock()
 
     def ingest(
-        self, payload: dict[str, Any], request_headers: dict[str, str] | None = None
+        self,
+        payload: dict[str, Any],
+        request_headers: dict[str, str] | None = None,
+        *,
+        make_current: bool = True,
     ) -> WechatCandidate:
         object_id = _text(payload.get("objectId"), 128)
         if not object_id or not all(character.isalnum() or character in "_-" for character in object_id):
@@ -376,10 +384,19 @@ class WechatCandidateRegistry:
                 existing.created_at = _number(payload.get("createdAt")) or existing.created_at
                 existing.variants.update(variants)
                 existing.updated_at = now
+                if make_current:
+                    self._current_object_id = object_id
                 return existing
             if len(self._items) >= self.MAX_CANDIDATES:
-                oldest = min(self._items.values(), key=lambda item: item.updated_at)
+                removable = [
+                    item
+                    for item in self._items.values()
+                    if item.object_id != self._current_object_id
+                ] or list(self._items.values())
+                oldest = min(removable, key=lambda item: item.updated_at)
                 self._items.pop(oldest.object_id, None)
+                if oldest.object_id == self._current_object_id:
+                    self._current_object_id = ""
             candidate = WechatCandidate(
                 object_id=object_id,
                 title=_text(payload.get("title"), 500),
@@ -394,22 +411,44 @@ class WechatCandidateRegistry:
                 updated_at=now,
             )
             self._items[object_id] = candidate
+            if make_current:
+                self._current_object_id = object_id
             return candidate
+
+    def activate(
+        self,
+        object_id: str,
+        version: int = 0,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        with self._lock:
+            candidate = self._items.get(object_id)
+            if not candidate:
+                return None, False
+            if version and version < self._active_version:
+                current = self._items.get(self._current_object_id)
+                return (current.view() if current else None), False
+            self._current_object_id = object_id
+            self._active_version = max(self._active_version, version)
+            return candidate.view(), True
 
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [
-                item.view()
-                for item in sorted(self._items.values(), key=lambda value: value.updated_at)
-            ]
+            current = self._items.get(self._current_object_id)
+            return [current.view()] if current else []
 
     def count(self) -> int:
+        with self._lock:
+            return int(self._current_object_id in self._items)
+
+    def retained_count(self) -> int:
         with self._lock:
             return len(self._items)
 
     def clear(self) -> None:
         with self._lock:
             self._items.clear()
+            self._current_object_id = ""
+            self._active_version = 0
 
     def preview_request(self, object_id: str) -> tuple[str, dict[str, str]]:
         with self._lock:
@@ -540,16 +579,29 @@ class WechatChannelsCaptureService:
             self.internal_api_observed = 0
             proxy: WechatLoopbackProxy | None = None
             try:
-                files = self.certificate.install() if trust_certificate else self.certificate.ensure()
+                files = self.certificate.ensure()
+                certificate_trusted = self.certificate.is_trusted(files.fingerprint)
+                if trust_certificate and not certificate_trusted:
+                    files = self.certificate.install()
+                    certificate_trusted = self.certificate.is_trusted(files.fingerprint)
                 self._static_health_cache = None
-                self._certificate_trusted = self.certificate.is_trusted(files.fingerprint) if trust_certificate else False
+                self._certificate_trusted = certificate_trusted
                 bridge_script = self.bridge_script_path().read_bytes()
                 snapshot = self.proxy_lease.backend.snapshot()
+                upstream_proxy = upstream_http_proxy(snapshot)
+                if (
+                    proxy_endpoint_is_loopback(upstream_proxy)
+                    and not proxy_endpoint_reachable(upstream_proxy)
+                ):
+                    endpoint = f"{upstream_proxy[0]}:{upstream_proxy[1]}"
+                    raise WechatChannelsError(
+                        f"检测到已失效的本机代理 {endpoint}，请先点击“修复代理冲突”"
+                    )
                 proxy = self.proxy_factory(
                     files,
                     bridge_script,
                     self._handle_page_message,
-                    upstream_proxy=upstream_http_proxy(snapshot),
+                    upstream_proxy=upstream_proxy,
                     upstream_bypass=upstream_proxy_bypass(snapshot),
                 )
                 proxy.start()
@@ -593,6 +645,90 @@ class WechatChannelsCaptureService:
                 )
                 raise WechatChannelsError(self.error) from exc
             return self.health()
+
+    def repair_proxy_conflict(self) -> dict[str, Any]:
+        with self._lock:
+            backend = self.proxy_lease.backend
+            if self.proxy:
+                local_endpoint = f"{self.proxy.address[0]}:{self.proxy.address[1]}"
+                current = backend.snapshot()
+                upstream = upstream_http_proxy(current)
+                removed_dead_proxy = (
+                    proxy_endpoint_is_loopback(upstream)
+                    and not proxy_endpoint_reachable(upstream)
+                )
+                if removed_dead_proxy:
+                    backend.disable_manual_proxy()
+                    current = backend.snapshot()
+                    upstream = None
+                self.proxy.upstream_proxy = upstream
+                self.proxy.upstream_bypass = upstream_proxy_bypass(current)
+                changed = self.proxy_lease.reacquire(local_endpoint)
+                self._system_proxy_configured = True
+                self.error = ""
+                self.error_code = ""
+                self.last_event = (
+                    "已清除失效代理并重新接管视频号流量"
+                    if removed_dead_proxy
+                    else (
+                        "已重新接管视频号流量；停止捕获后会恢复原代理"
+                        if changed
+                        else "视频号捕获代理工作正常"
+                    )
+                )
+                return {
+                    "changed": changed or removed_dead_proxy,
+                    "running": True,
+                    "message": self.last_event,
+                }
+
+            if self.proxy_lease.path.exists() and self.proxy_lease.recover_orphan():
+                self.state = "off"
+                self.error = ""
+                self.error_code = ""
+                self.last_event = "已恢复上次捕获前的系统代理"
+                return {
+                    "changed": True,
+                    "running": False,
+                    "message": self.last_event,
+                }
+
+            current = backend.snapshot()
+            upstream = upstream_http_proxy(current)
+            if not upstream:
+                self.last_event = "未发现需要修复的系统代理"
+                return {
+                    "changed": False,
+                    "running": False,
+                    "message": self.last_event,
+                }
+            if not proxy_endpoint_is_loopback(upstream):
+                self.last_event = "检测到正常的网络代理，开始捕获时会自动兼容"
+                return {
+                    "changed": False,
+                    "running": False,
+                    "message": self.last_event,
+                }
+            if proxy_endpoint_reachable(upstream):
+                self.last_event = "检测到正在运行的本机代理，开始捕获时会自动接入"
+                return {
+                    "changed": False,
+                    "running": False,
+                    "message": self.last_event,
+                }
+
+            backend.disable_manual_proxy()
+            self.state = "off"
+            self.error = ""
+            self.error_code = ""
+            self.last_event = (
+                f"已清除失效的本机代理 {upstream[0]}:{upstream[1]}，现在可以开始捕获"
+            )
+            return {
+                "changed": True,
+                "running": False,
+                "message": self.last_event,
+            }
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
@@ -643,14 +779,34 @@ class WechatChannelsCaptureService:
     ) -> dict[str, Any]:
         action = _text(payload.get("action"), 32)
         if action == "candidate":
-            candidate = self.registry.ingest(payload, request_headers)
+            make_current = payload.get("current") is True
+            candidate = self.registry.ingest(
+                payload,
+                request_headers,
+                make_current=make_current,
+            )
             self._preview_cache.pop(candidate.object_id, None)
             if candidate.object_id in self._preview_order:
                 self._preview_order.remove(candidate.object_id)
             self._preview_failures.discard(candidate.object_id)
-            self.last_event = f"已识别：{candidate.title or candidate.object_id}"
-            self.state = "capturing"
+            if make_current:
+                self.last_event = f"当前视频：{candidate.title or candidate.object_id}"
+                self.state = "capturing"
             return {"action": "candidate", "candidate": candidate.view()}
+        if action == "active":
+            object_id = _text(payload.get("objectId"), 128)
+            version = _number(payload.get("version"), 10**16)
+            candidate, activated = self.registry.activate(object_id, version)
+            if not candidate:
+                raise WechatChannelsError("当前视频媒体信息尚未就绪")
+            if activated:
+                self.last_event = f"当前视频：{candidate.get('title') or object_id}"
+                self.state = "capturing"
+            return {
+                "action": "active",
+                "accepted": activated,
+                "candidate": candidate,
+            }
         if action == "download":
             object_id = _text(payload.get("objectId"), 128)
             variant_id = _text(payload.get("variantId"), 128)
@@ -799,10 +955,7 @@ class WechatChannelsCaptureService:
     def _static_health_identity(self) -> dict[str, str]:
         now = time.monotonic()
         with self._lock:
-            if (
-                self._static_health_cache
-                and now - self._static_health_cache[0] < 60
-            ):
+            if self._static_health_cache:
                 return dict(self._static_health_cache[1])
             existing_certificate = self.certificate.existing()
             try:

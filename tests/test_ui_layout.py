@@ -5,7 +5,11 @@ import threading
 import time
 import unittest
 import gc
+import ctypes
+import sys
+from collections import OrderedDict
 from pathlib import Path
+from queue import Queue
 from types import SimpleNamespace
 from tkinter import BOTH, TclError, Tk
 from tkinter import ttk
@@ -14,18 +18,23 @@ from unittest.mock import patch
 
 from idm_eagle_bridge.api_server import LocalApiServer
 from idm_eagle_bridge.database import Database
+from idm_eagle_bridge.performance import PerformanceMonitor
 from idm_eagle_bridge.service import ProcessingService
 from idm_eagle_bridge.ui import (
     _AsyncProbe,
     _DynamicWrapLabel,
     _PreviewImageCache,
+    _RoundedPanel,
     _RoundedProgressBar,
     _RoundedScrollbar,
     _ResponsiveTreeColumns,
+    _ScrollableCardList,
     _VerticalScrolledFrame,
     _configure_styles,
     _effective_ui_scale,
     _ellipsize,
+    _apply_windows_dark_title_bar,
+    _bind_responsive_header_layout,
     _layout_mode_for_width,
     _load_product_image,
     _load_ui_icons,
@@ -36,6 +45,7 @@ from idm_eagle_bridge.ui import (
     _scale_geometry,
     _sync_tree_rows,
     _ui_scale_from_dpi,
+    _windows_color_ref,
     _page_slice,
     MainWindow,
 )
@@ -89,6 +99,17 @@ class _FakeSplit:
 
 
 class UiPerformanceHelpersTests(unittest.TestCase):
+    def test_windows_caption_color_uses_native_bgr_order(self) -> None:
+        self.assertEqual(_windows_color_ref("#112233"), 0x332211)
+        self.assertEqual(_windows_color_ref("#0D0F16"), 0x160F0D)
+        with self.assertRaises(ValueError):
+            _windows_color_ref("#123")
+
+    def test_dark_title_bar_is_a_safe_noop_outside_windows(self) -> None:
+        window = SimpleNamespace()
+        with patch("idm_eagle_bridge.ui.sys.platform", "linux"):
+            self.assertFalse(_apply_windows_dark_title_bar(window))
+
     def test_dpi_scale_keeps_logical_window_size_across_monitors(self) -> None:
         self.assertEqual(_ui_scale_from_dpi(96), 1.0)
         self.assertEqual(_ui_scale_from_dpi(144), 1.5)
@@ -256,6 +277,38 @@ class UiPerformanceHelpersTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+@unittest.skipUnless(sys.platform == "win32", "Windows title-bar integration only")
+class WindowsTitleBarIntegrationTests(unittest.TestCase):
+    def test_dark_caption_preserves_native_window_controls(self) -> None:
+        try:
+            root = Tk()
+        except TclError as exc:
+            self.skipTest(f"Tk is unavailable: {exc}")
+        root.withdraw()
+        try:
+            root.title("下载中转站")
+            root.update_idletasks()
+            self.assertTrue(_apply_windows_dark_title_bar(root))
+
+            user32 = ctypes.windll.user32
+            hwnd = int(root.winfo_id())
+            while True:
+                parent = int(user32.GetParent(hwnd) or 0)
+                if not parent:
+                    break
+                hwnd = parent
+            style = int(user32.GetWindowLongPtrW(hwnd, -16))
+            native_controls = (
+                0x00080000  # WS_SYSMENU
+                | 0x00040000  # WS_THICKFRAME
+                | 0x00020000  # WS_MINIMIZEBOX
+                | 0x00010000  # WS_MAXIMIZEBOX
+            )
+            self.assertEqual(style & native_controls, native_controls)
+        finally:
+            root.destroy()
+
+
 class VerticalScrolledFrameTests(unittest.TestCase):
     def setUp(self) -> None:
         try:
@@ -312,6 +365,65 @@ class VerticalScrolledFrameTests(unittest.TestCase):
         self.assertEqual(result, "break")
         self.assertGreater(self.scroller.canvas.yview()[0], 0.0)
 
+    def test_high_resolution_wheel_deltas_accumulate_smoothly(self) -> None:
+        before = self.scroller.canvas.yview()
+
+        for _index in range(7):
+            result = self.scroller._on_mousewheel(
+                SimpleNamespace(widget=self.scroller.content, delta=-5)
+            )
+        self.root.update_idletasks()
+
+        self.assertEqual(result, "break")
+        self.assertEqual(self.scroller.canvas.yview(), before)
+        self.scroller._on_mousewheel(
+            SimpleNamespace(widget=self.scroller.content, delta=-5)
+        )
+        self.root.update_idletasks()
+        self.assertGreater(self.scroller.canvas.yview()[0], 0.0)
+
+    def test_layout_events_are_coalesced_and_scrollbar_tracks_overflow(self) -> None:
+        first_after_id = None
+        for _index in range(50):
+            self.scroller._queue_layout()
+            first_after_id = first_after_id or self.scroller._layout_after_id
+            self.assertEqual(self.scroller._layout_after_id, first_after_id)
+        self.root.update_idletasks()
+
+        self.assertIsNone(self.scroller._layout_after_id)
+        self.assertTrue(self.scroller._scrollbar_visible)
+        self.assertEqual(self.scroller.scrollbar.winfo_manager(), "pack")
+
+        self.scroller.pack_forget()
+        compact = _VerticalScrolledFrame(self.root, padding=0)
+        compact.pack(fill=BOTH, expand=True)
+        ttk.Label(compact.content, text="one row").pack()
+        self.root.update_idletasks()
+
+        self.assertFalse(compact._scrollbar_visible)
+        self.assertEqual(compact.scrollbar.winfo_manager(), "")
+
+    def test_one_router_scrolls_card_content_from_any_descendant(self) -> None:
+        self.scroller.pack_forget()
+        cards = _ScrollableCardList(self.root)
+        cards.pack(fill=BOTH, expand=True)
+        labels = []
+        for index in range(60):
+            label = ttk.Label(cards.content, text=f"card {index}")
+            label.pack()
+            labels.append(label)
+        self.root.update_idletasks()
+
+        self.assertIs(cards._wheel_router, self.scroller._wheel_router)
+        self.assertEqual(cards.canvas.yview()[0], 0.0)
+        result = cards._wheel_router._dispatch(
+            SimpleNamespace(widget=labels[20], delta=-120)
+        )
+        self.root.update_idletasks()
+
+        self.assertEqual(result, "break")
+        self.assertGreater(cards.canvas.yview()[0], 0.0)
+
 
 class ResponsiveWidgetTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -336,6 +448,29 @@ class ResponsiveWidgetTests(unittest.TestCase):
         )
         label._update_wrap(SimpleNamespace(width=320))
         self.assertEqual(int(label.cget("wraplength")), 296)
+
+    def test_detail_header_stacks_actions_when_space_is_tight(self) -> None:
+        header = ttk.Frame(self.root)
+        heading = ttk.Frame(header)
+        actions = ttk.Frame(header)
+        heading.grid(row=0, column=0)
+        actions.grid(row=0, column=1)
+        _bind_responsive_header_layout(
+            header,
+            heading,
+            actions,
+            breakpoint=700,
+        )
+        header.place(x=0, y=0, width=500, height=120)
+        self.root.update()
+
+        self.assertEqual(int(actions.grid_info()["row"]), 1)
+        self.assertEqual(int(heading.grid_info()["columnspan"]), 2)
+
+        header.place_configure(width=800)
+        self.root.update()
+        self.assertEqual(int(actions.grid_info()["row"]), 0)
+        self.assertEqual(int(heading.grid_info()["columnspan"]), 1)
 
     def test_named_fonts_survive_style_configuration(self) -> None:
         _configure_styles(self.root, 1.0)
@@ -405,6 +540,9 @@ class ResponsiveWidgetTests(unittest.TestCase):
         window.wechat_channels = Channels()
         window.wechat_operation_busy = False
         window.wechat_operation_results = __import__("queue").Queue()
+        window.wechat_operation_generation = 0
+        window.wechat_operation_after_id = None
+        window.closing = False
         window.wechat_action_button = Button()
         window.wechat_status_text = Text()
         window.root = Root()
@@ -413,6 +551,186 @@ class ResponsiveWidgetTests(unittest.TestCase):
         window.toggle_wechat_capture()
 
         self.assertLess(time.perf_counter() - started, 0.1)
+
+    def test_trusted_wechat_certificate_starts_without_install_permission(self) -> None:
+        class Channels:
+            trust_certificate = None
+
+            def start(self, *, trust_certificate: bool) -> None:
+                self.trust_certificate = trust_certificate
+
+        channels = Channels()
+        window = object.__new__(MainWindow)
+        window.wechat_channels = channels
+        window.wechat_operation_results = __import__("queue").Queue()
+
+        window._run_wechat_operation(7, False, False)
+
+        self.assertFalse(channels.trust_certificate)
+        generation, event, payload = window.wechat_operation_results.get_nowait()
+        self.assertEqual(generation, 7)
+        self.assertEqual(event, "completed")
+        self.assertEqual(payload, (True, ""))
+
+    def test_wechat_proxy_repair_reports_the_actionable_result(self) -> None:
+        class Channels:
+            @staticmethod
+            def repair_proxy_conflict() -> dict[str, object]:
+                return {
+                    "changed": True,
+                    "message": "已清除失效代理，现在可以开始捕获",
+                }
+
+        window = object.__new__(MainWindow)
+        window.wechat_channels = Channels()
+        window.wechat_operation_results = __import__("queue").Queue()
+
+        window._run_wechat_proxy_repair(9)
+
+        generation, event, payload = window.wechat_operation_results.get_nowait()
+        self.assertEqual(generation, 9)
+        self.assertEqual(event, "proxy_repair")
+        self.assertEqual(
+            payload,
+            (True, "已清除失效代理，现在可以开始捕获"),
+        )
+
+    def test_media_change_notifications_are_coalesced(self) -> None:
+        window = object.__new__(MainWindow)
+        window.media_change_events = Queue(maxsize=1)
+
+        for _index in range(100):
+            window._queue_media_change()
+
+        self.assertEqual(window.media_change_events.qsize(), 1)
+
+    def test_idm_text_measurement_cache_is_bounded_and_reused(self) -> None:
+        window = object.__new__(MainWindow)
+        window.idm_ellipsize_cache = OrderedDict()
+        calls = 0
+
+        def measure(value: str) -> int:
+            nonlocal calls
+            calls += 1
+            return len(value) * 10
+
+        first = window._fit_idm_column_text("一段很长的标题", 30, measure)
+        first_calls = calls
+        second = window._fit_idm_column_text("一段很长的标题", 30, measure)
+
+        self.assertEqual(first, second)
+        self.assertEqual(calls, first_calls)
+
+    def test_stale_wechat_preview_result_is_discarded(self) -> None:
+        window = object.__new__(MainWindow)
+        window.wechat_preview_events = Queue()
+        window.wechat_preview_events.put((1, "old", b"not-a-png"))
+        window.wechat_preview_generation = 2
+        window.wechat_preview_object_id = "current"
+        window.performance_monitor = PerformanceMonitor(enabled=False)
+
+        window._drain_wechat_preview_events()
+
+        self.assertTrue(window.wechat_preview_events.empty())
+
+    def test_maintenance_work_never_blocks_the_start_callback(self) -> None:
+        class Root:
+            def after(self, _delay: int, _callback) -> str:
+                return "maintenance-poll"
+
+        window = object.__new__(MainWindow)
+        window.root = Root()
+        window.closing = False
+        window.current_page = "diagnostics"
+        window.current_ui_operation = ""
+        window.performance_monitor = PerformanceMonitor(enabled=False)
+        window.maintenance_events = Queue(maxsize=8)
+        window.maintenance_after_id = None
+        window.maintenance_generation = 0
+        window.maintenance_busy = False
+        window.maintenance_kind = ""
+        window.media_change_events = Queue()
+        window.update_events = Queue()
+        window.wechat_preview_events = Queue()
+        window.wechat_operation_results = Queue()
+
+        def slow_worker() -> int:
+            time.sleep(0.2)
+            return 7
+
+        started = time.perf_counter()
+        window._start_maintenance("clear-idm", slow_worker)
+        callback_duration = time.perf_counter() - started
+
+        self.assertLess(callback_duration, 0.1)
+        generation, kind, succeeded, payload = window.maintenance_events.get(
+            timeout=1
+        )
+        self.assertEqual(generation, 1)
+        self.assertEqual((kind, succeeded, payload), ("clear-idm", True, 7))
+
+    def test_media_cards_expose_mouse_and_keyboard_context_menus(self) -> None:
+        class Widget:
+            def __init__(self) -> None:
+                self.events: list[str] = []
+
+            def bind(self, event: str, _callback, add: str = "") -> None:
+                self.events.append(event)
+
+        widget = Widget()
+        window = object.__new__(MainWindow)
+        window._bind_plan_card(widget, "plan-1")
+
+        self.assertIn("<Button-3>", widget.events)
+        self.assertIn("<Shift-F10>", widget.events)
+
+    def test_media_context_menu_contains_single_task_cleanup(self) -> None:
+        labels: list[str] = []
+
+        class Menu:
+            def __init__(self, *_args, **_kwargs) -> None:
+                return None
+
+            def add_command(self, *, label: str, command) -> None:
+                labels.append(label)
+
+            def add_separator(self) -> None:
+                labels.append("---")
+
+            def tk_popup(self, _x: int, _y: int) -> None:
+                return None
+
+            def grab_release(self) -> None:
+                return None
+
+        class Root:
+            @staticmethod
+            def winfo_pointerx() -> int:
+                return 10
+
+            @staticmethod
+            def winfo_pointery() -> int:
+                return 20
+
+        window = object.__new__(MainWindow)
+        window.root = Root()
+        window.plan_rows = {
+            "plan-1": {
+                "final_path": "C:/Downloads/video.mp4",
+                "page_url": "https://example.com/video",
+            }
+        }
+        window._select_plan_card = lambda _plan_id: None
+        with patch("idm_eagle_bridge.ui.Menu", Menu):
+            result = window._show_plan_context_menu(
+                SimpleNamespace(x_root=100, y_root=120),
+                "plan-1",
+            )
+
+        self.assertEqual(result, "break")
+        self.assertIn("打开文件位置", labels)
+        self.assertIn("打开来源网页", labels)
+        self.assertIn("清理任务（保留文件）", labels)
 
     def test_production_ui_assets_load_from_the_python_package(self) -> None:
         package_assets = (
@@ -427,6 +745,7 @@ class ResponsiveWidgetTests(unittest.TestCase):
         self.assertIsNotNone(_load_product_image(16))
         icons = _load_ui_icons()
         self.assertEqual(len(icons), 21)
+        self.assertEqual(sum(value is not None for value in icons.values()), 0)
         self.assertTrue(
             {
                 "downloads-active",
@@ -435,6 +754,8 @@ class ResponsiveWidgetTests(unittest.TestCase):
                 "stop-danger",
             }.issubset(icons)
         )
+        self.assertIsNotNone(icons.get("downloads-active"))
+        self.assertEqual(sum(value is not None for value in icons.values()), 1)
 
     def test_rounded_scrollbar_uses_an_arrowless_adaptive_thumb(self) -> None:
         calls: list[tuple[object, ...]] = []
@@ -446,11 +767,42 @@ class ResponsiveWidgetTests(unittest.TestCase):
         scrollbar.place(x=0, y=0, width=12, height=180)
         self.root.update_idletasks()
         scrollbar.set(0.2, 0.5)
+        self.root.update_idletasks()
 
         geometry = scrollbar._thumb_geometry()
         self.assertIsNotNone(geometry)
         self.assertGreater(geometry[3] - geometry[1], 30)
         self.assertEqual(len(scrollbar.find_all()), 1)
+
+    def test_rounded_widgets_keep_a_stable_canvas_item_count_during_resize(self) -> None:
+        panel = _RoundedPanel(
+            self.root,
+            fill="#1A1D25",
+            outer_background="#101116",
+            style="TFrame",
+            width=320,
+            height=180,
+        )
+        panel.place(x=0, y=0, width=320, height=180)
+        progress = _RoundedProgressBar(
+            self.root,
+            maximum=100,
+            height=8,
+            background="#1A1D25",
+        )
+        progress.place(x=0, y=190, width=320, height=8)
+        self.root.update_idletasks()
+
+        for width in range(320, 520, 4):
+            panel.place_configure(width=width)
+            progress.place_configure(width=width)
+            progress.configure(value=width % 101)
+        self.root.update_idletasks()
+
+        self.assertEqual(len(panel.find_all()), 2)
+        self.assertLessEqual(len(progress.find_all()), 2)
+        self.assertIsNone(panel._draw_after_id)
+        self.assertIsNone(progress._draw_after_id)
 
     def test_rounded_progress_accepts_existing_progress_style_updates(self) -> None:
         progress = _RoundedProgressBar(
@@ -569,6 +921,20 @@ class ProductionUiIntegrationTests(unittest.TestCase):
             self.assertEqual(window.plan_secondary_actions.winfo_manager(), "pack")
             self.assertTrue(window.plan_action_buttons["stop"]._enabled)
             self.assertFalse(window.plan_action_buttons["retry"]._enabled)
+            self.assertEqual(set(window.page_frames), {"media"})
+
+            with patch.object(
+                window.wechat_channels,
+                "candidates",
+                side_effect=AssertionError("hidden candidate page was refreshed"),
+            ):
+                window.refresh(force=True)
+            window._show_page("settings")
+            window.root.update_idletasks()
+            self.assertIn("settings", window.page_frames)
+            self.assertEqual(set(window.settings_sub_tabs), {"pairing"})
+            window._show_page("media")
+            window.root.update_idletasks()
 
             with patch.object(server.api.media, "schedule"):
                 wechat_plan = server.api.media.create_plan(
@@ -607,6 +973,17 @@ class ProductionUiIntegrationTests(unittest.TestCase):
 
 
 class ProductionPackagingTests(unittest.TestCase):
+    def test_idm_rows_expose_single_record_cleanup(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        ui_source = (
+            project_root / "src" / "idm_eagle_bridge" / "ui.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('self.job_tree.bind("<Button-3>"', ui_source)
+        self.assertIn('self.job_tree.bind("<Shift-F10>"', ui_source)
+        self.assertIn("清理记录（保留文件）", ui_source)
+        self.assertIn("self.database.remove_job", ui_source)
+
     def test_ui_assets_are_declared_for_wheel_and_pyinstaller_builds(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         pyproject = (project_root / "pyproject.toml").read_text(encoding="utf-8")

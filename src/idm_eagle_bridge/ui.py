@@ -8,9 +8,10 @@ import json
 import re
 import threading
 import ctypes
+from collections import OrderedDict
 from fractions import Fraction
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from tkinter import (
     BOTH,
     END,
@@ -20,6 +21,7 @@ from tkinter import (
     Y,
     BooleanVar,
     Canvas,
+    Menu,
     PhotoImage,
     StringVar,
     Tk,
@@ -36,8 +38,9 @@ from .api_server import LocalApiServer
 from .constants import APP_VERSION
 from .control_signal import ControlSignals
 from .database import Database
-from .eagle import EagleClient, EagleImportError, EagleUnavailable
+from .eagle import EagleClient
 from .network_proxy import ProxyConfigurationError
+from .performance import PerformanceMonitor
 from .security import PairingManager
 from .service import ProcessingService
 from .updater import (
@@ -189,6 +192,8 @@ BASE_SCREEN_WIDTH = 1920
 BASE_SCREEN_HEIGHT = 1080
 CARD_PAGE_SIZE = 12
 TREE_PAGE_SIZE = 80
+UI_QUEUE_DRAIN_LIMIT = 64
+PERFORMANCE_HEARTBEAT_MS = 100
 
 
 def _ui_scale_from_dpi(dpi: object) -> float:
@@ -860,6 +865,40 @@ def _configure_styles(root: Tk, scale: float | None = None) -> None:
     # ── Entry ──
     style.configure("TEntry", fieldbackground=UI["surface_raised"], foreground=UI["text"])
     style.map("TEntry", fieldbackground=[("disabled", UI["surface"])], foreground=[("disabled", UI["text_disabled"])])
+    # ── Spinbox ──
+    # The Windows-native fallback is bright white under the dark theme. Keep
+    # number fields visually aligned with the rest of the settings controls.
+    style.configure(
+        "Settings.TSpinbox",
+        padding=(8, 5),
+        fieldbackground=UI["surface_overlay"],
+        background=UI["surface_overlay"],
+        foreground=UI["text"],
+        arrowcolor=UI["text_secondary"],
+        bordercolor=UI["border"],
+        lightcolor=UI["surface_overlay"],
+        darkcolor=UI["surface_overlay"],
+        borderwidth=1,
+        relief="flat",
+        arrowsize=max(10, round(11 * ui_scale)),
+    )
+    style.map(
+        "Settings.TSpinbox",
+        fieldbackground=[
+            ("disabled", UI["surface"]),
+            ("focus", UI["surface_overlay"]),
+        ],
+        background=[
+            ("active", UI["selected"]),
+            ("pressed", UI["selected"]),
+        ],
+        foreground=[("disabled", UI["text_disabled"])],
+        arrowcolor=[
+            ("active", UI["accent_text"]),
+            ("disabled", UI["text_disabled"]),
+        ],
+        bordercolor=[("focus", UI["accent"])],
+    )
     # ── Combobox ──
     style.configure("TCombobox", fieldbackground=UI["surface_raised"], foreground=UI["text"], arrowcolor=UI["text_secondary"])
     style.map("TCombobox", fieldbackground=[("readonly", UI["surface_raised"])], foreground=[("disabled", UI["text_disabled"])])
@@ -1020,6 +1059,48 @@ def _sync_tree_rows(tree: object, rows: list[tuple[str, tuple[object, ...]]]) ->
         current_order.insert(index, iid)
 
 
+def _set_var_if_changed(variable: object, value: object) -> bool:
+    """Avoid triggering Tk traces and relayout when text did not change."""
+
+    text = str(value)
+    try:
+        if str(variable.get()) == text:
+            return False
+    except Exception:
+        pass
+    variable.set(text)
+    return True
+
+
+def _configure_if_changed(widget: object, **options: object) -> bool:
+    """Configure only options whose rendered value actually changed."""
+
+    changed: dict[str, object] = {}
+    for name, value in options.items():
+        try:
+            current = widget.cget(name)
+        except Exception:
+            changed[name] = value
+            continue
+        if str(current) != str(value):
+            changed[name] = value
+    if not changed:
+        return False
+    widget.configure(**changed)
+    return True
+
+
+def _path_render_revision(value: object) -> tuple[str, int, int]:
+    path = Path(str(value or ""))
+    if not str(value or ""):
+        return "", 0, 0
+    try:
+        stat = path.stat()
+        return str(path), int(stat.st_mtime_ns), int(stat.st_size)
+    except OSError:
+        return str(path), 0, 0
+
+
 class _DynamicWrapLabel(ttk.Label):
     """A label whose wrap length follows its actual rendered width."""
 
@@ -1034,13 +1115,24 @@ class _DynamicWrapLabel(ttk.Label):
         super().__init__(parent, **kwargs)
         self._horizontal_padding = max(0, horizontal_padding)
         self._maximum = maximum
-        self.bind("<Configure>", self._update_wrap, add="+")
+        self._wrap_after_id: str | None = None
+        self._last_wrap = -1
+        self.bind("<Configure>", self._queue_wrap_update, add="+")
+
+    def _queue_wrap_update(self, _event: object | None = None) -> None:
+        if self._wrap_after_id is not None:
+            return
+        self._wrap_after_id = self.after_idle(self._update_wrap)
 
     def _update_wrap(self, event: object | None = None) -> None:
+        self._wrap_after_id = None
         width = int(getattr(event, "width", 0) or self.winfo_width() or 1)
         wrap = max(80, width - self._horizontal_padding)
         if self._maximum is not None:
             wrap = min(wrap, self._maximum)
+        if wrap == self._last_wrap:
+            return
+        self._last_wrap = wrap
         self.configure(wraplength=wrap)
 
 
@@ -1122,6 +1214,8 @@ class _ResponsiveTreeColumns:
         self.compact_minimums = compact_minimums or {}
         self.reserved_width = reserved_width
         self._pending_after: str | None = None
+        self._last_available = -1
+        self._last_widths: dict[str, int] = {}
         tree.bind("<Configure>", self._queue_resize, add="+")
         self._queue_resize()
 
@@ -1133,6 +1227,9 @@ class _ResponsiveTreeColumns:
     def _resize(self) -> None:
         self._pending_after = None
         available = max(1, self.tree.winfo_width() - self.reserved_width)
+        if available == self._last_available:
+            return
+        self._last_available = available
         preferred_minimums = {
             name: max(24, minimum)
             for name, minimum, _weight in self.specifications
@@ -1158,7 +1255,9 @@ class _ResponsiveTreeColumns:
             else:
                 width = preferred_minimums[name] + int(extra * max(0, weight) / total_weight)
                 allocated += width
-            self.tree.column(name, width=width, minwidth=24, stretch=False)
+            if self._last_widths.get(name) != width:
+                self.tree.column(name, width=width, minwidth=24, stretch=False)
+                self._last_widths[name] = width
 
 
 class _Tooltip:
@@ -1237,9 +1336,13 @@ class _StatusIndicator(Canvas):
             borderwidth=0,
         )
         self._size = size
+        self._color = color
         self._dot = self.create_oval(1, 1, size - 1, size - 1, fill=color, outline="")
 
     def set_color(self, color: str) -> None:
+        if color == self._color:
+            return
+        self._color = color
         self.itemconfigure(self._dot, fill=color)
 
 
@@ -1311,13 +1414,26 @@ class _RoundedPanel(Canvas):
         self._border_width = border_width
         self._radius = radius
         self._inset = max(2, inset)
+        self._draw_after_id: str | None = None
+        self._last_draw_signature: tuple[object, ...] | None = None
         self.inner = ttk.Frame(self, style=style)
         self._inner_window = self.create_window(
             (self._inset, self._inset),
             window=self.inner,
             anchor="nw",
         )
-        self.bind("<Configure>", self._redraw, add="+")
+        self._surface = self.create_polygon(
+            (0, 0, 0, 0),
+            smooth=True,
+            splinesteps=10,
+            fill=self._fill,
+            outline=self._border,
+            width=self._border_width,
+            tags=("surface",),
+        )
+        self.tag_lower(self._surface)
+        self.bind("<Configure>", self._queue_redraw, add="+")
+        self.after_idle(self._queue_redraw)
 
     def set_surface(
         self,
@@ -1326,27 +1442,49 @@ class _RoundedPanel(Canvas):
         style: str,
         border: str | None = None,
     ) -> None:
+        changed = (
+            fill != self._fill
+            or (border is not None and border != self._border)
+            or str(self.inner.cget("style")) != style
+        )
         self._fill = fill
         if border is not None:
             self._border = border
-        self.inner.configure(style=style)
-        self._redraw()
+        if str(self.inner.cget("style")) != style:
+            self.inner.configure(style=style)
+        if changed:
+            self._last_draw_signature = None
+            self._queue_redraw()
+
+    def _queue_redraw(self, _event: object | None = None) -> None:
+        if self._draw_after_id is not None:
+            return
+        self._draw_after_id = self.after_idle(self._redraw)
 
     def _redraw(self, _event: object | None = None) -> None:
+        self._draw_after_id = None
         width = max(1, self.winfo_width())
         height = max(1, self.winfo_height())
-        self.delete("surface")
+        signature = (
+            width,
+            height,
+            self._fill,
+            self._border,
+            self._border_width,
+            self._radius,
+            self._inset,
+        )
+        if signature == self._last_draw_signature:
+            return
+        self._last_draw_signature = signature
         points = _rounded_polygon_points(1, 1, width - 1, height - 1, self._radius)
-        self.create_polygon(
-            points,
-            smooth=True,
-            splinesteps=24,
+        self.coords(self._surface, *points)
+        self.itemconfigure(
+            self._surface,
             fill=self._fill,
             outline=self._border,
             width=self._border_width,
-            tags=("surface",),
         )
-        self.tag_lower("surface")
         self.coords(self._inner_window, self._inset, self._inset)
         self.itemconfigure(
             self._inner_window,
@@ -1397,20 +1535,26 @@ class _RoundedButton(Canvas):
         self._kind = kind
         self._enabled = True
         self._hovered = False
-        self.bind("<Configure>", self._draw, add="+")
+        self._draw_after_id: str | None = None
+        self._last_draw_signature: tuple[object, ...] | None = None
+        self.bind("<Configure>", self._queue_draw, add="+")
         self.bind("<Enter>", self._enter, add="+")
         self.bind("<Leave>", self._leave, add="+")
         self.bind("<Button-1>", self._activate, add="+")
         self.bind("<Return>", self._activate, add="+")
         self.bind("<space>", self._activate, add="+")
-        self.bind("<FocusIn>", self._draw, add="+")
-        self.bind("<FocusOut>", self._draw, add="+")
-        self.after_idle(self._draw)
+        self.bind("<FocusIn>", self._queue_draw, add="+")
+        self.bind("<FocusOut>", self._queue_draw, add="+")
+        self.after_idle(self._queue_draw)
 
     def set_enabled(self, enabled: bool) -> None:
-        self._enabled = bool(enabled)
+        enabled = bool(enabled)
+        if enabled == self._enabled:
+            return
+        self._enabled = enabled
         self.configure(cursor="hand2" if self._enabled else "arrow")
-        self._draw()
+        self._last_draw_signature = None
+        self._queue_draw()
 
     def _palette(self) -> tuple[str, str]:
         if not self._enabled:
@@ -1430,10 +1574,28 @@ class _RoundedButton(Canvas):
             UI["text_secondary"],
         )
 
+    def _queue_draw(self, _event: object | None = None) -> None:
+        if self._draw_after_id is not None:
+            return
+        self._draw_after_id = self.after_idle(self._draw)
+
     def _draw(self, _event: object | None = None) -> None:
+        self._draw_after_id = None
         width = max(1, self.winfo_width())
         height = max(1, self.winfo_height())
         fill, foreground = self._palette()
+        signature = (
+            width,
+            height,
+            fill,
+            foreground,
+            self._text,
+            str(self._image),
+            self.focus_get() is self,
+        )
+        if signature == self._last_draw_signature:
+            return
+        self._last_draw_signature = signature
         self.delete("all")
         self.create_polygon(
             _rounded_polygon_points(
@@ -1444,7 +1606,7 @@ class _RoundedButton(Canvas):
                 RADII["control"],
             ),
             smooth=True,
-            splinesteps=24,
+            splinesteps=10,
             fill=fill,
             outline=UI["accent"] if self.focus_get() is self else "",
             width=1,
@@ -1470,12 +1632,16 @@ class _RoundedButton(Canvas):
         )
 
     def _enter(self, _event: object | None = None) -> None:
+        if self._hovered:
+            return
         self._hovered = True
-        self._draw()
+        self._queue_draw()
 
     def _leave(self, _event: object | None = None) -> None:
+        if not self._hovered:
+            return
         self._hovered = False
-        self._draw()
+        self._queue_draw()
 
     def _activate(self, _event: object | None = None) -> str:
         if self._enabled:
@@ -1500,33 +1666,63 @@ class _RoundedBadge(Canvas):
             size=9,
             weight="bold",
         )
-        width = self._font.measure(text) + round(14 * ui_scale)
-        height = max(
+        self._ui_scale = ui_scale
+        self._height = max(
             round(22 * ui_scale),
             self._font.metrics("linespace") + round(4 * ui_scale),
         )
+        width = self._font.measure(text) + round(14 * ui_scale)
         super().__init__(
             parent,
             width=width,
-            height=height,
+            height=self._height,
             background=outer_background,
             borderwidth=0,
             highlightthickness=0,
         )
-        self.create_polygon(
-            _rounded_polygon_points(0, 1, width, height - 1, RADII["badge"]),
+        self._surface = self.create_polygon(
+            _rounded_polygon_points(0, 1, width, self._height - 1, RADII["badge"]),
             smooth=True,
-            splinesteps=18,
+            splinesteps=8,
             fill=fill,
             outline="",
         )
-        self.create_text(
+        self._label = self.create_text(
             width // 2,
-            height // 2,
+            self._height // 2,
             text=text,
             fill=foreground,
             font=self._font,
         )
+        self._state = (text, foreground, fill, outer_background)
+
+    def set_badge(
+        self,
+        *,
+        text: str,
+        foreground: str,
+        fill: str,
+        outer_background: str,
+    ) -> None:
+        state = (text, foreground, fill, outer_background)
+        if state == self._state:
+            return
+        self._state = state
+        width = self._font.measure(text) + round(14 * self._ui_scale)
+        self.configure(width=width, background=outer_background)
+        self.coords(
+            self._surface,
+            *_rounded_polygon_points(
+                0,
+                1,
+                width,
+                self._height - 1,
+                RADII["badge"],
+            ),
+        )
+        self.itemconfigure(self._surface, fill=fill)
+        self.coords(self._label, width // 2, self._height // 2)
+        self.itemconfigure(self._label, text=text, fill=foreground)
 
 
 class _RoundedNavButton(Canvas):
@@ -1553,6 +1749,8 @@ class _RoundedNavButton(Canvas):
         self._command = command
         self._selected = False
         self._hovered = False
+        self._draw_after_id: str | None = None
+        self._last_draw_signature: tuple[object, ...] | None = None
         self._font = tkfont.Font(
             root=parent,
             family=FONT_FAMILIES["ui"],
@@ -1564,15 +1762,15 @@ class _RoundedNavButton(Canvas):
             size=11,
             weight="bold",
         )
-        self.bind("<Configure>", self._draw, add="+")
+        self.bind("<Configure>", self._queue_draw, add="+")
         self.bind("<Enter>", self._enter, add="+")
         self.bind("<Leave>", self._leave, add="+")
         self.bind("<Button-1>", self._activate, add="+")
         self.bind("<Return>", self._activate, add="+")
         self.bind("<space>", self._activate, add="+")
-        self.bind("<FocusIn>", self._draw, add="+")
-        self.bind("<FocusOut>", self._draw, add="+")
-        self.after_idle(self._draw)
+        self.bind("<FocusIn>", self._queue_draw, add="+")
+        self.bind("<FocusOut>", self._queue_draw, add="+")
+        self.after_idle(self._queue_draw)
 
     def set_selected(
         self,
@@ -1580,14 +1778,36 @@ class _RoundedNavButton(Canvas):
         *,
         image: PhotoImage | None = None,
     ) -> None:
-        self._selected = bool(selected)
+        selected = bool(selected)
+        changed = selected != self._selected
+        self._selected = selected
         if image is not None:
+            changed = changed or image is not self._image
             self._image = image
-        self._draw()
+        if changed:
+            self._last_draw_signature = None
+            self._queue_draw()
+
+    def _queue_draw(self, _event: object | None = None) -> None:
+        if self._draw_after_id is not None:
+            return
+        self._draw_after_id = self.after_idle(self._draw)
 
     def _draw(self, _event: object | None = None) -> None:
+        self._draw_after_id = None
         width = max(1, self.winfo_width())
         height = max(1, self.winfo_height())
+        signature = (
+            width,
+            height,
+            self._selected,
+            self._hovered,
+            str(self._image),
+            self.focus_get() is self,
+        )
+        if signature == self._last_draw_signature:
+            return
+        self._last_draw_signature = signature
         self.delete("all")
         if self._selected or self._hovered:
             fill = UI["selected"] if self._selected else UI["surface_overlay"]
@@ -1600,7 +1820,7 @@ class _RoundedNavButton(Canvas):
                     RADII["control"],
                 ),
                 smooth=True,
-                splinesteps=24,
+                splinesteps=10,
                 fill=fill,
                 outline=UI["accent"] if self.focus_get() is self else "",
                 width=1,
@@ -1619,12 +1839,16 @@ class _RoundedNavButton(Canvas):
         )
 
     def _enter(self, _event: object | None = None) -> None:
+        if self._hovered:
+            return
         self._hovered = True
-        self._draw()
+        self._queue_draw()
 
     def _leave(self, _event: object | None = None) -> None:
+        if not self._hovered:
+            return
         self._hovered = False
-        self._draw()
+        self._queue_draw()
 
     def _activate(self, _event: object | None = None) -> str:
         self._command()
@@ -1656,7 +1880,9 @@ class _RoundedScrollbar(Canvas):
         self._hovered = False
         self._drag_origin_y: int | None = None
         self._drag_origin_first = 0.0
-        self.bind("<Configure>", self._draw, add="+")
+        self._draw_after_id: str | None = None
+        self._last_draw_signature: tuple[object, ...] | None = None
+        self.bind("<Configure>", self._queue_draw, add="+")
         self.bind("<Enter>", self._enter, add="+")
         self.bind("<Leave>", self._leave, add="+")
         self.bind("<Button-1>", self._press, add="+")
@@ -1664,12 +1890,14 @@ class _RoundedScrollbar(Canvas):
         self.bind("<ButtonRelease-1>", self._release, add="+")
 
     def set(self, first: object, last: object) -> None:
+        previous = (self._first, self._last)
         try:
             self._first = max(0.0, min(1.0, float(first)))
             self._last = max(self._first, min(1.0, float(last)))
         except (TypeError, ValueError):
             self._first, self._last = 0.0, 1.0
-        self._draw()
+        if (self._first, self._last) != previous:
+            self._queue_draw()
 
     def _thumb_geometry(self) -> tuple[int, int, int, int] | None:
         width = max(1, self.winfo_width())
@@ -1688,7 +1916,23 @@ class _RoundedScrollbar(Canvas):
         left = (width - thumb_width) // 2
         return left, top, left + thumb_width, top + thumb_height
 
+    def _queue_draw(self, _event: object | None = None) -> None:
+        if self._draw_after_id is not None:
+            return
+        self._draw_after_id = self.after_idle(self._draw)
+
     def _draw(self, _event: object | None = None) -> None:
+        self._draw_after_id = None
+        signature = (
+            self.winfo_width(),
+            self.winfo_height(),
+            round(self._first, 6),
+            round(self._last, 6),
+            self._hovered,
+        )
+        if signature == self._last_draw_signature:
+            return
+        self._last_draw_signature = signature
         self.delete("all")
         geometry = self._thumb_geometry()
         if geometry is None:
@@ -1704,19 +1948,23 @@ class _RoundedScrollbar(Canvas):
                 max(2, (right - left) // 2),
             ),
             smooth=True,
-            splinesteps=20,
+            splinesteps=8,
             fill=fill,
             outline="",
             tags=("thumb",),
         )
 
     def _enter(self, _event: object | None = None) -> None:
+        if self._hovered:
+            return
         self._hovered = True
-        self._draw()
+        self._queue_draw()
 
     def _leave(self, _event: object | None = None) -> None:
+        if not self._hovered:
+            return
         self._hovered = False
-        self._draw()
+        self._queue_draw()
 
     def _press(self, event: object) -> str:
         geometry = self._thumb_geometry()
@@ -1767,40 +2015,60 @@ class _RoundedProgressBar(Canvas):
         self._maximum = max(1.0, float(maximum))
         self._value = 0.0
         self._color = UI["accent"]
-        self.bind("<Configure>", self._draw, add="+")
+        self._draw_after_id: str | None = None
+        self._last_draw_signature: tuple[object, ...] | None = None
+        self.bind("<Configure>", self._queue_draw, add="+")
 
     def configure(self, cnf: object | None = None, **kwargs: object) -> object:
+        changed = False
         if "value" in kwargs:
             try:
-                self._value = max(0.0, min(self._maximum, float(kwargs.pop("value"))))
+                value = max(0.0, min(self._maximum, float(kwargs.pop("value"))))
             except (TypeError, ValueError):
-                self._value = 0.0
+                value = 0.0
+            changed = changed or value != self._value
+            self._value = value
         style_name = str(kwargs.pop("style", "") or "")
         if style_name:
             if "Emerald" in style_name:
-                self._color = UI["success"]
+                color = UI["success"]
             elif "Orange" in style_name:
-                self._color = UI["status_waiting_eagle"][0]
+                color = UI["status_waiting_eagle"][0]
             else:
-                self._color = UI["accent"]
+                color = UI["accent"]
+            changed = changed or color != self._color
+            self._color = color
+        if "background" in kwargs:
+            changed = changed or str(kwargs["background"]) != str(self.cget("background"))
         result = super().configure(cnf, **kwargs)
-        if hasattr(self, "_value"):
-            self._draw()
+        if hasattr(self, "_value") and (changed or cnf is not None):
+            self._last_draw_signature = None
+            self._queue_draw()
         return result
 
     config = configure
 
+    def _queue_draw(self, _event: object | None = None) -> None:
+        if not hasattr(self, "_value") or self._draw_after_id is not None:
+            return
+        self._draw_after_id = self.after_idle(self._draw)
+
     def _draw(self, _event: object | None = None) -> None:
         if not hasattr(self, "_value"):
             return
+        self._draw_after_id = None
         width = max(1, self.winfo_width())
         height = max(1, self.winfo_height())
+        signature = (width, height, self._value, self._maximum, self._color)
+        if signature == self._last_draw_signature:
+            return
+        self._last_draw_signature = signature
         self.delete("all")
         radius = max(2, height // 2)
         self.create_polygon(
             _rounded_polygon_points(0, 0, width, height, radius),
             smooth=True,
-            splinesteps=20,
+            splinesteps=8,
             fill=UI["progress_track"],
             outline="",
         )
@@ -1816,10 +2084,56 @@ class _RoundedProgressBar(Canvas):
                 min(radius, max(2, fill_width // 2)),
             ),
             smooth=True,
-            splinesteps=20,
+            splinesteps=8,
             fill=self._color,
             outline="",
         )
+
+
+class _MouseWheelRouter:
+    """Route one top-level wheel binding to the nearest owning scroller."""
+
+    def __init__(self, toplevel: object) -> None:
+        self.toplevel = toplevel
+        self.scrollers: set[object] = set()
+        self.binding = toplevel.bind(
+            "<MouseWheel>",
+            self._dispatch,
+            add="+",
+        )
+
+    def register(self, scroller: object) -> None:
+        self.scrollers.add(scroller)
+
+    def unregister(self, scroller: object) -> None:
+        self.scrollers.discard(scroller)
+        if self.scrollers or not self.binding:
+            return
+        try:
+            self.toplevel.unbind("<MouseWheel>", self.binding)
+        except Exception:
+            pass
+        self.binding = ""
+
+    def _dispatch(self, event: object) -> str | None:
+        current = getattr(event, "widget", None)
+        while current is not None:
+            if isinstance(current, (ttk.Treeview, ttk.Combobox)):
+                return None
+            if current in self.scrollers:
+                return current._on_mousewheel(event)
+            current = getattr(current, "master", None)
+        return None
+
+
+def _register_mousewheel_scroller(scroller: object) -> _MouseWheelRouter:
+    toplevel = scroller.winfo_toplevel()
+    router = getattr(toplevel, "_mousewheel_router", None)
+    if not isinstance(router, _MouseWheelRouter):
+        router = _MouseWheelRouter(toplevel)
+        setattr(toplevel, "_mousewheel_router", router)
+    router.register(scroller)
+    return router
 
 
 class _ScrollableCardList(ttk.Frame):
@@ -1847,31 +2161,66 @@ class _ScrollableCardList(ttk.Frame):
             background=background,
         )
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.scrollbar.pack(side=RIGHT, fill=Y)
         self.canvas.pack(side=LEFT, fill=BOTH, expand=True)
         self.content = ttk.Frame(self.canvas, style="App.TFrame")
         self._window = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
-        self.canvas.bind("<Configure>", self._sync, add="+")
-        self.content.bind("<Configure>", self._sync, add="+")
-        self.canvas.bind("<MouseWheel>", self._wheel, add="+")
-        self.content.bind("<MouseWheel>", self._wheel, add="+")
+        self._sync_after_id: str | None = None
+        self._last_layout: tuple[int, int, int, bool] | None = None
+        self._scrollbar_visible = False
+        self._wheel_remainder = 0.0
+        self.canvas.bind("<Configure>", self._queue_sync, add="+")
+        self.content.bind("<Configure>", self._queue_sync, add="+")
+        self._wheel_router = _register_mousewheel_scroller(self)
+        self.bind("<Destroy>", self._release_wheel_router, add="+")
 
-    def _sync(self, _event: object | None = None) -> None:
+    def _queue_sync(self, _event: object | None = None) -> None:
+        if self._sync_after_id is not None:
+            return
+        self._sync_after_id = self.after_idle(self._sync)
+
+    def _sync(self, _event: object | None = None, *, force: bool = False) -> None:
+        self._sync_after_id = None
         width = max(1, self.canvas.winfo_width())
+        viewport_height = max(1, self.canvas.winfo_height())
         height = max(1, self.content.winfo_reqheight())
+        overflow = height > viewport_height + 1
+        if overflow != self._scrollbar_visible:
+            self._scrollbar_visible = overflow
+            if overflow:
+                self.scrollbar.pack(side=RIGHT, fill=Y, before=self.canvas)
+            else:
+                self.scrollbar.pack_forget()
+            self._queue_sync()
+        signature = (width, viewport_height, height, overflow)
+        if not force and signature == self._last_layout:
+            return
+        self._last_layout = signature
         self.canvas.itemconfigure(self._window, width=width)
         self.canvas.configure(scrollregion=(0, 0, width, height))
 
-    def _wheel(self, event: object) -> str:
+    def _on_mousewheel(self, event: object) -> str | None:
         delta = int(getattr(event, "delta", 0) or 0)
-        if delta:
-            self.canvas.yview_scroll(-1 if delta > 0 else 1, "units")
+        if delta == 0 or self.canvas.yview() == (0.0, 1.0):
+            return None
+        self._wheel_remainder += delta * 3 / 120
+        units = int(self._wheel_remainder)
+        if units == 0:
+            return "break"
+        self._wheel_remainder -= units
+        self.canvas.yview_scroll(-units, "units")
         return "break"
+
+    _wheel = _on_mousewheel
+
+    def _release_wheel_router(self, event: object) -> None:
+        if getattr(event, "widget", None) is self:
+            self._wheel_router.unregister(self)
 
     def clear(self) -> None:
         for child in self.content.winfo_children():
             child.destroy()
-        self._sync()
+        self._last_layout = None
+        self._queue_sync()
 
 
 def _set_window_icon(window: Tk | Toplevel) -> None:
@@ -1892,6 +2241,100 @@ def _set_window_icon(window: Tk | Toplevel) -> None:
             return
         except Exception:
             continue
+
+
+def _windows_color_ref(color: str) -> int:
+    """Convert #RRGGBB to the BGR COLORREF expected by Windows."""
+
+    value = str(color).strip().lstrip("#")
+    if len(value) != 6:
+        raise ValueError(f"invalid Windows caption color: {color}")
+    red = int(value[0:2], 16)
+    green = int(value[2:4], 16)
+    blue = int(value[4:6], 16)
+    return red | (green << 8) | (blue << 16)
+
+
+def _apply_windows_dark_title_bar(window: Tk | Toplevel) -> bool:
+    """Keep native window behavior while matching the application's dark shell."""
+
+    if sys.platform != "win32":
+        return False
+    try:
+        window.update_idletasks()
+        user32 = ctypes.windll.user32
+        hwnd = int(window.winfo_id())
+        while True:
+            parent = int(user32.GetParent(hwnd) or 0)
+            if not parent:
+                break
+            hwnd = parent
+
+        dwmapi = ctypes.windll.dwmapi
+        enabled = ctypes.c_int(1)
+        dark_result = int(
+            dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                20,  # DWMWA_USE_IMMERSIVE_DARK_MODE
+                ctypes.byref(enabled),
+                ctypes.sizeof(enabled),
+            )
+        )
+        if dark_result != 0:
+            dark_result = int(
+                dwmapi.DwmSetWindowAttribute(
+                    hwnd,
+                    19,  # Older Windows 10 builds
+                    ctypes.byref(enabled),
+                    ctypes.sizeof(enabled),
+                )
+            )
+
+        color_results: list[int] = []
+        for attribute, color in (
+            (35, UI["bg"]),  # DWMWA_CAPTION_COLOR
+            (36, UI["text"]),  # DWMWA_TEXT_COLOR
+            (34, UI["border"]),  # DWMWA_BORDER_COLOR
+        ):
+            value = ctypes.c_uint(_windows_color_ref(color))
+            color_results.append(
+                int(
+                    dwmapi.DwmSetWindowAttribute(
+                        hwnd,
+                        attribute,
+                        ctypes.byref(value),
+                        ctypes.sizeof(value),
+                    )
+                )
+            )
+        user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0080 | 0x0100)
+        return dark_result == 0 or any(result == 0 for result in color_results)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
+def _redraw_windows_client_area(window: Tk | Toplevel) -> bool:
+    """Invalidate the full Tk window once an interactive move or resize settles."""
+
+    if sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = int(window.winfo_id())
+        while True:
+            parent = int(user32.GetParent(hwnd) or 0)
+            if not parent:
+                break
+            hwnd = parent
+        flags = (
+            0x0001  # RDW_INVALIDATE
+            | 0x0004  # RDW_ERASE
+            | 0x0080  # RDW_ALLCHILDREN
+            | 0x0100  # RDW_UPDATENOW
+        )
+        return bool(user32.RedrawWindow(hwnd, None, None, flags))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
 
 
 def _load_product_image(maximum_size: int = 30) -> PhotoImage | None:
@@ -1933,7 +2376,42 @@ def _load_product_image(maximum_size: int = 30) -> PhotoImage | None:
     return None
 
 
-def _load_ui_icons(scale: float = 1.0) -> dict[str, PhotoImage]:
+class _LazyIconMap(dict[str, PhotoImage | None]):
+    """Discover icon keys up front and decode pixels only on first use."""
+
+    def __init__(self, paths: dict[str, Path], scale: float) -> None:
+        super().__init__((name, None) for name in paths)
+        self._paths = paths
+        self._scale = scale
+        self._failed: set[str] = set()
+
+    def __getitem__(self, key: str) -> PhotoImage | None:
+        value = super().__getitem__(key)
+        if value is not None or key in self._failed:
+            return value
+        try:
+            value = _scale_photo_image(
+                PhotoImage(file=str(self._paths[key])),
+                self._scale,
+            )
+        except Exception:
+            self._failed.add(key)
+            return None
+        super().__setitem__(key, value)
+        return value
+
+    def get(
+        self,
+        key: str,
+        default: PhotoImage | None = None,
+    ) -> PhotoImage | None:
+        if key not in self:
+            return default
+        value = self[key]
+        return default if value is None else value
+
+
+def _load_ui_icons(scale: float = 1.0) -> dict[str, PhotoImage | None]:
     bundle_value = str(getattr(sys, "_MEIPASS", "") or "")
     roots = []
     if bundle_value:
@@ -1945,21 +2423,15 @@ def _load_ui_icons(scale: float = 1.0) -> dict[str, PhotoImage]:
         )
         roots.append(Path(bundle_value) / "assets" / "ui-icons")
     roots.append(Path(__file__).resolve().parent / "assets" / "ui-icons")
-    loaded: dict[str, PhotoImage] = {}
+    paths: dict[str, Path] = {}
     for root in roots:
         if not root.is_dir():
             continue
         for path in root.glob("*.png"):
-            if path.stem in loaded:
+            if path.stem in paths:
                 continue
-            try:
-                loaded[path.stem] = _scale_photo_image(
-                    PhotoImage(file=str(path)),
-                    scale,
-                )
-            except Exception:
-                continue
-    return loaded
+            paths[path.stem] = path
+    return _LazyIconMap(paths, scale)
 
 
 class _VerticalScrolledFrame(ttk.Frame):
@@ -1989,7 +2461,6 @@ class _VerticalScrolledFrame(ttk.Frame):
             background=background,
         )
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.scrollbar.pack(side=RIGHT, fill=Y)
         self.canvas.pack(side=LEFT, fill=BOTH, expand=True)
 
         self.content = ttk.Frame(
@@ -2002,23 +2473,44 @@ class _VerticalScrolledFrame(ttk.Frame):
             window=self.content,
             anchor="nw",
         )
-        self.content.bind("<Configure>", self._sync_layout, add="+")
-        self.canvas.bind("<Configure>", self._sync_layout, add="+")
-        self.bind(
-            "<Configure>",
-            lambda _event: self.after_idle(self._sync_layout),
-            add="+",
-        )
-        self._wheel_binding = self.winfo_toplevel().bind(
-            "<MouseWheel>",
-            self._on_mousewheel,
-            add="+",
-        )
-        self.bind("<Destroy>", self._release_wheel_binding, add="+")
+        self._layout_after_id: str | None = None
+        self._last_layout: tuple[int, int, int, bool] | None = None
+        self._scrollbar_visible = False
+        self._wheel_remainder = 0.0
+        self.content.bind("<Configure>", self._queue_layout, add="+")
+        self.canvas.bind("<Configure>", self._queue_layout, add="+")
+        self.bind("<Configure>", self._queue_layout, add="+")
+        self._wheel_router = _register_mousewheel_scroller(self)
+        self.bind("<Destroy>", self._release_wheel_router, add="+")
 
-    def _sync_layout(self, _event: object | None = None) -> None:
+    def _queue_layout(self, _event: object | None = None) -> None:
+        if self._layout_after_id is not None:
+            return
+        self._layout_after_id = self.after_idle(self._sync_layout)
+
+    def _sync_layout(
+        self,
+        _event: object | None = None,
+        *,
+        force: bool = False,
+    ) -> None:
+        self._layout_after_id = None
         width = max(1, self.canvas.winfo_width())
-        height = max(self.canvas.winfo_height(), self.content.winfo_reqheight(), 1)
+        viewport_height = max(1, self.canvas.winfo_height())
+        requested_height = max(1, self.content.winfo_reqheight())
+        overflow = requested_height > viewport_height + 1
+        if overflow != self._scrollbar_visible:
+            self._scrollbar_visible = overflow
+            if overflow:
+                self.scrollbar.pack(side=RIGHT, fill=Y, before=self.canvas)
+            else:
+                self.scrollbar.pack_forget()
+            self._queue_layout()
+        height = max(viewport_height, requested_height)
+        signature = (width, viewport_height, requested_height, overflow)
+        if not force and signature == self._last_layout:
+            return
+        self._last_layout = signature
         self.canvas.itemconfigure(
             self._content_window,
             width=width,
@@ -2053,23 +2545,116 @@ class _VerticalScrolledFrame(ttk.Frame):
         delta = int(getattr(event, "delta", 0) or 0)
         if delta == 0 or self.canvas.yview() == (0.0, 1.0):
             return None
-        units = max(1, abs(delta) // 120)
-        self.canvas.yview_scroll(-units if delta > 0 else units, "units")
+        self._wheel_remainder += delta * 3 / 120
+        units = int(self._wheel_remainder)
+        if units == 0:
+            return "break"
+        self._wheel_remainder -= units
+        self.canvas.yview_scroll(-units, "units")
         return "break"
 
     def scroll_to_bottom(self) -> None:
         self.update_idletasks()
-        self._sync_layout()
+        self._sync_layout(force=True)
         self.canvas.yview_moveto(1.0)
 
-    def _release_wheel_binding(self, event: object) -> None:
-        if getattr(event, "widget", None) is not self or not self._wheel_binding:
+    def _release_wheel_router(self, event: object) -> None:
+        if getattr(event, "widget", None) is self:
+            self._wheel_router.unregister(self)
+
+
+def _bind_coalesced_aspect_resize(
+    container: object,
+    surface: object,
+    *,
+    maximum_width: int,
+    aspect_width: int = 16,
+    aspect_height: int = 9,
+) -> None:
+    """Resize a preview once per idle cycle instead of on every geometry event."""
+
+    state: dict[str, object] = {"after_id": None, "size": None}
+
+    def apply() -> None:
+        state["after_id"] = None
+        size = state["size"]
+        if not isinstance(size, tuple):
             return
-        try:
-            self.winfo_toplevel().unbind("<MouseWheel>", self._wheel_binding)
-        except Exception:
-            pass
-        self._wheel_binding = ""
+        width, height = size
+        if (
+            int(surface.cget("width")) == width
+            and int(surface.cget("height")) == height
+        ):
+            return
+        surface.configure(width=width, height=height)
+
+    def queue(event: object) -> None:
+        available = max(1, int(getattr(event, "width", 1)))
+        width = min(maximum_width, available)
+        state["size"] = (
+            width,
+            max(1, width * aspect_height // aspect_width),
+        )
+        if state["after_id"] is None:
+            state["after_id"] = container.after_idle(apply)
+
+    container.bind("<Configure>", queue, add="+")
+
+
+def _bind_responsive_header_layout(
+    header: object,
+    heading: object,
+    actions: object,
+    *,
+    breakpoint: int = 700,
+) -> None:
+    """Stack crowded header actions once, after resize activity settles."""
+
+    state: dict[str, object] = {"after_id": None, "stacked": None}
+
+    def apply() -> None:
+        state["after_id"] = None
+        stacked = max(1, header.winfo_width()) < breakpoint
+        if state["stacked"] == stacked:
+            return
+        state["stacked"] = stacked
+        if stacked:
+            heading.grid_configure(
+                row=0,
+                column=0,
+                columnspan=2,
+                sticky="ew",
+                padx=0,
+            )
+            actions.grid_configure(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                pady=(10, 0),
+            )
+            return
+        heading.grid_configure(
+            row=0,
+            column=0,
+            columnspan=1,
+            sticky="ew",
+            padx=(0, 12),
+        )
+        actions.grid_configure(
+            row=0,
+            column=1,
+            columnspan=1,
+            sticky="ne",
+            pady=0,
+        )
+
+    def queue(_event: object | None = None) -> None:
+        if state["after_id"] is None:
+            state["after_id"] = header.after_idle(apply)
+
+    header.bind("<Configure>", queue, add="+")
+    queue()
 
 
 class MainWindow:
@@ -2083,6 +2668,7 @@ class MainWindow:
         visual_capture_hidden: bool = False,
         visual_capture_geometry: str | None = None,
     ) -> None:
+        window_started = time.perf_counter()
         self.database = database
         self.api_server = api_server
         self.media = api_server.api.media
@@ -2090,6 +2676,11 @@ class MainWindow:
         self.processing = processing
         self.external_tray = external_tray
         self.start_hidden = start_hidden and external_tray
+        self.closing = False
+        self.performance_monitor = PerformanceMonitor.from_environment()
+        self.performance_after_id: str | None = None
+        self.performance_expected_at = 0.0
+        self.current_ui_operation = "startup"
         self.eagle = EagleClient()
         self.pairing = PairingManager(database)
         _enable_windows_dpi_awareness()
@@ -2120,6 +2711,8 @@ class MainWindow:
             round(600 * self.ui_scale),
         )
         self.root.protocol("WM_DELETE_WINDOW", self.hide if external_tray else self.quit)
+        _apply_windows_dark_title_bar(self.root)
+        self.root.after_idle(lambda: _apply_windows_dark_title_bar(self.root))
         self.status_text = StringVar()
         self.page_title_text = StringVar(value="下载任务")
         self.eagle_status_text = StringVar(value="Eagle 正在检查")
@@ -2137,15 +2730,27 @@ class MainWindow:
         self.control_signals = ControlSignals() if external_tray else None
         self.control_after_id: str | None = None
         self.refresh_after_id: str | None = None
+        self.page_refresh_after_id: str | None = None
+        self.prewarm_after_id: str | None = None
         self.update_poll_after_id: str | None = None
         self.auto_update_after_id: str | None = None
         self.copy_feedback_after_id: str | None = None
         self.media_change_after_id: str | None = None
-        self.media_change_events: Queue[None] = Queue()
+        self.maintenance_after_id: str | None = None
+        self.wechat_operation_after_id: str | None = None
+        self.media_change_events: Queue[None] = Queue(maxsize=1)
         self._media_change_listener = self._queue_media_change
         self.update_events: Queue[tuple[str, object]] = Queue()
+        self.update_progress_lock = threading.Lock()
+        self.update_progress_latest: tuple[int, int] | None = None
         self.update_checking = False
         self.update_downloading = False
+        self.maintenance_events: Queue[tuple[int, str, bool, object]] = Queue(
+            maxsize=8
+        )
+        self.maintenance_generation = 0
+        self.maintenance_busy = False
+        self.maintenance_kind = ""
         self.visible = not self.start_hidden
         try:
             initial_width = round(
@@ -2156,32 +2761,61 @@ class MainWindow:
         self.layout_mode = _layout_mode_for_width(initial_width)
         self.initial_client_width = initial_width
         self.layout_after_id: str | None = None
+        self.window_settle_after_id: str | None = None
+        self.window_interaction_active = False
+        self.pending_refresh_force = False
+        self.last_root_size: tuple[int, int] | None = None
+        self.last_responsive_signature: tuple[str, bool] | None = None
         self.responsive_initialized = False
         self.last_jobs_revision: tuple[int, float] | None = None
         self.last_plans_revision: tuple[int, float] | None = None
+        self.last_plan_detail_revision: tuple[object, ...] | None = None
+        self.last_plan_preview_revision: tuple[object, ...] | None = None
+        self.last_idm_detail_revision: tuple[object, ...] | None = None
+        self.idm_detail_query_key: tuple[object, ...] | None = None
+        self.idm_detail_query_value: dict | None = None
+        self.idm_ellipsize_cache: OrderedDict[tuple[str, int], str] = OrderedDict()
+        self.last_wechat_detail_revision: tuple[object, ...] | None = None
         self.plan_rows: dict[str, dict] = {}
         self.selected_plan_card_id = ""
-        self.plan_card_widgets: dict[str, tuple[ttk.Frame, list[ttk.Label], Canvas]] = {}
+        self.plan_card_widgets: dict[str, dict[str, object]] = {}
         self.plan_thumbnail_images: dict[str, PhotoImage] = {}
+        self.plan_thumbnail_cache: OrderedDict[
+            tuple[str, int, int],
+            PhotoImage,
+        ] = OrderedDict()
         self.media_page = 0
         self.media_page_count = 1
         self.preview_image: PhotoImage | None = None
         self.preview_cache = _PreviewImageCache()
         self.wechat_rows: dict[str, dict] = {}
         self.selected_wechat_card_id = ""
-        self.wechat_card_widgets: dict[str, tuple[ttk.Frame, list[ttk.Label]]] = {}
+        self.wechat_card_widgets: dict[str, dict[str, object]] = {}
         self.wechat_variant_ids: list[str] = []
         self.wechat_revision: tuple[int, float] | None = None
-        self.wechat_preview_events: Queue[tuple[str, bytes]] = Queue()
-        self.wechat_preview_requests: set[str] = set()
+        self.wechat_preview_events: Queue[tuple[int, str, bytes]] = Queue(maxsize=4)
+        self.wechat_preview_lock = threading.Lock()
+        self.wechat_preview_pending: tuple[int, str] | None = None
+        self.wechat_preview_worker_running = False
+        self.wechat_preview_generation = 0
         self.wechat_preview_object_id = ""
         self.wechat_preview_image: PhotoImage | None = None
         self.wechat_page = 0
         self.wechat_page_count = 1
-        self.wechat_operation_results: Queue[tuple[str, object]] = Queue()
+        self.wechat_operation_results: Queue[tuple[int, str, object]] = Queue(
+            maxsize=8
+        )
         self.wechat_operation_busy = False
+        self.wechat_operation_generation = 0
         self.idm_page = 0
         self.idm_page_count = 1
+        self.last_media_summary: dict[str, int | float] = {
+            "total": 0,
+            "active": 0,
+            "revision": 0.0,
+        }
+        self.current_settings_tab = "pairing"
+        self.ui_ready = False
         self.last_eagle_check = 0.0
         self.eagle_connected = False
         self.eagle_probe = _AsyncProbe(
@@ -2189,19 +2823,37 @@ class MainWindow:
             name="eagle-health-probe",
         )
         self._build()
+        self.ui_ready = True
+        self.page_prewarm_queue = [
+            "wechat",
+            "idm",
+            "settings",
+            "diagnostics",
+        ]
         add_change_listener = getattr(self.media, "add_change_listener", None)
         if callable(add_change_listener):
             add_change_listener(self._media_change_listener)
             self.media_change_after_id = self.root.after(
-                150,
+                250,
                 self._poll_media_changes,
             )
         self.root.bind("<Configure>", self._queue_responsive_layout, add="+")
         self.root.after_idle(self._apply_responsive_layout)
         self.refresh()
+        self.prewarm_after_id = self.root.after(250, self._prewarm_next_page)
         if self.control_signals:
             self.control_after_id = self.root.after(250, self._poll_control_signals)
         self.auto_update_after_id = self.root.after(10000, self._automatic_update_check)
+        if self.performance_monitor.enabled:
+            self.performance_expected_at = (
+                time.perf_counter() + PERFORMANCE_HEARTBEAT_MS / 1000
+            )
+            self.performance_after_id = self.root.after(
+                PERFORMANCE_HEARTBEAT_MS,
+                self._performance_heartbeat,
+            )
+        self.current_ui_operation = ""
+        self._record_performance("MainWindow.create", window_started)
 
     def _build(self) -> None:
         shell = ttk.Frame(self.root, style="App.TFrame")
@@ -2296,10 +2948,6 @@ class MainWindow:
         self.page_host = ttk.Frame(self.workspace, style="Surface.TFrame")
         self.page_host.pack(fill=BOTH, expand=True)
         self._build_media_tab()
-        self._build_wechat_tab()
-        self._build_idm_tab()
-        self._build_settings_tab()
-        self._build_diagnostics_tab()
         self._show_page("media")
 
     def _new_page(self, name: str) -> ttk.Frame:
@@ -2307,8 +2955,78 @@ class MainWindow:
         self.page_frames[name] = page
         return page
 
+    def _ensure_page(self, page: str) -> bool:
+        if page in self.page_frames:
+            return True
+        builder = {
+            "media": self._build_media_tab,
+            "wechat": self._build_wechat_tab,
+            "idm": self._build_idm_tab,
+            "settings": self._build_settings_tab,
+            "diagnostics": self._build_diagnostics_tab,
+        }.get(page)
+        if builder is None:
+            return False
+        started = time.perf_counter()
+        previous_operation = self.current_ui_operation
+        self.current_ui_operation = f"build-page:{page}"
+        try:
+            builder()
+        finally:
+            self.current_ui_operation = previous_operation
+            self._record_performance(
+                "page.build",
+                started,
+                f"build-page:{page}",
+            )
+        return page in self.page_frames
+
+    def _queue_page_refresh(self) -> None:
+        if not self.ui_ready or self.page_refresh_after_id is not None:
+            return
+        self.page_refresh_after_id = self.root.after_idle(
+            self._refresh_after_page_change,
+        )
+
+    def _refresh_after_page_change(self) -> None:
+        self.page_refresh_after_id = None
+        self.refresh()
+
+    def _prewarm_next_page(self) -> None:
+        self.prewarm_after_id = None
+        if not self.visible or self.window_interaction_active:
+            self.prewarm_after_id = self.root.after(
+                500,
+                self._prewarm_next_page,
+            )
+            return
+        while self.page_prewarm_queue:
+            page = self.page_prewarm_queue.pop(0)
+            if page not in self.page_frames:
+                self._ensure_page(page)
+                break
+        if self.page_prewarm_queue:
+            self.prewarm_after_id = self.root.after(
+                250,
+                self._prewarm_next_page,
+            )
+
     def _show_page(self, page: str) -> None:
-        if page not in self.page_frames:
+        started = time.perf_counter()
+        previous_operation = self.current_ui_operation
+        self.current_ui_operation = f"show-page:{page}"
+        try:
+            self._show_page_impl(page)
+        finally:
+            self.current_ui_operation = previous_operation
+            self._record_performance(
+                "page.show",
+                started,
+                f"show-page:{page}",
+            )
+
+    def _show_page_impl(self, page: str) -> None:
+        if not self._ensure_page(page):
             return
         titles = {
             "media": "下载任务",
@@ -2332,27 +3050,62 @@ class MainWindow:
                 ),
             )
         self.current_page = page
-        self.page_title_text.set(titles.get(page, page))
+        _set_var_if_changed(self.page_title_text, titles.get(page, page))
         # Paned windows that were built while their page was hidden have a
         # one-pixel geometry and Tk clamps their sash to zero. Restore only
         # the page that has just become visible; touching the hidden pages
         # here would collapse them again before the next navigation.
         self.root.after_idle(self._apply_mode_to_page_layouts)
-        if page == "settings":
-            if hasattr(self, "settings_tab_buttons"):
-                self._settings_show_tab("pairing")
-            self._refresh_settings()
-        elif page == "diagnostics":
-            self._refresh_diagnostics_summary()
+        self._queue_page_refresh()
 
     def _queue_responsive_layout(self, event: object) -> None:
         if getattr(event, "widget", None) is not self.root:
             return
+        self.window_interaction_active = True
+        if self.window_settle_after_id is not None:
+            self.root.after_cancel(self.window_settle_after_id)
+        self.window_settle_after_id = self.root.after(
+            180,
+            self._finish_window_interaction,
+        )
+
+        size = (
+            max(1, int(getattr(event, "width", 0) or self.root.winfo_width())),
+            max(1, int(getattr(event, "height", 0) or self.root.winfo_height())),
+        )
+        if size == self.last_root_size:
+            return
+        self.last_root_size = size
         if self.layout_after_id is not None:
             self.root.after_cancel(self.layout_after_id)
-        self.layout_after_id = self.root.after(120, self._apply_responsive_layout)
+        self.layout_after_id = self.root.after(90, self._apply_responsive_layout)
+
+    def _finish_window_interaction(self) -> None:
+        self.window_settle_after_id = None
+        self.window_interaction_active = False
+        self._apply_responsive_layout()
+        self.root.after_idle(lambda: _redraw_windows_client_area(self.root))
+        if self.pending_refresh_force:
+            self.pending_refresh_force = False
+            self.root.after_idle(lambda: self.refresh(force=True))
 
     def _apply_responsive_layout(self) -> None:
+        started = time.perf_counter()
+        try:
+            self._apply_responsive_layout_impl()
+        finally:
+            self._record_performance(
+                "window.configure",
+                started,
+                "responsive-layout",
+            )
+
+    def _apply_responsive_layout_impl(self) -> None:
+        if self.layout_after_id is not None:
+            try:
+                self.root.after_cancel(self.layout_after_id)
+            except Exception:
+                pass
         self.layout_after_id = None
         width = max(self.root.winfo_width(), 1)
         logical_width = max(1, round(width / self.ui_scale))
@@ -2360,6 +3113,10 @@ class MainWindow:
         mode_changed = mode != self.layout_mode
         self.layout_mode = mode
         compact = mode == LAYOUT_COMPACT
+        signature = (mode, compact)
+        if signature == self.last_responsive_signature and self.responsive_initialized:
+            return
+        self.last_responsive_signature = signature
         self.sidebar.configure(
             width=(
                 self.metrics["sidebar_compact_width"]
@@ -2488,12 +3245,13 @@ class MainWindow:
             text="媒体任务",
             style="MediaToolbarTitle.TLabel",
         ).pack(side=LEFT)
-        ttk.Button(
+        self.media_clear_button = ttk.Button(
             toolbar,
             text="清除完成",
             style="MediaToolbar.TButton",
             command=self.clear_media_history,
-        ).pack(side=RIGHT)
+        )
+        self.media_clear_button.pack(side=RIGHT)
         self.media_next_button = ttk.Button(
             toolbar,
             text="›",
@@ -2635,6 +3393,7 @@ class MainWindow:
             self.plan_action_buttons[name].pack(side=LEFT, padx=(0, 6))
         for name in ("open", "source"):
             self.plan_action_buttons[name].pack(side=LEFT, padx=(0, 6))
+        _bind_responsive_header_layout(header, heading, actions)
 
         self.preview_surface = _RoundedPanel(
             detail_content,
@@ -2659,12 +3418,11 @@ class MainWindow:
         )
         self.preview_label.pack(fill=BOTH, expand=True)
 
-        def resize_preview(event: object) -> None:
-            available = max(1, int(getattr(event, "width", 1)))
-            width = min(self.metrics["preview_max_width"], available)
-            self.preview_surface.configure(width=width, height=max(1, width * 9 // 16))
-
-        detail_content.bind("<Configure>", resize_preview, add="+")
+        _bind_coalesced_aspect_resize(
+            detail_content,
+            self.preview_surface,
+            maximum_width=self.metrics["preview_max_width"],
+        )
 
         info = ttk.Frame(detail_content, style="SurfaceRaised.TFrame")
         info.pack(fill=X, pady=(14, 0))
@@ -2750,12 +3508,13 @@ class MainWindow:
         tab = self._new_page("idm")
         toolbar = ttk.Frame(tab, style="Surface.TFrame", padding=(16, 7))
         toolbar.pack(fill=X)
-        ttk.Button(
+        self.idm_clear_button = ttk.Button(
             toolbar,
             text="清除完成",
             style="Link.TButton",
             command=self.clear_history,
-        ).pack(side=RIGHT)
+        )
+        self.idm_clear_button.pack(side=RIGHT)
         ttk.Button(
             toolbar,
             text="刷新",
@@ -2852,6 +3611,8 @@ class MainWindow:
         self.job_tree.bind(
             "<<TreeviewSelect>>", lambda _event: self._update_idm_detail()
         )
+        self.job_tree.bind("<Button-3>", self._show_job_context_menu, add="+")
+        self.job_tree.bind("<Shift-F10>", self._show_job_context_menu, add="+")
 
         self.idm_detail_scroller = _VerticalScrolledFrame(
             detail_host,
@@ -2931,6 +3692,14 @@ class MainWindow:
                     command=self.assign_source,
                 )
             ),
+            "remove": actions.add(
+                ttk.Button(
+                    actions,
+                    text="清理记录",
+                    style="Danger.TButton",
+                    command=self.remove_selected_job,
+                )
+            ),
         }
 
         for label, variable in (
@@ -2999,16 +3768,25 @@ class MainWindow:
             style="Accent.TButton",
         )
         self.wechat_action_button.pack(fill=X)
+        self.wechat_proxy_repair_button = ttk.Button(
+            capture,
+            text="修复代理冲突",
+            image=self.ui_icons.get("settings-muted"),
+            compound=LEFT,
+            command=self.repair_wechat_proxy_conflict,
+            style="Quiet.TButton",
+        )
+        self.wechat_proxy_repair_button.pack(fill=X, pady=(7, 0))
         _DynamicWrapLabel(
             capture,
-            text="仅在手动开始后为微信启用本机受控捕获；停止或退出会恢复开启前的系统代理。",
+            text="正常代理会自动兼容；遇到失效代理或代理被其他软件抢占时，可使用“修复代理冲突”。",
             style="Muted.TLabel",
             justify=LEFT,
         ).pack(fill=X, pady=(7, 0))
 
         candidate_toolbar = ttk.Frame(master, style="Surface.TFrame", padding=(16, 6))
         candidate_toolbar.pack(fill=X)
-        self.wechat_candidate_count_text = StringVar(value="候选 0")
+        self.wechat_candidate_count_text = StringVar(value="当前视频 · 等待识别")
         ttk.Label(
             candidate_toolbar,
             textvariable=self.wechat_candidate_count_text,
@@ -3027,13 +3805,12 @@ class MainWindow:
             command=lambda: self._change_wechat_page(1),
             style="Link.TButton",
         )
-        self.wechat_next_button.pack(side=RIGHT)
         self.wechat_page_text = StringVar(value="1/1")
-        ttk.Label(
+        self.wechat_page_label = ttk.Label(
             candidate_toolbar,
             textvariable=self.wechat_page_text,
             style="Muted.TLabel",
-        ).pack(side=RIGHT, padx=3)
+        )
         self.wechat_previous_button = ttk.Button(
             candidate_toolbar,
             text="‹",
@@ -3041,7 +3818,6 @@ class MainWindow:
             command=lambda: self._change_wechat_page(-1),
             style="Link.TButton",
         )
-        self.wechat_previous_button.pack(side=RIGHT)
 
         self.wechat_card_list = _ScrollableCardList(
             master,
@@ -3161,15 +3937,11 @@ class MainWindow:
             maximum=720,
         ).pack(fill=X, pady=(10, 0))
 
-        def resize_preview(event: object) -> None:
-            available = max(1, int(getattr(event, "width", 1)))
-            width = min(self.metrics["preview_max_width"], available)
-            self.wechat_preview_surface.configure(
-                width=width,
-                height=max(1, width * 9 // 16),
-            )
-
-        detail_content.bind("<Configure>", resize_preview, add="+")
+        _bind_coalesced_aspect_resize(
+            detail_content,
+            self.wechat_preview_surface,
+            maximum_width=self.metrics["preview_max_width"],
+        )
 
     def _build_settings_tab(self) -> None:
         tab = self._new_page("settings")
@@ -3183,10 +3955,18 @@ class MainWindow:
         self.settings_nav.pack_propagate(False)
         self.settings_tab_buttons: dict[str, ttk.Button] = {}
         self.settings_sub_tabs: dict[str, ttk.Frame] = {}
+        self.settings_sub_tab_builders = {
+            "pairing": self._build_settings_pairing,
+            "sites": self._build_settings_sites,
+            "network": self._build_settings_network,
+            "storage": self._build_settings_storage,
+            "updates": self._build_settings_updates,
+        }
         for key, label in (
             ("pairing", "浏览器配对"),
             ("sites", "网站规则"),
             ("network", "网络代理"),
+            ("storage", "文件管理"),
             ("updates", "更新"),
         ):
             btn = ttk.Button(
@@ -3201,20 +3981,27 @@ class MainWindow:
         self.settings_panel = ttk.Frame(tab, style="Surface.TFrame")
         self.settings_panel.pack(side=LEFT, fill=BOTH, expand=True)
 
-        self._build_settings_pairing()
-        self._build_settings_sites()
-        self._build_settings_network()
-        self._build_settings_updates()
-        self._settings_show_tab("pairing")
+        self._settings_show_tab(self.current_settings_tab)
 
     def _settings_show_tab(self, name: str) -> None:
+        if name not in self.settings_sub_tabs:
+            builder = self.settings_sub_tab_builders.get(name)
+            if builder is None:
+                return
+            builder()
+        self.current_settings_tab = name
         for key, frame in self.settings_sub_tabs.items():
             if key == name:
                 frame.pack(fill=BOTH, expand=True)
             else:
                 frame.pack_forget()
         for key, button in self.settings_tab_buttons.items():
-            button.configure(style="NavSelected.TButton" if key == name else "Nav.TButton")
+            _configure_if_changed(
+                button,
+                style="NavSelected.TButton" if key == name else "Nav.TButton",
+            )
+        if self.ui_ready and self.current_page == "settings":
+            self._refresh_settings()
 
     def _build_settings_pairing(self) -> None:
         scroller = _VerticalScrolledFrame(
@@ -3473,6 +4260,114 @@ class MainWindow:
         ).pack(fill=X, pady=(10, 0))
         self._settings_proxy_mode_changed()
 
+    def _build_settings_storage(self) -> None:
+        scroller = _VerticalScrolledFrame(
+            self.settings_panel,
+            padding=(20, 16),
+            style="Surface.TFrame",
+            background=UI["surface"],
+            initial_width=self.initial_client_width,
+        )
+        self.settings_sub_tabs["storage"] = scroller
+        content = scroller.content
+        ttk.Label(content, text="文件管理", style="Title.TLabel").pack(anchor="w")
+        _DynamicWrapLabel(
+            content,
+            text="设置导入 Eagle 后，本机下载副本的保留时间。",
+            style="Muted.TLabel",
+            justify=LEFT,
+            maximum=820,
+        ).pack(fill=X, pady=(6, 12))
+
+        retention_card = ttk.Frame(
+            content,
+            style="Soft.TFrame",
+            padding=(14, 12),
+        )
+        retention_card.pack(fill=X, pady=(0, 12))
+        ttk.Label(
+            retention_card,
+            text="导入后的本机副本",
+            style="Section.TLabel",
+        ).pack(anchor="w")
+        _DynamicWrapLabel(
+            retention_card,
+            text="仅管理下载中转站创建的文件；IDM 原文件不会移动或删除。",
+            style="RaisedMuted.TLabel",
+            justify=LEFT,
+            maximum=760,
+        ).pack(fill=X, pady=(4, 10))
+
+        row = ttk.Frame(retention_card, style="Soft.TFrame")
+        row.pack(fill=X)
+        ttk.Label(row, text="自动清理", style="RaisedMuted.TLabel").pack(side=LEFT)
+        self.storage_retention_days = StringVar()
+        retention_spinbox = ttk.Spinbox(
+            row,
+            from_=0,
+            to=365,
+            increment=1,
+            width=6,
+            textvariable=self.storage_retention_days,
+            validate="key",
+            validatecommand=(self.root.register(self._validate_digits), "%P"),
+            style="Settings.TSpinbox",
+        )
+        retention_spinbox.pack(side=LEFT, padx=(12, 7))
+        ttk.Label(row, text="天后", style="RaisedMuted.TLabel").pack(side=LEFT)
+        ttk.Label(
+            retention_card,
+            text="设为 0 表示始终保留。",
+            style="RaisedMuted.TLabel",
+        ).pack(anchor="w", pady=(8, 0))
+
+        self.storage_feedback_text = StringVar(value="")
+        _DynamicWrapLabel(
+            content,
+            textvariable=self.storage_feedback_text,
+            style="Muted.TLabel",
+            justify=LEFT,
+            maximum=820,
+        ).pack(fill=X, pady=(9, 0))
+
+        ttk.Button(
+            content,
+            text="保存设置",
+            style="Accent.TButton",
+            command=self._save_storage_settings,
+        ).pack(anchor="w", pady=(12, 0))
+
+        self._load_storage_settings()
+
+    @staticmethod
+    def _validate_digits(value: str) -> bool:
+        return value == "" or value.isdigit()
+
+    def _load_storage_settings(self) -> None:
+        days = self.database.get_setting("file_retention_days", 7)
+        days = max(0, min(365, int(days)))
+        self.storage_retention_days.set(str(days))
+        self.storage_feedback_text.set(
+            "当前设置：本机副本始终保留"
+            if days == 0
+            else f"当前设置：导入 Eagle {days} 天后自动清理本机副本"
+        )
+
+    def _save_storage_settings(self) -> None:
+        raw = self.storage_retention_days.get()
+        try:
+            days = max(0, min(365, int(raw)))
+        except ValueError:
+            self.storage_feedback_text.set("请输入 0-365 之间的数字")
+            return
+        self.database.set_setting("file_retention_days", days)
+        self.storage_retention_days.set(str(days))
+        self.storage_feedback_text.set(
+            "已保存：本机副本始终保留"
+            if days == 0
+            else f"已保存：导入 Eagle {days} 天后自动清理本机副本"
+        )
+
     def _build_settings_updates(self) -> None:
         scroller = _VerticalScrolledFrame(
             self.settings_panel,
@@ -3576,14 +4471,15 @@ class MainWindow:
             justify=LEFT,
             maximum=780,
         ).pack(fill=X, pady=(6, 0))
-        ttk.Button(
+        self.diagnostics_export_button = ttk.Button(
             content,
             text="导出脱敏诊断",
             image=self.ui_icons.get("diagnostics-white"),
             compound=LEFT,
             style="Accent.TButton",
             command=self.export_diagnostics,
-        ).pack(anchor="w", pady=(14, 0))
+        )
+        self.diagnostics_export_button.pack(anchor="w", pady=(14, 0))
         ttk.Label(
             content,
             textvariable=self.diagnostics_feedback_text,
@@ -3698,7 +4594,8 @@ class MainWindow:
         self.refresh(force=True)
 
     def _settings_proxy_mode_changed(self) -> None:
-        self.settings_proxy_entry.configure(
+        _configure_if_changed(
+            self.settings_proxy_entry,
             state="normal" if self.settings_proxy_mode.get() == "manual" else "disabled"
         )
 
@@ -3716,47 +4613,62 @@ class MainWindow:
         self.refresh(force=True)
 
     def _refresh_settings(self, select_domain: str | None = None) -> None:
-        if not hasattr(self, "settings_site_tree"):
-            return
-        if hasattr(self, "pairing_code_text"):
+        active_tab = getattr(self, "current_settings_tab", "pairing")
+        if active_tab == "pairing" and hasattr(self, "pairing_code_text"):
             code = self.pairing.pairing_code
-            self.pairing_code_text.set(f"{code[:3]}  {code[3:]}")
-        selected = select_domain
-        if not selected and self.settings_site_tree.selection():
-            selected = self.settings_site_tree.selection()[0]
-        rules = self.database.list_site_rules()
-        rows = []
-        for rule in rules:
-            updated = time.strftime(
-                "%Y-%m-%d %H:%M",
-                time.localtime(rule["updated_at"]),
+            _set_var_if_changed(
+                self.pairing_code_text,
+                f"{code[:3]}  {code[3:]}",
             )
-            rows.append(
-                (
-                    str(rule["domain"]),
-                    (
-                        rule["domain"],
-                        "已启用" if rule["enabled"] else "已停用",
-                        "包含" if rule["include_subdomains"] else "不包含",
-                        updated,
-                    ),
+            return
+        if active_tab == "sites" and hasattr(self, "settings_site_tree"):
+            selected = select_domain
+            if not selected and self.settings_site_tree.selection():
+                selected = self.settings_site_tree.selection()[0]
+            rules = self.database.list_site_rules()
+            rows = []
+            for rule in rules:
+                updated = time.strftime(
+                    "%Y-%m-%d %H:%M",
+                    time.localtime(rule["updated_at"]),
                 )
+                rows.append(
+                    (
+                        str(rule["domain"]),
+                        (
+                            rule["domain"],
+                            "已启用" if rule["enabled"] else "已停用",
+                            "包含" if rule["include_subdomains"] else "不包含",
+                            updated,
+                        ),
+                    )
+                )
+            _sync_tree_rows(self.settings_site_tree, rows)
+            if selected and self.settings_site_tree.exists(selected):
+                self.settings_site_tree.selection_set(selected)
+                self.settings_site_tree.see(selected)
+            enabled = sum(1 for rule in rules if rule["enabled"])
+            _set_var_if_changed(
+                self.settings_site_summary_text,
+                f"共 {len(rules)} 条规则 · 已启用 {enabled} 条 · 未列出的网站默认不自动导入",
             )
-        _sync_tree_rows(self.settings_site_tree, rows)
-        if selected and self.settings_site_tree.exists(selected):
-            self.settings_site_tree.selection_set(selected)
-            self.settings_site_tree.see(selected)
-        enabled = sum(1 for rule in rules if rule["enabled"])
-        self.settings_site_summary_text.set(
-            f"共 {len(rules)} 条规则 · 已启用 {enabled} 条 · 未列出的网站默认不自动导入"
-        )
+            return
+        if active_tab != "network" or not hasattr(self, "settings_proxy_mode"):
+            return
         configuration = self.media.network_proxy.configuration()
-        self.settings_proxy_mode.set(configuration["mode"])
-        self.settings_proxy_manual.set(configuration["manualUrl"])
+        _set_var_if_changed(
+            self.settings_proxy_mode,
+            configuration["mode"],
+        )
+        _set_var_if_changed(
+            self.settings_proxy_manual,
+            configuration["manualUrl"],
+        )
         self._settings_proxy_mode_changed()
         status = self.media.network_proxy.status()
-        self.settings_proxy_status_text.set(
-            f"检测来源：{status.get('source') or '无'} · 端点：{status.get('endpoint') or '直连'} · {status['summary']}"
+        _set_var_if_changed(
+            self.settings_proxy_status_text,
+            f"检测来源：{status.get('source') or '无'} · 端点：{status.get('endpoint') or '直连'} · {status['summary']}",
         )
 
     def _refresh_diagnostics_summary(self) -> None:
@@ -3770,9 +4682,74 @@ class MainWindow:
             f"本机服务 {host}:{port} · "
             f"Eagle {'已连接' if self.eagle_connected else '未连接'} · "
             f"Chrome {'已配对' if self.pairing.paired_origin else '待配对'}\n"
-            f"媒体任务 {len(self.plan_rows)} 条 · "
+            f"媒体任务 {int(self.last_media_summary.get('total') or 0)} 条 · "
             f"视频号 {health.get('state') or 'off'} · "
             f"网络 {network.get('summary') or network.get('mode') or '未知'}"
+        )
+
+    def _performance_context(
+        self,
+        operation: str = "",
+        *,
+        background: bool = False,
+    ) -> dict[str, object]:
+        queues: dict[str, int] = {}
+        for name in (
+            "media_change_events",
+            "update_events",
+            "wechat_preview_events",
+            "wechat_operation_results",
+            "maintenance_events",
+        ):
+            value = getattr(self, name, None)
+            if value is not None:
+                try:
+                    queues[name] = int(value.qsize())
+                except (AttributeError, NotImplementedError):
+                    pass
+        return {
+            "page": str(getattr(self, "current_page", "")),
+            "operation": operation or str(getattr(self, "current_ui_operation", "")),
+            "threadCount": threading.active_count(),
+            "queues": queues,
+            "background": bool(background),
+        }
+
+    def _record_performance(
+        self,
+        name: str,
+        started: float,
+        operation: str = "",
+        *,
+        background: bool = False,
+    ) -> None:
+        if not self.performance_monitor.enabled:
+            return
+        duration_ms = (time.perf_counter() - started) * 1000
+        if duration_ms < self.performance_monitor.threshold_ms:
+            return
+        self.performance_monitor.record(
+            name,
+            duration_ms,
+            self._performance_context(operation, background=background),
+        )
+
+    def _performance_heartbeat(self) -> None:
+        self.performance_after_id = None
+        if self.closing:
+            return
+        now = time.perf_counter()
+        delay_ms = max(0.0, (now - self.performance_expected_at) * 1000)
+        if delay_ms >= self.performance_monitor.threshold_ms:
+            self.performance_monitor.record(
+                "tk.heartbeat",
+                delay_ms,
+                self._performance_context("event-loop-delay"),
+            )
+        self.performance_expected_at = now + PERFORMANCE_HEARTBEAT_MS / 1000
+        self.performance_after_id = self.root.after(
+            PERFORMANCE_HEARTBEAT_MS,
+            self._performance_heartbeat,
         )
 
     def run(self) -> None:
@@ -3781,6 +4758,7 @@ class MainWindow:
     def show(self) -> None:
         self.visible = True
         self.root.deiconify()
+        _apply_windows_dark_title_bar(self.root)
         self.root.lift()
         self.root.focus_force()
         self.refresh(force=True)
@@ -3816,8 +4794,9 @@ class MainWindow:
                 messagebox.showinfo("正在更新", "更新检查或下载正在进行，请稍候。")
             return
         self.update_checking = True
-        self.update_button.configure(state="disabled")
-        self.update_button_text.set("正在检查…")
+        if hasattr(self, "update_button"):
+            self.update_button.configure(state="disabled")
+        _set_var_if_changed(self.update_button_text, "正在检查…")
         if hasattr(self, "update_status_text"):
             self.update_status_text.set("正在检查可用更新…")
         threading.Thread(
@@ -3836,9 +4815,13 @@ class MainWindow:
             self.update_events.put(("check_error", (silent, exc)))
 
     def _queue_media_change(self) -> None:
-        self.media_change_events.put(None)
+        try:
+            self.media_change_events.put_nowait(None)
+        except Full:
+            pass
 
     def _poll_media_changes(self) -> None:
+        started = time.perf_counter()
         self.media_change_after_id = None
         changed = False
         while True:
@@ -3852,17 +4835,35 @@ class MainWindow:
             self.refresh(force=True)
         if callable(getattr(self.media, "add_change_listener", None)):
             self.media_change_after_id = self.root.after(
-                150,
+                250,
                 self._poll_media_changes,
             )
+        self._record_performance(
+            "queue.media-changes",
+            started,
+            "consume-media-changes",
+        )
 
     def _ensure_update_poll(self) -> None:
         if self.update_poll_after_id is None:
             self.update_poll_after_id = self.root.after(150, self._poll_update_events)
 
     def _poll_update_events(self) -> None:
+        started = time.perf_counter()
         self.update_poll_after_id = None
-        while True:
+        with self.update_progress_lock:
+            progress = self.update_progress_latest
+            self.update_progress_latest = None
+        if progress is not None:
+            downloaded, total = progress
+            percent = min(99, int(int(downloaded) * 100 / max(1, int(total))))
+            _set_var_if_changed(self.update_button_text, f"正在下载 {percent}%")
+            if hasattr(self, "update_status_text"):
+                _set_var_if_changed(
+                    self.update_status_text,
+                    f"正在下载并校验安装包：{percent}%",
+                )
+        for _index in range(UI_QUEUE_DRAIN_LIMIT):
             try:
                 event, payload = self.update_events.get_nowait()
             except Empty:
@@ -3873,22 +4874,29 @@ class MainWindow:
             elif event == "check_error":
                 silent, error = payload
                 self._handle_update_error(bool(silent), error)
-            elif event == "download_progress":
-                downloaded, total = payload
-                percent = min(99, int(int(downloaded) * 100 / max(1, int(total))))
-                self.update_button_text.set(f"正在下载 {percent}%")
-                if hasattr(self, "update_status_text"):
-                    self.update_status_text.set(f"正在下载并校验安装包：{percent}%")
             elif event == "download_ok":
                 self._handle_download_ready(payload)
             elif event == "download_error":
                 self._handle_download_error(payload)
-        if self.update_checking or self.update_downloading:
+        with self.update_progress_lock:
+            more_progress = self.update_progress_latest is not None
+        if (
+            self.update_checking
+            or self.update_downloading
+            or more_progress
+            or not self.update_events.empty()
+        ):
             self._ensure_update_poll()
+        self._record_performance(
+            "queue.update-events",
+            started,
+            "consume-update-events",
+        )
 
     def _reset_update_button(self) -> None:
-        self.update_button_text.set("检查更新")
-        self.update_button.configure(state="normal")
+        _set_var_if_changed(self.update_button_text, "检查更新")
+        if hasattr(self, "update_button"):
+            self.update_button.configure(state="normal")
 
     def _handle_update_check(self, silent: bool, update: object) -> None:
         self.update_checking = False
@@ -3923,8 +4931,11 @@ class MainWindow:
 
     def _start_update_download(self, update: UpdateInfo) -> None:
         self.update_downloading = True
-        self.update_button.configure(state="disabled")
-        self.update_button_text.set("正在下载 0%")
+        with self.update_progress_lock:
+            self.update_progress_latest = None
+        if hasattr(self, "update_button"):
+            self.update_button.configure(state="disabled")
+        _set_var_if_changed(self.update_button_text, "正在下载 0%")
         if hasattr(self, "update_status_text"):
             self.update_status_text.set("正在下载并验证安装包")
         threading.Thread(
@@ -3938,13 +4949,15 @@ class MainWindow:
         try:
             installer = prepare_update(
                 update,
-                lambda current, total: self.update_events.put(
-                    ("download_progress", (current, total))
-                ),
+                self._queue_update_progress,
             )
             self.update_events.put(("download_ok", installer))
         except Exception as exc:
             self.update_events.put(("download_error", exc))
+
+    def _queue_update_progress(self, current: int, total: int) -> None:
+        with self.update_progress_lock:
+            self.update_progress_latest = (int(current), int(total))
 
     def _handle_download_ready(self, installer: object) -> None:
         self.update_downloading = False
@@ -3965,10 +4978,49 @@ class MainWindow:
             self.update_status_text.set(f"更新失败：{error}")
         messagebox.showerror("更新失败", str(error), parent=self.root)
 
+    def _fit_idm_column_text(
+        self,
+        value: object,
+        maximum_width: int,
+        measure,
+    ) -> str:
+        text = " ".join(str(value or "").split())
+        key = (text, max(1, int(maximum_width)))
+        cached = self.idm_ellipsize_cache.pop(key, None)
+        if cached is not None:
+            self.idm_ellipsize_cache[key] = cached
+            return cached
+        fitted = _pixel_ellipsize(text, key[1], measure)
+        self.idm_ellipsize_cache[key] = fitted
+        while len(self.idm_ellipsize_cache) > 1024:
+            self.idm_ellipsize_cache.popitem(last=False)
+        return fitted
+
     def refresh(self, force: bool = False) -> None:
+        started = time.perf_counter()
+        previous_operation = self.current_ui_operation
+        self.current_ui_operation = "refresh"
+        try:
+            self._refresh_impl(force)
+        finally:
+            self.current_ui_operation = previous_operation
+            self._record_performance(
+                "ui.refresh",
+                started,
+                "refresh",
+            )
+
+    def _refresh_impl(self, force: bool = False) -> None:
         if self.refresh_after_id:
             self.root.after_cancel(self.refresh_after_id)
             self.refresh_after_id = None
+        if self.page_refresh_after_id:
+            self.root.after_cancel(self.page_refresh_after_id)
+            self.page_refresh_after_id = None
+        if self.window_interaction_active:
+            self.pending_refresh_force = self.pending_refresh_force or force
+            self.refresh_after_id = self.root.after(240, self.refresh)
+            return
         if not self.visible and not force:
             self.refresh_after_id = self.root.after(30000, self.refresh)
             return
@@ -3988,10 +5040,31 @@ class MainWindow:
             counts.get(status, 0)
             for status in ("waiting_source", "queued", "waiting_eagle", "retry")
         )
-        plans = self.media.list_plans(200)
-        media_active_count = sum(
-            1 for plan in plans if str(plan.get("status")) in MEDIA_ACTIVE_STATUSES
-        )
+        plans: list[dict] = []
+        summary_reader = getattr(self.media, "ui_summary", None)
+        if callable(summary_reader):
+            self.last_media_summary = dict(summary_reader())
+            media_active_count = int(self.last_media_summary.get("active") or 0)
+        else:
+            plans = self.media.list_plans(200)
+            media_active_count = sum(
+                1
+                for plan in plans
+                if str(plan.get("status")) in MEDIA_ACTIVE_STATUSES
+            )
+            self.last_media_summary = {
+                "total": len(plans),
+                "active": media_active_count,
+                "revision": max(
+                    (
+                        float(plan.get("updated_at") or 0)
+                        for plan in plans
+                    ),
+                    default=0.0,
+                ),
+            }
+        if self.current_page == "media" and not plans:
+            plans = self.media.list_plans(200)
         status_parts = [f"v{APP_VERSION}", eagle_text, f"本机服务 {host}:{port}"]
         if media_active_count:
             status_parts.append(f"媒体任务 {media_active_count}")
@@ -4002,43 +5075,64 @@ class MainWindow:
             status_parts.append(f"视频号候选 {wechat_health.get('candidateCount', 0)}")
         if counts.get("failed_permanent", 0):
             status_parts.append(f"失败 {counts['failed_permanent']}")
-        self.status_text.set(" · ".join(status_parts))
-        self.eagle_status_text.set(
+        _set_var_if_changed(self.status_text, " · ".join(status_parts))
+        _set_var_if_changed(
+            self.eagle_status_text,
             "Eagle 已连接" if self.eagle_connected else "Eagle 未连接"
         )
-        self.service_status_text.set("服务正常")
+        _set_var_if_changed(self.service_status_text, "服务正常")
         if hasattr(self, "status_dots"):
             self.status_dots["eagle"].set_color(
                 UI["success"] if self.eagle_connected else UI["text_muted"]
             )
             self.status_dots["service"].set_color(UI["success"])
         enabled_sites = dashboard["enabled_site_count"]
-        self.site_rules_text.set(f"网站规则（已开启 {enabled_sites}）")
+        _set_var_if_changed(
+            self.site_rules_text,
+            f"网站规则（已开启 {enabled_sites}）",
+        )
         proxy_status = self.media.network_proxy.status()
-        self.network_proxy_text.set(f"网络：{proxy_status['summary']}")
+        _set_var_if_changed(
+            self.network_proxy_text,
+            f"网络：{proxy_status['summary']}",
+        )
         if self.pairing.paired_origin:
-            self.pairing_text.set("Chrome 已安全配对")
-            self.chrome_status_text.set("Chrome 已配对")
+            _set_var_if_changed(self.pairing_text, "Chrome 已安全配对")
+            _set_var_if_changed(self.chrome_status_text, "Chrome 已配对")
             if hasattr(self, "status_dots"):
                 self.status_dots["chrome"].set_color(UI["success"])
         else:
-            self.pairing_text.set(f"Chrome 配对码：{self.pairing.pairing_code}")
-            self.chrome_status_text.set("Chrome 待配对")
+            _set_var_if_changed(
+                self.pairing_text,
+                f"Chrome 配对码：{self.pairing.pairing_code}",
+            )
+            _set_var_if_changed(self.chrome_status_text, "Chrome 待配对")
             if hasattr(self, "status_dots"):
                 self.status_dots["chrome"].set_color(UI["text_muted"])
 
-        self._refresh_media_tasks(plans, force)
-        self._refresh_wechat_candidates(wechat_health, force)
+        if self.current_page == "media":
+            self._refresh_media_tasks(plans, force)
+        elif self.current_page == "wechat":
+            self._refresh_wechat_candidates(wechat_health, force)
 
         revision = dashboard["jobs_revision"]
-        if force or revision != self.last_jobs_revision:
+        if (
+            self.current_page == "idm"
+            and hasattr(self, "job_tree")
+            and revision != self.last_jobs_revision
+        ):
+            projection_started = time.perf_counter()
             selected = self.selected_job_id()
             job_rows = []
             tree_font = tkfont.nametofont("Ui12")
 
             def fit_column(value: object, column: str) -> str:
                 width = int(self.job_tree.column(column, "width") or 24)
-                return _pixel_ellipsize(value, max(24, width - 16), tree_font.measure)
+                return self._fit_idm_column_text(
+                    value,
+                    max(24, width - 16),
+                    tree_font.measure,
+                )
 
             jobs = self.database.list_jobs(500)
             visible_jobs, self.idm_page, self.idm_page_count = _page_slice(
@@ -4079,13 +5173,28 @@ class MainWindow:
             elif job_rows:
                 self.job_tree.selection_set(job_rows[0][0])
             self.last_jobs_revision = revision
-        self._update_idm_detail()
-        if self.current_page == "settings":
+            self._record_performance(
+                "idm.list-project",
+                projection_started,
+                "refresh-idm-list",
+            )
+        if self.current_page == "idm":
+            self._update_idm_detail()
+        elif self.current_page == "settings":
             self._refresh_settings()
-        if self.current_page == "diagnostics":
+        elif self.current_page == "diagnostics":
             self._refresh_diagnostics_summary()
+        if self.current_page == "wechat" and wechat_health.get("running"):
+            refresh_delay = 750
+        elif (
+            self.current_page == "media"
+            and media_active_count
+        ):
+            refresh_delay = 1000
+        else:
+            refresh_delay = 3000 if media_active_count else 4000
         self.refresh_after_id = self.root.after(
-            1000 if media_active_count or wechat_health.get("running") else 4000,
+            refresh_delay,
             self.refresh,
         )
 
@@ -4097,7 +5206,7 @@ class MainWindow:
         page: int,
         total_pages: int,
     ) -> None:
-        text.set(f"{page + 1}/{total_pages}")
+        _set_var_if_changed(text, f"{page + 1}/{total_pages}")
         previous.state(["!disabled"] if page > 0 else ["disabled"])
         following.state(["!disabled"] if page + 1 < total_pages else ["disabled"])
 
@@ -4234,7 +5343,13 @@ class MainWindow:
                 anchor="w",
             )
             metadata.grid(row=2, column=1, sticky="ew", pady=(3, 0))
-            self.wechat_card_widgets[object_id] = (row, [title, author, metadata])
+            self.wechat_card_widgets[object_id] = {
+                "row": row,
+                "body": body,
+                "title": title,
+                "author": author,
+                "metadata": metadata,
+            }
             for widget in (
                 row,
                 body,
@@ -4247,32 +5362,63 @@ class MainWindow:
                 self._bind_wechat_card(widget, object_id)
             ttk.Separator(self.wechat_card_list.content).pack(fill=X)
 
+    def _update_wechat_card_widget(
+        self,
+        object_id: str,
+        candidate: dict,
+    ) -> None:
+        widgets = self.wechat_card_widgets.get(object_id)
+        if not widgets:
+            return
+        selected = object_id == self.selected_wechat_card_id
+        frame_style = "TaskCardSelected.TFrame" if selected else "TaskCard.TFrame"
+        title_style = (
+            "TaskCardTitleSelected.TLabel" if selected else "TaskCardTitle.TLabel"
+        )
+        meta_style = (
+            "TaskCardMetaSelected.TLabel" if selected else "TaskCardMeta.TLabel"
+        )
+        variants = (
+            candidate.get("variants")
+            if isinstance(candidate.get("variants"), list)
+            else []
+        )
+        quality = str(variants[0].get("quality") or "自动") if variants else "自动"
+        updated = float(candidate.get("updatedAt") or 0)
+        time_text = time.strftime("%H:%M", time.localtime(updated)) if updated else "—"
+        _configure_if_changed(widgets["row"], style=frame_style)
+        _configure_if_changed(widgets["body"], style=frame_style)
+        _configure_if_changed(
+            widgets["title"],
+            text=_ellipsize(candidate.get("title") or "微信视频号视频", 24),
+            style=title_style,
+        )
+        _configure_if_changed(
+            widgets["author"],
+            text=_ellipsize(candidate.get("author") or "未知作者", 20),
+            style=meta_style,
+        )
+        _configure_if_changed(
+            widgets["metadata"],
+            text=(
+                f"{self._duration_text(candidate.get('durationMs'))}"
+                f"  {quality}  {time_text}"
+            ),
+            style=meta_style,
+        )
+
     def _select_wechat_card(self, object_id: str) -> None:
         if object_id not in self.wechat_rows:
             return
         self.selected_wechat_card_id = object_id
-        for current_id, (row, labels) in self.wechat_card_widgets.items():
-            selected = current_id == object_id
-            frame_style = "TaskCardSelected.TFrame" if selected else "TaskCard.TFrame"
-            title_style = (
-                "TaskCardTitleSelected.TLabel" if selected else "TaskCardTitle.TLabel"
-            )
-            meta_style = (
-                "TaskCardMetaSelected.TLabel" if selected else "TaskCardMeta.TLabel"
-            )
-            row.configure(style=frame_style)
-            labels[0].configure(style=title_style)
-            for label in labels[1:]:
-                label.configure(style=meta_style)
-            body = next(
-                (child for child in row.winfo_children() if isinstance(child, ttk.Frame)),
-                None,
-            )
-            if body is not None:
-                body.configure(style=frame_style)
+        for current_id in self.wechat_card_widgets:
+            candidate = self.wechat_rows.get(current_id)
+            if candidate is not None:
+                self._update_wechat_card_widget(current_id, candidate)
+        self.last_wechat_detail_revision = None
         self._update_wechat_detail()
 
-    def _refresh_wechat_candidates(self, health: dict, force: bool) -> None:
+    def _refresh_wechat_candidates(self, health: dict, _force: bool) -> None:
         self._drain_wechat_preview_events()
         state = str(health.get("state") or "off")
         labels = {
@@ -4295,9 +5441,13 @@ class MainWindow:
                 f"/{diagnostics.get('resourceScriptsSeen', 0)}"
                 f" · 内部数据 {health.get('internalApiObserved', 0)}"
             )
-        self.wechat_status_text.set(summary)
-        self.wechat_action_text.set("停止捕获" if health.get("running") else "开始捕获")
-        self.wechat_action_button.configure(
+        _set_var_if_changed(self.wechat_status_text, summary)
+        _set_var_if_changed(
+            self.wechat_action_text,
+            "停止捕获" if health.get("running") else "开始捕获",
+        )
+        _configure_if_changed(
+            self.wechat_action_button,
             style="Danger.TButton" if health.get("running") else "Accent.TButton",
             image=self.ui_icons.get(
                 "stop-danger" if health.get("running") else "play-white"
@@ -4310,14 +5460,17 @@ class MainWindow:
             if health.get("running")
             else "尚未识别到视频号内容\n开始捕获后在微信中打开目标视频"
         )
-        self.wechat_candidate_count_text.set(f"候选 {len(candidates)}")
+        _set_var_if_changed(
+            self.wechat_candidate_count_text,
+            "当前视频 · 已识别" if candidates else "当前视频 · 等待识别"
+        )
         revision = (
             len(candidates),
             max((float(item.get("updatedAt") or 0) for item in candidates), default=0.0),
         )
         self.wechat_rows = {str(item["objectId"]): item for item in candidates}
         selected_id = self.selected_wechat_card_id
-        if force or revision != self.wechat_revision:
+        if revision != self.wechat_revision:
             previous_count = self.wechat_revision[0] if self.wechat_revision else 0
             if len(candidates) > previous_count:
                 self.wechat_page = max(
@@ -4349,7 +5502,18 @@ class MainWindow:
                     else ""
                 )
             self.selected_wechat_card_id = selected_id
-            self._render_wechat_cards(visible_candidates)
+            visible_order = [
+                str(candidate["objectId"])
+                for candidate in visible_candidates
+            ]
+            if visible_order != list(self.wechat_card_widgets):
+                self._render_wechat_cards(visible_candidates)
+            else:
+                for candidate in visible_candidates:
+                    self._update_wechat_card_widget(
+                        str(candidate["objectId"]),
+                        candidate,
+                    )
             self.wechat_revision = revision
         self._update_wechat_detail()
 
@@ -4359,38 +5523,41 @@ class MainWindow:
     def _update_wechat_detail(self) -> None:
         candidate = self._selected_wechat_candidate()
         if not candidate:
-            self.wechat_detail_text.set("开始捕获后，在微信中打开视频号内容。")
-            self.wechat_author_text.set("")
-            self.wechat_quality_text.set("")
-            self.wechat_full_metadata_text.set("")
+            if self.last_wechat_detail_revision == ("empty",):
+                return
+            self.last_wechat_detail_revision = ("empty",)
+            _set_var_if_changed(
+                self.wechat_detail_text,
+                "开始捕获后，在微信中打开视频号内容。",
+            )
+            _set_var_if_changed(self.wechat_author_text, "")
+            _set_var_if_changed(self.wechat_quality_text, "")
+            _set_var_if_changed(self.wechat_full_metadata_text, "")
             self.wechat_variant_ids = []
-            self.wechat_variant_box.configure(values=())
-            self.wechat_variant_text.set("")
+            _configure_if_changed(self.wechat_variant_box, values=())
+            _set_var_if_changed(self.wechat_variant_text, "")
             self.wechat_preview_object_id = ""
             self.wechat_preview_image = None
-            self.wechat_preview_label.configure(
+            _configure_if_changed(
+                self.wechat_preview_label,
                 image=self.ui_icons.get("wechat-muted"),
                 text="封面将在识别后显示",
             )
             for button in self.wechat_delivery_buttons.values():
-                button.configure(state="disabled")
+                _configure_if_changed(button, state="disabled")
             return
         object_id = str(candidate.get("objectId") or "")
         if object_id != self.wechat_preview_object_id:
+            self.wechat_preview_generation += 1
+            preview_generation = self.wechat_preview_generation
             self.wechat_preview_object_id = object_id
             self.wechat_preview_image = None
             self.wechat_preview_label.configure(
                 image=self.ui_icons.get("wechat-muted"),
                 text="正在读取封面…",
             )
-            if object_id and candidate.get("coverUrl") and object_id not in self.wechat_preview_requests:
-                self.wechat_preview_requests.add(object_id)
-                threading.Thread(
-                    target=self._load_wechat_preview,
-                    args=(object_id,),
-                    name="wechat-cover-preview",
-                    daemon=True,
-                ).start()
+            if object_id and candidate.get("coverUrl"):
+                self._request_wechat_preview(preview_generation, object_id)
             elif not candidate.get("coverUrl"):
                 self.wechat_preview_label.configure(
                     image=self.ui_icons.get("wechat-muted"),
@@ -4398,8 +5565,6 @@ class MainWindow:
                 )
         full_title = str(candidate.get("title") or "微信视频号视频")
         full_author = str(candidate.get("author") or "未知作者")
-        self.wechat_detail_text.set(_ellipsize(full_title, 48))
-        self.wechat_author_text.set(f"作者：{_ellipsize(full_author, 44)}")
         source = str(
             candidate.get("sourceUrl")
             or candidate.get("pageUrl")
@@ -4410,45 +5575,128 @@ class MainWindow:
             candidate.get("outputName") or "微信视频号视频.mp4"
         )
         source_domain = urlsplit(source).hostname if source.startswith(("http://", "https://")) else source
-        self.wechat_quality_text.set(
+        variants = candidate.get("variants") if isinstance(candidate.get("variants"), list) else []
+        revision = (
+            object_id,
+            float(candidate.get("updatedAt") or 0),
+            self.layout_mode,
+            full_title,
+            full_author,
+            source,
+            output_name,
+            candidate.get("durationMs"),
+            str(candidate.get("coverUrl") or ""),
+            tuple(
+                (
+                    str(variant.get("id") or ""),
+                    str(variant.get("quality") or ""),
+                    str(variant.get("fileSize") or ""),
+                    bool(variant.get("encrypted")),
+                )
+                for variant in variants
+            ),
+        )
+        if revision == self.last_wechat_detail_revision:
+            return
+        self.last_wechat_detail_revision = revision
+        _set_var_if_changed(self.wechat_detail_text, _ellipsize(full_title, 48))
+        _set_var_if_changed(
+            self.wechat_author_text,
+            f"作者：{_ellipsize(full_author, 44)}",
+        )
+        _set_var_if_changed(
+            self.wechat_quality_text,
             f"内容 ID：{candidate.get('objectId')} · 时长 {self._duration_text(candidate.get('durationMs'))}\n"
             f"预计输出：{_ellipsize(output_name, 52)}\n"
-            f"来源：{source_domain or source}"
+            f"来源：{source_domain or source}",
         )
-        self.wechat_full_metadata_text.set(
+        _set_var_if_changed(
+            self.wechat_full_metadata_text,
             f"完整标题：{full_title}\n"
             f"完整作者：{full_author}\n"
             f"完整输出：{output_name}\n"
-            f"完整来源：{source}"
+            f"完整来源：{source}",
         )
-        variants = candidate.get("variants") if isinstance(candidate.get("variants"), list) else []
         values = []
-        self.wechat_variant_ids = []
+        variant_ids = []
         for variant in variants:
             size = _display_bytes(variant.get("fileSize"))
             encrypted = " · 本机解密" if variant.get("encrypted") else ""
             values.append(f"{variant.get('quality') or '自动质量'} · {size}{encrypted}")
-            self.wechat_variant_ids.append(str(variant.get("id") or ""))
-        self.wechat_variant_box.configure(values=values)
-        self.wechat_variant_text.set(values[0] if values else "自动质量")
+            variant_ids.append(str(variant.get("id") or ""))
+        previous_id = ""
+        current_index = self.wechat_variant_box.current()
+        if 0 <= current_index < len(self.wechat_variant_ids):
+            previous_id = self.wechat_variant_ids[current_index]
+        self.wechat_variant_ids = variant_ids
+        _configure_if_changed(self.wechat_variant_box, values=values)
+        selected_index = (
+            variant_ids.index(previous_id)
+            if previous_id and previous_id in variant_ids
+            else 0
+        )
+        if values and self.wechat_variant_box.current() != selected_index:
+            self.wechat_variant_box.current(selected_index)
+        _set_var_if_changed(
+            self.wechat_variant_text,
+            values[selected_index] if values else "自动质量",
+        )
         for button in self.wechat_delivery_buttons.values():
-            button.configure(state="normal")
+            _configure_if_changed(button, state="normal")
 
-    def _load_wechat_preview(self, object_id: str) -> None:
-        try:
-            preview = self.wechat_channels.preview_png(object_id)
-        except Exception:
-            preview = b""
-        self.wechat_preview_events.put((object_id, preview))
+    def _request_wechat_preview(self, generation: int, object_id: str) -> None:
+        with self.wechat_preview_lock:
+            self.wechat_preview_pending = (generation, object_id)
+            if self.wechat_preview_worker_running:
+                return
+            self.wechat_preview_worker_running = True
+        threading.Thread(
+            target=self._load_wechat_preview_worker,
+            name="wechat-cover-preview",
+            daemon=True,
+        ).start()
+
+    def _load_wechat_preview_worker(self) -> None:
+        while not self.closing:
+            with self.wechat_preview_lock:
+                request = self.wechat_preview_pending
+                self.wechat_preview_pending = None
+                if request is None:
+                    self.wechat_preview_worker_running = False
+                    return
+            generation, object_id = request
+            try:
+                preview = self.wechat_channels.preview_png(object_id)
+            except Exception:
+                preview = b""
+            item = (generation, object_id, preview)
+            try:
+                self.wechat_preview_events.put_nowait(item)
+            except Full:
+                try:
+                    self.wechat_preview_events.get_nowait()
+                except Empty:
+                    pass
+                try:
+                    self.wechat_preview_events.put_nowait(item)
+                except Full:
+                    pass
+        with self.wechat_preview_lock:
+            self.wechat_preview_worker_running = False
 
     def _drain_wechat_preview_events(self) -> None:
-        while True:
+        started = time.perf_counter()
+        for _index in range(UI_QUEUE_DRAIN_LIMIT):
             try:
-                object_id, preview = self.wechat_preview_events.get_nowait()
+                generation, object_id, preview = (
+                    self.wechat_preview_events.get_nowait()
+                )
             except Empty:
-                return
-            self.wechat_preview_requests.discard(object_id)
-            if object_id != self.wechat_preview_object_id:
+                break
+            if (
+                generation != self.wechat_preview_generation
+                or object_id != self.wechat_preview_object_id
+            ):
                 continue
             if not preview:
                 self.wechat_preview_label.configure(
@@ -4475,6 +5723,11 @@ class MainWindow:
                 image.subsample(factor, factor) if factor > 1 else image
             )
             self.wechat_preview_label.configure(image=self.wechat_preview_image, text="")
+        self._record_performance(
+            "queue.wechat-preview",
+            started,
+            "consume-wechat-preview",
+        )
 
     def _submit_wechat_delivery(self, import_to_eagle: bool) -> None:
         self.wechat_import_to_eagle.set(import_to_eagle)
@@ -4485,7 +5738,9 @@ class MainWindow:
             return
         running = bool(self.wechat_channels.health().get("running"))
         self.wechat_operation_busy = True
-        self.wechat_action_button.state(["disabled"])
+        self.wechat_operation_generation += 1
+        generation = self.wechat_operation_generation
+        self._set_wechat_operation_buttons(True)
         self.wechat_status_text.set(
             "正在停止视频号捕获…"
             if running
@@ -4494,7 +5749,7 @@ class MainWindow:
         target = self._run_wechat_operation if running else self._run_wechat_preflight
         threading.Thread(
             target=target,
-            args=(running,) if running else (),
+            args=(generation, running) if running else (generation,),
             name=(
                 "wechat-capture-toggle"
                 if running
@@ -4502,9 +5757,67 @@ class MainWindow:
             ),
             daemon=True,
         ).start()
-        self.root.after(200, self._poll_wechat_operation)
+        self._schedule_wechat_operation_poll()
 
-    def _run_wechat_preflight(self) -> None:
+    def _set_wechat_operation_buttons(self, busy: bool) -> None:
+        state = ["disabled"] if busy else ["!disabled"]
+        self.wechat_action_button.state(state)
+        if hasattr(self, "wechat_proxy_repair_button"):
+            self.wechat_proxy_repair_button.state(state)
+
+    def repair_wechat_proxy_conflict(self) -> None:
+        if self.wechat_operation_busy:
+            return
+        if not messagebox.askokcancel(
+            "修复视频号代理",
+            "修复会清除已经无法连接的本机代理；如果捕获期间代理被其他软件改写，会重新接管，并在停止捕获后恢复该软件的代理。\n\n"
+            "正常运行的 Clash、VPN 或公司代理不会被关闭。是否继续？",
+            parent=self.root,
+        ):
+            return
+        self.wechat_operation_busy = True
+        self.wechat_operation_generation += 1
+        generation = self.wechat_operation_generation
+        self._set_wechat_operation_buttons(True)
+        self.wechat_status_text.set("正在检查并修复代理冲突…")
+        threading.Thread(
+            target=self._run_wechat_proxy_repair,
+            args=(generation,),
+            name="wechat-proxy-repair",
+            daemon=True,
+        ).start()
+        self._schedule_wechat_operation_poll()
+
+    def _put_wechat_operation_result(
+        self,
+        generation: int,
+        event: str,
+        payload: object,
+    ) -> None:
+        try:
+            self.wechat_operation_results.put_nowait(
+                (generation, event, payload)
+            )
+        except Full:
+            pass
+
+    def _run_wechat_proxy_repair(self, generation: int) -> None:
+        try:
+            result = self.wechat_channels.repair_proxy_conflict()
+        except Exception as exc:
+            self._put_wechat_operation_result(
+                generation,
+                "proxy_repair",
+                (False, str(exc)),
+            )
+            return
+        self._put_wechat_operation_result(
+            generation,
+            "proxy_repair",
+            (True, str(result.get("message") or "代理检查完成")),
+        )
+
+    def _run_wechat_preflight(self, generation: int) -> None:
         try:
             existing = self.wechat_channels.certificate.existing()
             needs_trust = (
@@ -4514,31 +5827,81 @@ class MainWindow:
                 )
             )
         except Exception as exc:
-            self.wechat_operation_results.put(("preflight_error", str(exc)))
+            self._put_wechat_operation_result(
+                generation,
+                "preflight_error",
+                str(exc),
+            )
             return
-        self.wechat_operation_results.put(("preflight", needs_trust))
+        self._put_wechat_operation_result(
+            generation,
+            "preflight",
+            needs_trust,
+        )
 
-    def _run_wechat_operation(self, was_running: bool) -> None:
+    def _run_wechat_operation(
+        self,
+        generation: int,
+        was_running: bool,
+        trust_certificate: bool = True,
+    ) -> None:
         try:
             if was_running:
                 self.wechat_channels.stop()
             else:
-                self.wechat_channels.start()
+                self.wechat_channels.start(trust_certificate=trust_certificate)
         except Exception as exc:
-            self.wechat_operation_results.put(("completed", (False, str(exc))))
+            self._put_wechat_operation_result(
+                generation,
+                "completed",
+                (False, str(exc)),
+            )
             return
-        self.wechat_operation_results.put(("completed", (True, "")))
+        self._put_wechat_operation_result(
+            generation,
+            "completed",
+            (True, ""),
+        )
+
+    def _schedule_wechat_operation_poll(self) -> None:
+        if self.closing or not self.wechat_operation_busy:
+            return
+        if self.wechat_operation_after_id is None:
+            self.wechat_operation_after_id = self.root.after(
+                200,
+                self._poll_wechat_operation,
+            )
 
     def _poll_wechat_operation(self) -> None:
-        try:
-            event, payload = self.wechat_operation_results.get_nowait()
-        except Empty:
+        started = time.perf_counter()
+        self._poll_wechat_operation_impl(started)
+
+    def _poll_wechat_operation_impl(self, started: float) -> None:
+        self.wechat_operation_after_id = None
+        result: tuple[str, object] | None = None
+        for _index in range(UI_QUEUE_DRAIN_LIMIT):
+            try:
+                generation, event, payload = (
+                    self.wechat_operation_results.get_nowait()
+                )
+            except Empty:
+                break
+            if generation == self.wechat_operation_generation:
+                result = (event, payload)
+                break
+        self._record_performance(
+            "queue.wechat-operation",
+            started,
+            "consume-wechat-operation",
+        )
+        if result is None:
             if self.wechat_operation_busy:
-                self.root.after(200, self._poll_wechat_operation)
+                self._schedule_wechat_operation_poll()
             return
+        event, payload = result
         if event == "preflight_error":
             self.wechat_operation_busy = False
-            self.wechat_action_button.state(["!disabled"])
+            self._set_wechat_operation_buttons(False)
             messagebox.showerror(
                 "无法检查视频号证书",
                 str(payload),
@@ -4555,21 +5918,43 @@ class MainWindow:
                 parent=self.root,
             ):
                 self.wechat_operation_busy = False
-                self.wechat_action_button.state(["!disabled"])
+                self._set_wechat_operation_buttons(False)
                 self.refresh(force=True)
                 return
             self.wechat_status_text.set("正在准备视频号捕获…")
             threading.Thread(
                 target=self._run_wechat_operation,
-                args=(False,),
+                args=(
+                    self.wechat_operation_generation,
+                    False,
+                    bool(payload),
+                ),
                 name="wechat-capture-toggle",
                 daemon=True,
             ).start()
-            self.root.after(200, self._poll_wechat_operation)
+            self._schedule_wechat_operation_poll()
+            return
+        if event == "proxy_repair":
+            succeeded, message = payload
+            self.wechat_operation_busy = False
+            self._set_wechat_operation_buttons(False)
+            if succeeded:
+                messagebox.showinfo(
+                    "代理修复完成",
+                    message or "代理检查完成",
+                    parent=self.root,
+                )
+            else:
+                messagebox.showerror(
+                    "代理修复失败",
+                    message or "无法修复视频号代理",
+                    parent=self.root,
+                )
+            self.refresh(force=True)
             return
         succeeded, error = payload
         self.wechat_operation_busy = False
-        self.wechat_action_button.state(["!disabled"])
+        self._set_wechat_operation_buttons(False)
         if not succeeded:
             messagebox.showerror("视频号捕获失败", error or "视频号捕获操作失败", parent=self.root)
         self.refresh(force=True)
@@ -4613,11 +5998,20 @@ class MainWindow:
 
     def _plan_thumbnail(self, plan_id: str, plan: dict) -> PhotoImage | None:
         preview_path = Path(str(plan.get("preview_path") or ""))
+        revision = _path_render_revision(preview_path)
+        cached = self.plan_thumbnail_cache.pop(revision, None)
+        if cached is not None:
+            self.plan_thumbnail_cache[revision] = cached
+            self.plan_thumbnail_images[plan_id] = cached
+            return cached
         try:
             image = PhotoImage(file=str(preview_path))
         except Exception:
             return self.brand_image
         image = _fit_photo_image(image, 48, 32)
+        self.plan_thumbnail_cache[revision] = image
+        while len(self.plan_thumbnail_cache) > 64:
+            self.plan_thumbnail_cache.popitem(last=False)
         self.plan_thumbnail_images[plan_id] = image
         return image
 
@@ -4632,6 +6026,54 @@ class MainWindow:
             lambda _event, value=plan_id: self._select_plan_card(value),
             add="+",
         )
+        widget.bind(
+            "<Button-3>",
+            lambda event, value=plan_id: self._show_plan_context_menu(event, value),
+            add="+",
+        )
+        widget.bind(
+            "<Shift-F10>",
+            lambda event, value=plan_id: self._show_plan_context_menu(event, value),
+            add="+",
+        )
+
+    def _show_plan_context_menu(self, event: object, plan_id: str) -> str:
+        self._select_plan_card(plan_id)
+        plan = self.plan_rows.get(plan_id) or {}
+        menu = Menu(
+            self.root,
+            tearoff=False,
+            background=UI["surface_overlay"],
+            foreground=UI["text"],
+            activebackground=UI["selected"],
+            activeforeground=UI["text"],
+            disabledforeground=UI["text_disabled"],
+            borderwidth=1,
+            relief="flat",
+        )
+        if plan.get("final_path"):
+            menu.add_command(
+                label="打开文件位置",
+                command=self.open_plan_location,
+            )
+        if plan.get("page_url"):
+            menu.add_command(
+                label="打开来源网页",
+                command=self.open_plan_source,
+            )
+        if plan.get("final_path") or plan.get("page_url"):
+            menu.add_separator()
+        menu.add_command(
+            label="清理任务（保留文件）",
+            command=lambda value=plan_id: self.remove_media_plan(value),
+        )
+        x = int(getattr(event, "x_root", 0) or self.root.winfo_pointerx())
+        y = int(getattr(event, "y_root", 0) or self.root.winfo_pointery())
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+        return "break"
 
     def _render_plan_cards(self, plans: list[dict]) -> None:
         self.plan_card_list.clear()
@@ -4763,56 +6205,35 @@ class MainWindow:
             )
             timestamp_label.grid(row=2, column=2, sticky="e", pady=(4, 0))
 
-            progress = Canvas(
+            progress = _RoundedProgressBar(
                 row.inner,
                 height=4,
                 background=UI["selected"] if selected else UI["surface"],
-                highlightthickness=0,
-                borderwidth=0,
             )
             progress.pack(fill=X, side="bottom")
-            progress_color = (
-                UI["success"]
+            progress_style = (
+                "Progress.Emerald.Horizontal.TProgressbar"
                 if view["status"] in ("completed_local", "imported")
-                else UI["warning"]
+                else "Progress.Orange.Horizontal.TProgressbar"
                 if view["status"] == "waiting_eagle"
-                else UI["accent"]
+                else "Progress.Indigo.Horizontal.TProgressbar"
             )
-
-            def draw_progress(
-                event: object,
-                canvas: Canvas = progress,
-                percent: float = float(view["progress"]),
-                color: str = progress_color,
-            ) -> None:
-                width = max(0, int(getattr(event, "width", 0) or canvas.winfo_width()))
-                canvas.delete("all")
-                canvas.create_polygon(
-                    _rounded_polygon_points(0, 0, width, 4, 2),
-                    smooth=True,
-                    splinesteps=12,
-                    fill=UI["progress_track"],
-                    outline="",
-                )
-                fill_width = int(width * percent / 100)
-                if fill_width > 0:
-                    canvas.create_polygon(
-                        _rounded_polygon_points(
-                            0,
-                            0,
-                            max(4, fill_width),
-                            4,
-                            2,
-                        ),
-                        smooth=True,
-                        splinesteps=12,
-                        fill=color,
-                        outline="",
-                    )
-
-            progress.bind("<Configure>", draw_progress, add="+")
-            styled_labels = [title, source, size, timestamp_label]
-            self.plan_card_widgets[plan_id] = (row, styled_labels, progress)
+            progress.configure(value=view["progress"], style=progress_style)
+            self.plan_card_widgets[plan_id] = {
+                "row": row,
+                "body": body,
+                "thumbnail_host": thumbnail_host,
+                "thumbnail": thumbnail,
+                "thumbnail_signature": _path_render_revision(
+                    plan.get("preview_path"),
+                ),
+                "title": title,
+                "source": source,
+                "status": status,
+                "size": size,
+                "timestamp": timestamp_label,
+                "progress": progress,
+            }
             for widget in (
                 row,
                 row.inner,
@@ -4829,52 +6250,113 @@ class MainWindow:
             ):
                 self._bind_plan_card(widget, plan_id)
 
+    def _update_plan_card_widget(self, plan_id: str, plan: dict) -> None:
+        widgets = self.plan_card_widgets.get(plan_id)
+        if not widgets:
+            return
+        view = _media_plan_view(plan)
+        selected = plan_id == self.selected_plan_card_id
+        frame_style = "TaskCardSelected.TFrame" if selected else "TaskCard.TFrame"
+        title_style = (
+            "TaskCardTitleSelected.TLabel" if selected else "TaskCardTitle.TLabel"
+        )
+        meta_style = (
+            "TaskCardMetaSelected.TLabel" if selected else "TaskCardMeta.TLabel"
+        )
+        surface = UI["selected"] if selected else UI["surface"]
+        row = widgets["row"]
+        if isinstance(row, _RoundedPanel):
+            row.set_surface(fill=surface, style=frame_style)
+        _configure_if_changed(widgets["body"], style=frame_style)
+        thumbnail_host = widgets["thumbnail_host"]
+        if isinstance(thumbnail_host, _RoundedPanel):
+            _configure_if_changed(thumbnail_host, background=surface)
+
+        title_text = _ellipsize(
+            plan.get("title") or plan.get("output_name") or "未命名任务",
+            22,
+        )
+        page_url = str(plan.get("page_url") or "")
+        domain = urlsplit(page_url).hostname if page_url else ""
+        timestamp = float(plan.get("created_at") or plan.get("updated_at") or 0)
+        size_text = view["total"] if view["total"] != "未知" else view["processed"]
+        _configure_if_changed(widgets["title"], text=title_text, style=title_style)
+        _configure_if_changed(
+            widgets["source"],
+            text=_ellipsize(domain or "未记录来源", 28),
+            style=meta_style,
+        )
+        _configure_if_changed(widgets["size"], text=size_text, style=meta_style)
+        _configure_if_changed(
+            widgets["timestamp"],
+            text=_relative_time_label(timestamp),
+            style=meta_style,
+        )
+
+        status_key = str(view.get("status") or "queued")
+        if (
+            status_key == "ready_to_import"
+            and str(plan.get("job_status") or "") == "waiting_eagle"
+        ):
+            status_key = "waiting_eagle"
+        status_colors = UI.get(
+            f"status_{status_key}",
+            (UI["text_muted"], UI["surface_overlay"]),
+        )
+        status = widgets["status"]
+        if isinstance(status, _RoundedBadge):
+            status.set_badge(
+                text=MEDIA_CARD_STATUS_TEXT.get(
+                    status_key,
+                    str(view["status_label"]),
+                ),
+                foreground=status_colors[0],
+                fill=status_colors[1],
+                outer_background=surface,
+            )
+        progress_style = (
+            "Progress.Emerald.Horizontal.TProgressbar"
+            if view["status"] in ("completed_local", "imported")
+            else "Progress.Orange.Horizontal.TProgressbar"
+            if view["status"] == "waiting_eagle"
+            else "Progress.Indigo.Horizontal.TProgressbar"
+        )
+        progress = widgets["progress"]
+        if isinstance(progress, _RoundedProgressBar):
+            progress.configure(
+                background=surface,
+                value=view["progress"],
+                style=progress_style,
+            )
+
+        preview_signature = _path_render_revision(plan.get("preview_path"))
+        if preview_signature != widgets.get("thumbnail_signature"):
+            widgets["thumbnail_signature"] = preview_signature
+            image = self._plan_thumbnail(plan_id, plan)
+            widgets["thumbnail"].configure(
+                image=image,
+                text="" if image is not None else "视频",
+            )
+
     def _select_plan_card(self, plan_id: str) -> None:
         if plan_id not in self.plan_rows:
             return
         self.selected_plan_card_id = plan_id
-        for current_id, (row, labels, progress) in self.plan_card_widgets.items():
-            selected = current_id == plan_id
-            frame_style = "TaskCardSelected.TFrame" if selected else "TaskCard.TFrame"
-            title_style = (
-                "TaskCardTitleSelected.TLabel" if selected else "TaskCardTitle.TLabel"
-            )
-            meta_style = (
-                "TaskCardMetaSelected.TLabel" if selected else "TaskCardMeta.TLabel"
-            )
-            if isinstance(row, _RoundedPanel):
-                row.set_surface(
-                    fill=UI["selected"] if selected else UI["surface"],
-                    style=frame_style,
-                )
-            if len(labels) >= 4:
-                labels[0].configure(style=title_style)
-                labels[1].configure(style=meta_style)
-                labels[2].configure(style=meta_style)
-                labels[3].configure(style=meta_style)
-            progress.configure(
-                background=UI["selected"] if selected else UI["surface"],
-            )
-            body = next(
-                (
-                    child
-                    for child in getattr(row, "inner", row).winfo_children()
-                    if isinstance(child, ttk.Frame)
-                ),
-                None,
-            )
-            if body is not None:
-                body.configure(style=frame_style)
+        for current_id in self.plan_card_widgets:
+            plan = self.plan_rows.get(current_id)
+            if plan is not None:
+                self._update_plan_card_widget(current_id, plan)
+        self.last_plan_detail_revision = None
         self._update_plan_detail()
 
-    def _refresh_media_tasks(self, plans: list[dict], force: bool) -> None:
+    def _refresh_media_tasks(self, plans: list[dict], _force: bool) -> None:
         revision = (
             len(plans),
             max((float(plan.get("updated_at") or 0) for plan in plans), default=0.0),
         )
         self.plan_rows = {str(plan["id"]): plan for plan in plans}
         selected = self.selected_plan_id()
-        if force or revision != self.last_plans_revision:
+        if revision != self.last_plans_revision:
             previous_count = self.last_plans_revision[0] if self.last_plans_revision else 0
             if len(plans) > previous_count:
                 self.media_page = 0
@@ -4897,7 +6379,12 @@ class MainWindow:
             if selected not in visible_ids:
                 selected = str(visible_plans[0]["id"]) if visible_plans else ""
             self.selected_plan_card_id = selected or ""
-            self._render_plan_cards(visible_plans)
+            visible_order = [str(plan["id"]) for plan in visible_plans]
+            if visible_order != list(self.plan_card_widgets):
+                self._render_plan_cards(visible_plans)
+            else:
+                for plan in visible_plans:
+                    self._update_plan_card_widget(str(plan["id"]), plan)
             self.last_plans_revision = revision
         self._update_plan_detail()
 
@@ -4911,20 +6398,26 @@ class MainWindow:
     def _update_plan_detail(self) -> None:
         plan = self.selected_plan()
         if not plan:
-            self.plan_title_text.set("选择一项任务查看详情")
-            self.plan_status_text.set("")
-            self.plan_source_text.set("")
-            self.plan_file_text.set("")
-            self.plan_progress_text.set("—")
-            self.plan_size_text.set("—")
-            self.plan_domain_text.set("—")
-            self.plan_detail_text.set("")
-            self.plan_error_text.set("")
-            self.plan_error_label.pack_forget()
+            if self.last_plan_detail_revision == ("empty",):
+                return
+            self.last_plan_detail_revision = ("empty",)
+            self.last_plan_preview_revision = None
+            _set_var_if_changed(self.plan_title_text, "选择一项任务查看详情")
+            _set_var_if_changed(self.plan_status_text, "")
+            _set_var_if_changed(self.plan_source_text, "")
+            _set_var_if_changed(self.plan_file_text, "")
+            _set_var_if_changed(self.plan_progress_text, "—")
+            _set_var_if_changed(self.plan_size_text, "—")
+            _set_var_if_changed(self.plan_domain_text, "—")
+            _set_var_if_changed(self.plan_detail_text, "")
+            _set_var_if_changed(self.plan_error_text, "")
+            if self.plan_error_label.winfo_manager():
+                self.plan_error_label.pack_forget()
             self.plan_progress.configure(value=0, style="Progress.Indigo.Horizontal.TProgressbar")
             self.preview_image = None
             self.preview_cache.clear()
-            self.preview_label.configure(
+            _configure_if_changed(
+                self.preview_label,
                 image=self.ui_icons.get("downloads-muted"),
                 text="暂无预览",
             )
@@ -4943,27 +6436,63 @@ class MainWindow:
             if self.layout_mode == LAYOUT_NORMAL
             else 48
         )
-        self.plan_title_text.set(_ellipsize(full_title, title_limit))
-        self.plan_status_text.set(str(view["status_label"]))
         source = str(plan.get("page_url") or "")
         domain = urlsplit(source).hostname if source else ""
-        self.plan_source_text.set(domain or "未记录来源网页")
-        self.plan_domain_text.set(domain or "未记录")
-        self.plan_progress_text.set(f"{view['progress']:.0f}%")
-        self.plan_size_text.set(f"{view['processed']} / {view['total']}")
-        self.plan_detail_text.set(detail or "等待新的阶段信息")
-        self.plan_error_text.set(error)
-        if error:
-            self.plan_error_label.pack(fill=X, pady=(8, 0))
-        else:
-            self.plan_error_label.pack_forget()
         output = str(plan.get("final_path") or plan.get("output_name") or "")
-        self.plan_file_text.set(
+        preview_revision = _path_render_revision(plan.get("preview_path"))
+        detail_revision = (
+            str(plan.get("id") or ""),
+            float(plan.get("updated_at") or 0),
+            self.layout_mode,
+            str(view.get("status") or ""),
+            float(view.get("progress") or 0),
+            str(view.get("processed") or ""),
+            str(view.get("total") or ""),
+            full_title,
+            source,
+            output,
+            detail,
+            error,
+            preview_revision,
+            bool(output and Path(output).is_file()),
+        )
+        if detail_revision == self.last_plan_detail_revision:
+            return
+        self.last_plan_detail_revision = detail_revision
+        _set_var_if_changed(
+            self.plan_title_text,
+            _ellipsize(full_title, title_limit),
+        )
+        _set_var_if_changed(self.plan_status_text, str(view["status_label"]))
+        _set_var_if_changed(
+            self.plan_source_text,
+            domain or "未记录来源网页",
+        )
+        _set_var_if_changed(self.plan_domain_text, domain or "未记录")
+        _set_var_if_changed(
+            self.plan_progress_text,
+            f"{view['progress']:.0f}%",
+        )
+        _set_var_if_changed(
+            self.plan_size_text,
+            f"{view['processed']} / {view['total']}",
+        )
+        _set_var_if_changed(
+            self.plan_detail_text,
+            detail or "等待新的阶段信息",
+        )
+        _set_var_if_changed(self.plan_error_text, error)
+        if error:
+            if not self.plan_error_label.winfo_manager():
+                self.plan_error_label.pack(fill=X, pady=(8, 0))
+        elif self.plan_error_label.winfo_manager():
+            self.plan_error_label.pack_forget()
+        _set_var_if_changed(
+            self.plan_file_text,
             f"完整标题：{full_title}\n"
             f"来源：{source or '未记录来源网页'}\n"
-            f"输出：{output or '尚未生成'}"
+            f"输出：{output or '尚未生成'}",
         )
-        self.plan_progress.configure(value=view["progress"])
         status = view.get("status", "")
         if status in ("completed_local", "imported"):
             prog_style = "Progress.Emerald.Horizontal.TProgressbar"
@@ -4971,8 +6500,11 @@ class MainWindow:
             prog_style = "Progress.Orange.Horizontal.TProgressbar"
         else:
             prog_style = "Progress.Indigo.Horizontal.TProgressbar"
-        self.plan_progress.configure(style=prog_style)
+        self.plan_progress.configure(value=view["progress"], style=prog_style)
         self._update_plan_actions(view)
+        if preview_revision == self.last_plan_preview_revision:
+            return
+        self.last_plan_preview_revision = preview_revision
         preview = Path(str(plan.get("preview_path") or ""))
         image = self.preview_cache.resolve(preview)
         if image is not None:
@@ -5052,6 +6584,42 @@ class MainWindow:
         self.processing.wake()
         self.refresh(force=True)
 
+    def remove_media_plan(self, plan_id: str) -> None:
+        plan = self.plan_rows.get(plan_id)
+        if not plan:
+            self.refresh(force=True)
+            return
+        status = str(plan.get("status") or "")
+        active_note = (
+            "该任务仍在处理，将先停止并退出待处理队列。\n\n"
+            if status in MEDIA_ACTIVE_STATUSES
+            else ""
+        )
+        if not messagebox.askyesno(
+            "清理媒体任务",
+            f"{active_note}只清理这条任务记录，不删除已经下载的本机文件、预览文件或 Eagle 内容。是否继续？",
+            parent=self.root,
+        ):
+            return
+        try:
+            result = self.media.remove_plan(plan_id)
+        except Exception as exc:
+            messagebox.showerror("无法清理任务", str(exc), parent=self.root)
+            return
+        if self.selected_plan_card_id == plan_id:
+            self.selected_plan_card_id = ""
+        self.last_plans_revision = None
+        self.refresh(force=True)
+        messagebox.showinfo(
+            "清理完成",
+            (
+                "任务已从列表和待处理队列移除，本机下载文件已保留。"
+                if result.get("filePreserved")
+                else "任务已从列表和待处理队列移除。"
+            ),
+            parent=self.root,
+        )
+
     def open_plan_source(self) -> None:
         plan = self.selected_plan()
         if not plan or not plan.get("page_url"):
@@ -5067,39 +6635,120 @@ class MainWindow:
         job_id = self.selected_job_id()
         return self.database.get_job(job_id) if job_id else None
 
-    def _update_idm_detail(self) -> None:
-        job = self.selected_job()
+    def _show_job_context_menu(self, event: object) -> str:
+        keyboard_open = str(getattr(event, "keysym", "")) == "F10"
+        y = int(getattr(event, "y", 0) or 0)
+        job_id = (
+            ""
+            if keyboard_open
+            else str(self.job_tree.identify_row(y) or "")
+        )
+        if job_id:
+            self.job_tree.selection_set(job_id)
+        else:
+            job_id = self.selected_job_id() or ""
+        job = self.database.get_job(job_id) if job_id else None
         if not job:
-            self.idm_detail_title_text.set("选择一条记录查看完整内容")
-            self.idm_detail_status_text.set("")
-            self.idm_detail_file_text.set("—")
-            self.idm_detail_source_text.set("—")
-            self.idm_detail_message_text.set("—")
-            self._update_idm_actions()
+            return "break"
+        menu = Menu(
+            self.root,
+            tearoff=False,
+            background=UI["surface_overlay"],
+            foreground=UI["text"],
+            activebackground=UI["selected"],
+            activeforeground=UI["text"],
+            disabledforeground=UI["text_disabled"],
+            borderwidth=1,
+            relief="flat",
+        )
+        file_path = str(job.get("file_path") or "")
+        if file_path and Path(file_path).exists():
+            menu.add_command(label="打开原文件位置", command=self.open_file_location)
+        if job.get("source_url"):
+            menu.add_command(label="打开来源网页", command=self.open_source)
+        if (file_path and Path(file_path).exists()) or job.get("source_url"):
+            menu.add_separator()
+        menu.add_command(label="清理记录（保留文件）", command=self.remove_selected_job)
+        x = int(getattr(event, "x_root", 0) or self.root.winfo_pointerx())
+        y_root = int(getattr(event, "y_root", 0) or self.root.winfo_pointery())
+        try:
+            menu.tk_popup(x, y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    def _update_idm_detail(self) -> None:
+        job_id = self.selected_job_id()
+        query_key = (job_id, self.last_jobs_revision)
+        if query_key == self.idm_detail_query_key:
+            job = self.idm_detail_query_value
+        else:
+            job = self.database.get_job(job_id) if job_id else None
+            self.idm_detail_query_key = query_key
+            self.idm_detail_query_value = job
+        if not job:
+            if self.last_idm_detail_revision == ("empty",):
+                return
+            self.last_idm_detail_revision = ("empty",)
+            _set_var_if_changed(
+                self.idm_detail_title_text,
+                "选择一条记录查看完整内容",
+            )
+            _set_var_if_changed(self.idm_detail_status_text, "")
+            _set_var_if_changed(self.idm_detail_file_text, "—")
+            _set_var_if_changed(self.idm_detail_source_text, "—")
+            _set_var_if_changed(self.idm_detail_message_text, "—")
+            self._update_idm_actions(None)
             return
+        revision = (
+            str(job.get("id") or ""),
+            float(job.get("updated_at") or 0),
+            str(job.get("status") or ""),
+            str(job.get("file_name") or ""),
+            str(job.get("file_path") or ""),
+            str(job.get("source_url") or ""),
+            str(job.get("error_message") or ""),
+            bool(
+                job.get("file_path")
+                and Path(str(job.get("file_path"))).exists()
+            ),
+        )
+        if revision == self.last_idm_detail_revision:
+            return
+        self.last_idm_detail_revision = revision
         created = time.strftime(
             "%Y-%m-%d %H:%M",
             time.localtime(float(job.get("created_at") or 0)),
         )
         status = str(job.get("status") or "")
-        self.idm_detail_title_text.set(str(job.get("file_name") or "未命名文件"))
-        self.idm_detail_status_text.set(
+        _set_var_if_changed(
+            self.idm_detail_title_text,
+            str(job.get("file_name") or "未命名文件"),
+        )
+        _set_var_if_changed(
+            self.idm_detail_status_text,
             f"{STATUS_TEXT.get(status, status)} · {created}"
         )
-        self.idm_detail_file_text.set(str(job.get("file_path") or "—"))
-        self.idm_detail_source_text.set(
+        _set_var_if_changed(
+            self.idm_detail_file_text,
+            str(job.get("file_path") or "—"),
+        )
+        _set_var_if_changed(
+            self.idm_detail_source_text,
             str(job.get("source_url") or "未记录可靠来源")
         )
         message = str(job.get("error_message") or "")
         if status == "imported" and not job.get("source_url"):
             message = "已直接导入；Eagle 网站字段保持为空。"
-        self.idm_detail_message_text.set(message or "暂无补充说明")
-        self._update_idm_actions()
+        _set_var_if_changed(
+            self.idm_detail_message_text,
+            message or "暂无补充说明",
+        )
+        self._update_idm_actions(job)
 
-    def _update_idm_actions(self) -> None:
+    def _update_idm_actions(self, job: dict | None) -> None:
         if not hasattr(self, "idm_action_buttons"):
             return
-        job = self.selected_job()
         status = str(job.get("status") or "") if job else ""
         retryable = status in {
             "waiting_source",
@@ -5114,7 +6763,12 @@ class MainWindow:
             "open": bool(file_path and Path(file_path).exists()),
             "source": bool(job and job.get("source_url")),
             "assign": bool(job and status != "skipped_duplicate"),
+            "remove": bool(job),
         }
+        if self.maintenance_busy:
+            permissions["retry"] = False
+            permissions["assign"] = False
+            permissions["remove"] = False
         for name, button in self.idm_action_buttons.items():
             button.configure(state="normal" if permissions[name] else "disabled")
 
@@ -5129,6 +6783,39 @@ class MainWindow:
             return
         self.processing.wake()
         self.refresh()
+
+    def remove_selected_job(self) -> None:
+        job = self.selected_job()
+        if not job:
+            messagebox.showinfo("提示", "请先选择一条记录")
+            return
+        status = str(job.get("status") or "")
+        active_note = (
+            "该记录仍在导入队列，清理后将不再自动处理。\n\n"
+            if status in {"waiting_source", "queued", "waiting_eagle", "retry"}
+            else ""
+        )
+        if not messagebox.askyesno(
+            "清理 IDM 导入记录",
+            f"{active_note}只清理这条记录，不删除 IDM 原文件或 Eagle 内容。是否继续？",
+            parent=self.root,
+        ):
+            return
+        try:
+            removed = self.database.remove_job(str(job["id"]))
+        except ValueError as exc:
+            messagebox.showerror("无法清理记录", str(exc), parent=self.root)
+            return
+        self.processing.wake()
+        self.last_jobs_revision = None
+        self.refresh(force=True)
+        messagebox.showinfo(
+            "清理完成",
+            "记录已从列表和导入队列移除，原文件已保留。"
+            if removed
+            else "这条记录已经被清理。",
+            parent=self.root,
+        )
 
     def open_file_location(self) -> None:
         job = self.selected_job()
@@ -5149,6 +6836,8 @@ class MainWindow:
         webbrowser.open(job["source_url"])
 
     def assign_source(self) -> None:
+        if self.maintenance_busy:
+            return
         job = self.selected_job()
         if not job:
             messagebox.showinfo("提示", "请先选择一条记录")
@@ -5170,14 +6859,13 @@ class MainWindow:
             if not job.get("eagle_item_id"):
                 messagebox.showwarning("无法更新", "这条旧记录没有 Eagle 项目编号，无法自动补写来源。")
                 return
-            try:
-                self.eagle.update_source(str(job["eagle_item_id"]), cleaned)
-            except (EagleUnavailable, EagleImportError) as exc:
-                messagebox.showerror("更新失败", str(exc))
-                return
-            self.database.record_imported_source(job["id"], cleaned)
-            self.refresh(force=True)
-            messagebox.showinfo("更新完成", "来源网址已经写入现有 Eagle 项目，不会重复导入文件。")
+            self._start_maintenance(
+                "update-eagle-source",
+                self._update_eagle_source_worker,
+                str(job["id"]),
+                str(job["eagle_item_id"]),
+                cleaned,
+            )
             return
 
         if job["status"] == "skipped_duplicate":
@@ -5188,7 +6876,20 @@ class MainWindow:
         self.processing.wake()
         self.refresh(force=True)
 
+    def _update_eagle_source_worker(
+        self,
+        job_id: str,
+        eagle_item_id: str,
+        source_url: str,
+    ) -> bool:
+        self.eagle.update_source(eagle_item_id, source_url)
+        if not self.database.record_imported_source(job_id, source_url):
+            raise RuntimeError("任务状态已经变化，来源记录未能同步到本机数据库")
+        return True
+
     def export_diagnostics(self) -> None:
+        if self.maintenance_busy:
+            return
         target = filedialog.asksaveasfilename(
             parent=self.root,
             title="导出诊断记录",
@@ -5198,6 +6899,20 @@ class MainWindow:
         )
         if not target:
             return
+        if hasattr(self, "diagnostics_feedback_text"):
+            self.diagnostics_feedback_text.set("正在后台生成诊断文件…")
+        self._start_maintenance(
+            "diagnostics-export",
+            self._export_diagnostics_worker,
+            target,
+            self.performance_monitor.snapshot(),
+        )
+
+    def _export_diagnostics_worker(
+        self,
+        target: str,
+        performance_snapshot: dict[str, object],
+    ) -> str:
         rows = []
         for job in self.database.list_jobs(500):
             source_domain = ""
@@ -5234,49 +6949,210 @@ class MainWindow:
                     "errorMessage": plan.get("error_message") or plan.get("job_error"),
                 }
             )
-        try:
-            Path(target).write_text(
-                json.dumps(
-                    {
-                        "formatVersion": 3,
-                        "appVersion": APP_VERSION,
-                        "networkProxy": {
-                            key: value
-                            for key, value in self.media.network_proxy.status().items()
-                            if key in {"mode", "active", "source", "endpoint", "summary"}
-                        },
-                        "mediaPlans": media_rows,
-                        "jobs": rows,
+        Path(target).write_text(
+            json.dumps(
+                {
+                    "formatVersion": 3,
+                    "appVersion": APP_VERSION,
+                    "networkProxy": {
+                        key: value
+                        for key, value in self.media.network_proxy.status().items()
+                        if key in {"mode", "active", "source", "endpoint", "summary"}
                     },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            if hasattr(self, "diagnostics_feedback_text"):
-                self.diagnostics_feedback_text.set("导出失败，请更换保存位置后重试")
-            messagebox.showerror("导出失败", str(exc), parent=self.root)
-            return
-        if hasattr(self, "diagnostics_feedback_text"):
-            self.diagnostics_feedback_text.set("诊断文件已安全导出")
-        messagebox.showinfo(
-            "导出完成",
-            "诊断记录已保存。完整路径、来源网址和代理密码未包含在文件中。",
+                    "performance": performance_snapshot,
+                    "mediaPlans": media_rows,
+                    "jobs": rows,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
         )
+        return target
+
+    def _set_maintenance_buttons(self, busy: bool) -> None:
+        state = "disabled" if busy else "normal"
+        for name in (
+            "media_clear_button",
+            "idm_clear_button",
+            "diagnostics_export_button",
+        ):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(state=state)
+        if hasattr(self, "idm_action_buttons"):
+            self._update_idm_actions(self.idm_detail_query_value)
+
+    def _start_maintenance(self, kind: str, worker, *args: object) -> None:
+        if self.maintenance_busy or self.closing:
+            return
+        self.maintenance_generation += 1
+        generation = self.maintenance_generation
+        self.maintenance_busy = True
+        self.maintenance_kind = kind
+        self._set_maintenance_buttons(True)
+        threading.Thread(
+            target=self._run_maintenance,
+            args=(generation, kind, worker, args),
+            name=f"ui-{kind}",
+            daemon=True,
+        ).start()
+        self._schedule_maintenance_poll()
+
+    def _run_maintenance(
+        self,
+        generation: int,
+        kind: str,
+        worker,
+        args: tuple[object, ...],
+    ) -> None:
+        started = time.perf_counter()
+        try:
+            result = worker(*args)
+            succeeded = True
+        except Exception as exc:
+            result = str(exc)
+            succeeded = False
+        finally:
+            self._record_performance(
+                f"background.{kind}",
+                started,
+                kind,
+                background=True,
+            )
+        if self.closing:
+            return
+        try:
+            self.maintenance_events.put_nowait(
+                (generation, kind, succeeded, result)
+            )
+        except Full:
+            pass
+
+    def _schedule_maintenance_poll(self) -> None:
+        if self.closing or not self.maintenance_busy:
+            return
+        if self.maintenance_after_id is None:
+            self.maintenance_after_id = self.root.after(
+                100,
+                self._poll_maintenance,
+            )
+
+    def _poll_maintenance(self) -> None:
+        started = time.perf_counter()
+        self.maintenance_after_id = None
+        result: tuple[str, bool, object] | None = None
+        for _index in range(UI_QUEUE_DRAIN_LIMIT):
+            try:
+                generation, kind, succeeded, payload = (
+                    self.maintenance_events.get_nowait()
+                )
+            except Empty:
+                break
+            if generation == self.maintenance_generation:
+                result = (kind, succeeded, payload)
+                break
+        if result is None:
+            self._schedule_maintenance_poll()
+            self._record_performance(
+                "queue.maintenance",
+                started,
+                "consume-maintenance",
+            )
+            return
+        kind, succeeded, payload = result
+        self.maintenance_busy = False
+        self.maintenance_kind = ""
+        self._set_maintenance_buttons(False)
+        self._record_performance(
+            "queue.maintenance",
+            started,
+            "consume-maintenance",
+        )
+        if kind == "diagnostics-export":
+            if succeeded:
+                if hasattr(self, "diagnostics_feedback_text"):
+                    self.diagnostics_feedback_text.set("诊断文件已安全导出")
+                messagebox.showinfo(
+                    "导出完成",
+                    "诊断记录已保存。完整路径、来源网址和代理密码未包含在文件中。",
+                    parent=self.root,
+                )
+            else:
+                if hasattr(self, "diagnostics_feedback_text"):
+                    self.diagnostics_feedback_text.set(
+                        "导出失败，请更换保存位置后重试"
+                    )
+                messagebox.showerror(
+                    "导出失败",
+                    str(payload),
+                    parent=self.root,
+                )
+        elif kind == "clear-idm":
+            if succeeded:
+                self.last_jobs_revision = None
+                self.idm_detail_query_key = None
+                self.refresh(force=True)
+                messagebox.showinfo(
+                    "清理完成",
+                    f"已清除 {int(payload)} 条 IDM 导入记录。",
+                    parent=self.root,
+                )
+            else:
+                messagebox.showerror(
+                    "清理失败",
+                    str(payload),
+                    parent=self.root,
+                )
+        elif kind == "clear-media":
+            if succeeded:
+                self.last_plans_revision = None
+                self.refresh(force=True)
+                messagebox.showinfo(
+                    "清理完成",
+                    f"已清除 {int(payload)} 条媒体任务记录。",
+                    parent=self.root,
+                )
+            else:
+                messagebox.showerror(
+                    "清理失败",
+                    str(payload),
+                    parent=self.root,
+                )
+        elif kind == "update-eagle-source":
+            if succeeded:
+                self.last_jobs_revision = None
+                self.idm_detail_query_key = None
+                self.refresh(force=True)
+                messagebox.showinfo(
+                    "更新完成",
+                    "来源网址已经写入现有 Eagle 项目，不会重复导入文件。",
+                    parent=self.root,
+                )
+            else:
+                messagebox.showerror(
+                    "更新失败",
+                    str(payload),
+                    parent=self.root,
+                )
 
     def clear_history(self) -> None:
+        if self.maintenance_busy:
+            return
         if not messagebox.askyesno(
             "清除 IDM 导入记录",
             "只清除成功、失败和已跳过的终态记录；等待中的任务会保留。下载文件和 Eagle 内容不会受到影响。是否继续？",
             parent=self.root,
         ):
             return
-        count = self.database.clear_terminal_history()
-        self.refresh(force=True)
-        messagebox.showinfo("清理完成", f"已清除 {count} 条 IDM 导入记录。", parent=self.root)
+        self._start_maintenance(
+            "clear-idm",
+            self.database.clear_terminal_history,
+        )
 
     def clear_media_history(self) -> None:
+        if self.maintenance_busy:
+            return
         if not messagebox.askyesno(
             "清除媒体任务记录",
             "只清除已导入、已下载、下载失败和已停止的任务记录；进行中及等待导入的任务会保留。"
@@ -5284,16 +7160,16 @@ class MainWindow:
             parent=self.root,
         ):
             return
-        count = self.media.clear_terminal_history()
-        self.last_plans_revision = None
-        self.refresh(force=True)
-        messagebox.showinfo("清理完成", f"已清除 {count} 条媒体任务记录。", parent=self.root)
+        self._start_maintenance(
+            "clear-media",
+            self.media.clear_terminal_history,
+        )
 
     def copy_pairing_code(self) -> None:
         code = self.pairing.pairing_code
         self.root.clipboard_clear()
         self.root.clipboard_append(code)
-        self.root.update()
+        self.root.update_idletasks()
         if hasattr(self, "pairing_feedback_text"):
             self.pairing_feedback_text.set("已复制到剪贴板")
             if self.copy_feedback_after_id:
@@ -5313,15 +7189,32 @@ class MainWindow:
         self.refresh(force=True)
 
     def quit(self) -> None:
+        if self.closing:
+            return
+        self.closing = True
+        self.wechat_operation_generation += 1
+        self.maintenance_generation += 1
+        with self.wechat_preview_lock:
+            self.wechat_preview_generation += 1
+            self.wechat_preview_pending = None
         if self.refresh_after_id:
             self.root.after_cancel(self.refresh_after_id)
             self.refresh_after_id = None
+        if self.page_refresh_after_id:
+            self.root.after_cancel(self.page_refresh_after_id)
+            self.page_refresh_after_id = None
+        if self.prewarm_after_id:
+            self.root.after_cancel(self.prewarm_after_id)
+            self.prewarm_after_id = None
         if self.control_after_id:
             self.root.after_cancel(self.control_after_id)
             self.control_after_id = None
         if self.layout_after_id:
             self.root.after_cancel(self.layout_after_id)
             self.layout_after_id = None
+        if self.window_settle_after_id:
+            self.root.after_cancel(self.window_settle_after_id)
+            self.window_settle_after_id = None
         if self.update_poll_after_id:
             self.root.after_cancel(self.update_poll_after_id)
             self.update_poll_after_id = None
@@ -5334,6 +7227,15 @@ class MainWindow:
         if self.media_change_after_id:
             self.root.after_cancel(self.media_change_after_id)
             self.media_change_after_id = None
+        if self.wechat_operation_after_id:
+            self.root.after_cancel(self.wechat_operation_after_id)
+            self.wechat_operation_after_id = None
+        if self.maintenance_after_id:
+            self.root.after_cancel(self.maintenance_after_id)
+            self.maintenance_after_id = None
+        if self.performance_after_id:
+            self.root.after_cancel(self.performance_after_id)
+            self.performance_after_id = None
         remove_change_listener = getattr(self.media, "remove_change_listener", None)
         if callable(remove_change_listener):
             remove_change_listener(self._media_change_listener)

@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    startup_started = time.perf_counter()
     args = build_parser().parse_args(argv)
     if args.cleanup_wechat_capture:
         from .wechat_channels import cleanup_wechat_capture
@@ -75,13 +76,19 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from .ui import MainWindow
 
-            MainWindow(
+            window = MainWindow(
                 database,
                 api_server,
                 processing,
                 external_tray=args.external_tray,
                 start_hidden=args.start_hidden,
-            ).run()
+            )
+            window.performance_monitor.record(
+                "application.startup",
+                (time.perf_counter() - startup_started) * 1000,
+                window._performance_context("startup"),
+            )
+            window.run()
     except KeyboardInterrupt:
         pass
     finally:

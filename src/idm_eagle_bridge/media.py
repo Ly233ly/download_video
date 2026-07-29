@@ -261,6 +261,21 @@ class MediaCoordinator:
                 """,
                 (now,),
             )
+            connection.execute(
+                """
+                UPDATE download_plans SET status = 'imported', progress = 100,
+                    phase_detail = '已导入 Eagle', error_code = NULL,
+                    error_message = NULL,
+                    completed_at = COALESCE(
+                        completed_at,
+                        (SELECT jobs.completed_at FROM jobs WHERE jobs.id = download_plans.job_id),
+                        ?
+                    ), updated_at = ?
+                WHERE status != 'imported'
+                  AND job_id IN (SELECT id FROM jobs WHERE status = 'imported')
+                """,
+                (now, now),
+            )
 
     def close(self) -> None:
         """Stop active FFmpeg jobs and release worker threads during app shutdown."""
@@ -970,8 +985,8 @@ class MediaCoordinator:
                 )
             except (ValueError, PermissionError):
                 pass
-        with self.database.session() as connection:
-            connection.execute(
+        with self.database.transaction() as connection:
+            cursor = connection.execute(
                 """
                 UPDATE download_plans SET status = 'ready_to_import', progress = 90,
                     downloaded_bytes = ?, total_bytes = COALESCE(total_bytes, ?),
@@ -989,6 +1004,21 @@ class MediaCoordinator:
                     plan_id,
                 ),
             )
+            if cursor.rowcount != 1:
+                connection.execute(
+                    """
+                    DELETE FROM jobs
+                    WHERE id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM download_plans
+                          WHERE download_plans.job_id = jobs.id
+                      )
+                    """,
+                    (job_id,),
+                )
+        if cursor.rowcount != 1:
+            self._remove_empty_plan_root(plan_root)
+            return
         self._remove_empty_plan_root(plan_root)
         if self.ready_callback:
             try:
@@ -1795,17 +1825,6 @@ class MediaCoordinator:
                 raise MediaPlanError("下载方案不存在", "plan_unknown")
         data = dict(row)
         if data.get("job_status") == "imported" and data.get("status") != "imported":
-            now = time.time()
-            with self.database.session() as connection:
-                connection.execute(
-                    """
-                    UPDATE download_plans SET status = 'imported', progress = 100,
-                        phase_detail = '已导入 Eagle', error_code = NULL,
-                        error_message = NULL, completed_at = COALESCE(completed_at, ?),
-                        updated_at = ? WHERE id = ?
-                    """,
-                    (now, now, plan_id),
-                )
             data.update(
                 {
                     "status": "imported",
@@ -1819,22 +1838,6 @@ class MediaCoordinator:
 
     def list_plans(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.database.session() as connection:
-            now = time.time()
-            connection.execute(
-                """
-                UPDATE download_plans SET status = 'imported', progress = 100,
-                    phase_detail = '已导入 Eagle', error_code = NULL,
-                    error_message = NULL,
-                    completed_at = COALESCE(
-                        completed_at,
-                        (SELECT jobs.completed_at FROM jobs WHERE jobs.id = download_plans.job_id),
-                        ?
-                    ), updated_at = ?
-                WHERE status != 'imported'
-                  AND job_id IN (SELECT id FROM jobs WHERE status = 'imported')
-                """,
-                (now, now),
-            )
             rows = connection.execute(
                 """
                 SELECT plan.id, plan.output_name, plan.output_container, plan.route,
@@ -1853,7 +1856,79 @@ class MediaCoordinator:
                 """,
                 (max(1, min(limit, 200)),),
             ).fetchall()
-        return [dict(row) for row in rows]
+        plans = [dict(row) for row in rows]
+        for plan in plans:
+            if plan.get("job_status") == "imported" and plan.get("status") != "imported":
+                plan.update(
+                    {
+                        "status": "imported",
+                        "progress": 100,
+                        "phase_detail": "已导入 Eagle",
+                        "error_code": None,
+                        "error_message": None,
+                    }
+                )
+        return plans
+
+    def ui_summary(self) -> dict[str, int | float]:
+        """Return top-bar counts without materializing media cards."""
+
+        with self.database.session() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(
+                        CASE WHEN (jobs.status IS NULL OR jobs.status != 'imported')
+                              AND plan.status IN (
+                                  'queued', 'downloading', 'merging',
+                                  'validating', 'ready_to_import'
+                              )
+                             THEN 1 ELSE 0 END
+                    ), 0) AS active,
+                    COALESCE(MAX(plan.updated_at), 0) AS revision
+                FROM download_plans AS plan
+                LEFT JOIN jobs ON jobs.id = plan.job_id
+                """
+            ).fetchone()
+        return {
+            "total": int(row["total"]),
+            "active": int(row["active"]),
+            "revision": float(row["revision"]),
+        }
+
+    @staticmethod
+    def _cleanup_orphaned_media_metadata(connection: Any) -> None:
+        connection.execute(
+            """
+            DELETE FROM media_streams
+            WHERE group_id IN (
+                SELECT groups.id FROM media_groups AS groups
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM download_plans
+                    WHERE download_plans.group_id = groups.id
+                )
+            )
+            """
+        )
+        connection.execute(
+            """
+            DELETE FROM media_groups
+            WHERE NOT EXISTS (
+                SELECT 1 FROM download_plans
+                WHERE download_plans.group_id = media_groups.id
+            )
+            """
+        )
+        connection.execute(
+            """
+            DELETE FROM capture_sessions
+            WHERE NOT EXISTS (
+                SELECT 1 FROM media_groups
+                WHERE media_groups.session_id = capture_sessions.id
+            )
+            """
+        )
 
     def clear_terminal_history(self) -> int:
         """Forget terminal plan records without deleting any output or preview files."""
@@ -1866,11 +1941,11 @@ class MediaCoordinator:
             ).fetchall()
             plan_ids = [str(row["id"]) for row in rows]
             if plan_ids:
-                id_placeholders = ",".join("?" for _ in plan_ids)
                 connection.execute(
-                    f"DELETE FROM download_plans WHERE id IN ({id_placeholders})",
-                    plan_ids,
+                    f"DELETE FROM download_plans WHERE status IN ({placeholders})",
+                    statuses,
                 )
+                self._cleanup_orphaned_media_metadata(connection)
         if not plan_ids:
             return 0
         with self._lock:
@@ -1880,6 +1955,76 @@ class MediaCoordinator:
                 self._stop_requested.discard(plan_id)
         self._notify_changed()
         return len(plan_ids)
+
+    def remove_plan(self, plan_id: str) -> dict[str, Any]:
+        """Remove one plan and its pending import row without deleting local files."""
+        plan_id = _safe_text(plan_id, 80)
+        with self._lock:
+            self._stop_requested.add(plan_id)
+            process = self._processes.get(plan_id)
+        if process:
+            self._request_process_stop(process)
+
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT plan.id, plan.job_id, plan.final_path, plan.preview_path,
+                       plan.output_name, groups.title
+                FROM download_plans AS plan
+                JOIN media_groups AS groups ON groups.id = plan.group_id
+                WHERE plan.id = ?
+                """,
+                (plan_id,),
+            ).fetchone()
+            if row is None:
+                raise MediaPlanError("媒体任务不存在或已经清理", "plan_unknown")
+            job_id = str(row["job_id"] or "")
+            connection.execute("DELETE FROM download_plans WHERE id = ?", (plan_id,))
+            if job_id:
+                connection.execute(
+                    """
+                    DELETE FROM jobs
+                    WHERE id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM download_plans
+                          WHERE download_plans.job_id = jobs.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM imported_fingerprints
+                          WHERE imported_fingerprints.job_id = jobs.id
+                      )
+                    """,
+                    (job_id,),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM source_events
+                    WHERE consumed_by_job_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM jobs
+                          WHERE jobs.id = source_events.consumed_by_job_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM jobs
+                          WHERE jobs.source_event_id = source_events.id
+                      )
+                    """,
+                    (job_id,),
+                )
+            self._cleanup_orphaned_media_metadata(connection)
+
+        with self._lock:
+            self._remote_inputs.pop(plan_id, None)
+            if plan_id not in self._scheduled and plan_id not in self._processes:
+                self._stop_requested.discard(plan_id)
+        self._notify_changed()
+        final_path = str(row["final_path"] or "")
+        return {
+            "removed": True,
+            "planId": plan_id,
+            "title": str(row["title"] or row["output_name"] or "媒体任务"),
+            "filePreserved": bool(final_path and Path(final_path).is_file()),
+        }
 
     def _owned_plan_file(self, plan_id: str, field: str, directory: str) -> Path:
         plan = self.get_plan(_safe_text(plan_id, 80))

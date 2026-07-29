@@ -132,7 +132,7 @@ class ProcessorTests(unittest.TestCase):
         self.assertEqual(eagle.imports, [(str(self.video), None)])
         self.assertTrue(self.video.is_file(), "ordinary IDM/user files must be preserved")
 
-    def test_owned_desktop_output_is_deleted_only_after_successful_eagle_import(
+    def test_owned_desktop_output_is_retained_after_successful_eagle_import(
         self,
     ) -> None:
         download_root = Path(self.temp_dir.name) / "owned-downloads"
@@ -158,15 +158,14 @@ class ProcessorTests(unittest.TestCase):
         ):
             processor.process_job(job_id)
 
-        self.assertFalse(output.exists())
+        self.assertTrue(output.is_file())
         self.assertEqual(self.database.get_job(job_id)["status"], "imported")
         with self.database.session() as connection:
             plan = connection.execute(
                 "SELECT final_path, phase_detail, error_code FROM download_plans WHERE id = ?",
                 (plan_id,),
             ).fetchone()
-        self.assertIsNone(plan["final_path"])
-        self.assertEqual(plan["phase_detail"], "已导入 Eagle，本机下载文件已自动删除")
+        self.assertEqual(plan["final_path"], str(output))
         self.assertIsNone(plan["error_code"])
 
     def test_unchecked_or_failed_import_keeps_owned_desktop_output(self) -> None:
@@ -245,8 +244,7 @@ class ProcessorTests(unittest.TestCase):
                 (plan_id,),
             ).fetchone()
         self.assertEqual(plan["final_path"], str(self.video))
-        self.assertEqual(plan["phase_detail"], "已导入 Eagle，本机文件未删除")
-        self.assertEqual(plan["error_code"], "local_file_delete_not_owned")
+        self.assertIsNone(plan["error_code"])
 
     def test_delete_failure_does_not_turn_successful_eagle_import_into_failure(
         self,
@@ -268,13 +266,9 @@ class ProcessorTests(unittest.TestCase):
             source_grace_period=0,
         )
 
-        with (
-            patch.dict(
-                os.environ,
-                {"IDM_EAGLE_DOWNLOAD_ROOT": str(download_root)},
-            ),
-            patch.object(Path, "unlink", side_effect=PermissionError("locked")),
-            patch("idm_eagle_bridge.processor.time.sleep"),
+        with patch.dict(
+            os.environ,
+            {"IDM_EAGLE_DOWNLOAD_ROOT": str(download_root)},
         ):
             processor.process_job(job_id)
 
@@ -286,10 +280,9 @@ class ProcessorTests(unittest.TestCase):
                 (plan_id,),
             ).fetchone()
         self.assertEqual(plan["final_path"], str(output))
-        self.assertEqual(plan["phase_detail"], "已导入 Eagle，本机文件未删除")
-        self.assertEqual(plan["error_code"], "local_file_delete_failed")
+        self.assertIsNone(plan["error_code"])
 
-    def test_pending_cleanup_recovers_after_import_process_interruption(self) -> None:
+    def test_retained_files_cleanup_after_expiry(self) -> None:
         download_root = Path(self.temp_dir.name) / "recovery-downloads"
         output = download_root / "下载中转站" / "已完成" / "recover.mp4"
         output.parent.mkdir(parents=True)
@@ -304,8 +297,9 @@ class ProcessorTests(unittest.TestCase):
             job_id,
             status="imported",
             eagle_item_id="already-imported-item",
-            completed_at=time.time(),
+            completed_at=time.time() - 86401,
         )
+        self.database.set_setting("file_retention_days", 1)
         processor = JobProcessor(
             self.database,
             eagle=FakeEagle(),
@@ -319,7 +313,7 @@ class ProcessorTests(unittest.TestCase):
         ):
             processed = processor.process_once()
 
-        self.assertEqual(processed, 1)
+        self.assertEqual(processed, 0)
         self.assertFalse(output.exists())
         with self.database.session() as connection:
             plan = connection.execute(
@@ -395,6 +389,32 @@ class ProcessorTests(unittest.TestCase):
         processor.process_job(job_id)
 
         self.assertEqual(self.database.get_job(job_id)["status"], "ignored_by_user")
+        self.assertEqual(eagle.imports, [])
+
+    def test_job_removed_during_preparation_is_not_imported(self) -> None:
+        job_id = self._add_job(self.video)
+        eagle = FakeEagle()
+        processor = JobProcessor(
+            self.database,
+            eagle=eagle,
+            minimum_file_age=0,
+            source_grace_period=0,
+        )
+        original_update = self.database.update_job
+
+        def update_and_remove(current_job_id: str, **fields: object) -> None:
+            original_update(current_job_id, **fields)
+            if "fingerprint" in fields and "status" not in fields:
+                with self.database.transaction() as connection:
+                    connection.execute(
+                        "DELETE FROM jobs WHERE id = ?",
+                        (current_job_id,),
+                    )
+
+        with patch.object(self.database, "update_job", side_effect=update_and_remove):
+            processor.process_job(job_id)
+
+        self.assertIsNone(self.database.get_job(job_id))
         self.assertEqual(eagle.imports, [])
 
     def test_short_grace_allows_late_browser_source_to_attach(self) -> None:

@@ -37,7 +37,13 @@ class ProcessingService:
     def _run(self) -> None:
         while not self.stop_event.is_set():
             if time.time() - self.last_cleanup >= 24 * 60 * 60:
-                self.database.cleanup_history()
-                self.last_cleanup = time.time()
+                try:
+                    self.database.cleanup_history()
+                except Exception:
+                    # History maintenance must never stop the import queue.
+                    # A locked or legacy database can be retried the next day.
+                    pass
+                finally:
+                    self.last_cleanup = time.time()
             self.processor.process_once()
             self.wake_signal.wait(self.database.seconds_until_next_action(self.interval))

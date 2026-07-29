@@ -485,6 +485,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     method: "POST",
                     body: JSON.stringify({ planId: message.planId })
                 });
+            case "removePlan":
+                return eagleBridgeApi("/api/media/remove", {
+                    method: "POST",
+                    body: JSON.stringify({ planId: message.planId })
+                });
             case "clearPlans":
                 return eagleBridgeApi("/api/media/clear", {
                     method: "POST",

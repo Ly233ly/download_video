@@ -197,6 +197,41 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNone(self.database.get_job(terminal_job))
         self.assertIsNotNone(self.database.get_job(active_job))
 
+    def test_single_active_job_can_be_removed_without_deleting_source_file(self) -> None:
+        source_file = Path(self.temp_dir.name) / "keep.mp4"
+        source_file.write_bytes(b"keep")
+        job_id = self.database.add_job(str(source_file))
+
+        self.assertTrue(self.database.remove_job(job_id))
+        self.assertIsNone(self.database.get_job(job_id))
+        self.assertTrue(source_file.is_file())
+        self.assertFalse(self.database.remove_job(job_id))
+
+    def test_cleanup_history_keeps_old_source_event_still_used_by_active_job(self) -> None:
+        old = time.time() - 120 * 86400
+        self.database.set_site_rule("example.com", True)
+        event_id = self.database.add_source_event(
+            "https://example.com/video",
+            "旧来源",
+            media_url="https://cdn.example.com/active.mp4",
+            created_at=old,
+        )
+        job_id = self.database.add_job(
+            "C:/Downloads/active.mp4",
+            created_at=old + 1,
+        )
+        self.assertTrue(self.database.attach_best_source(job_id))
+
+        self.database.cleanup_history(history_days=90)
+
+        self.assertIsNotNone(self.database.get_job(job_id))
+        with self.database.session() as connection:
+            event = connection.execute(
+                "SELECT id FROM source_events WHERE id = ?",
+                (event_id,),
+            ).fetchone()
+        self.assertIsNotNone(event)
+
     def test_ui_snapshot_combines_dashboard_state(self) -> None:
         self.database.set_site_rule("enabled.example", True)
         self.database.set_site_rule("disabled.example", False)

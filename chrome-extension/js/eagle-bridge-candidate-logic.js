@@ -365,6 +365,18 @@
         };
     }
 
+    function createLocationChangeTracker(initialUrl, callback) {
+        let currentUrl = String(initialUrl || "");
+        return function updateLocation(nextUrl, context) {
+            const normalizedUrl = String(nextUrl || "");
+            if (!normalizedUrl || normalizedUrl === currentUrl) return false;
+            const previousUrl = currentUrl;
+            currentUrl = normalizedUrl;
+            callback?.(normalizedUrl, previousUrl, context);
+            return true;
+        };
+    }
+
     async function ensureContentDiscovery(chromeApi, tab) {
         const tabId = Number(tab?.id);
         const tabUrl = String(tab?.url || "");
@@ -498,6 +510,7 @@
         selectContentTitle,
         createBoundedScheduler,
         createKeyedBoundedScheduler,
+        createLocationChangeTracker,
         ensureContentDiscovery,
         parseManifestQualities,
         parseVimeoPlayerConfig,

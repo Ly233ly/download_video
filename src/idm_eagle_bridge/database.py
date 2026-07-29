@@ -711,45 +711,6 @@ class Database:
                     (completed_at, updates["updated_at"], job_id),
                 )
 
-    def imported_plan_output_for_cleanup(self, job_id: str) -> dict[str, Any] | None:
-        with self.session() as connection:
-            row = connection.execute(
-                """
-                SELECT plan.id AS plan_id, plan.final_path, jobs.file_path
-                FROM download_plans AS plan
-                JOIN jobs ON jobs.id = plan.job_id
-                WHERE plan.job_id = ?
-                  AND plan.status = 'imported'
-                  AND plan.import_to_eagle = 1
-                  AND plan.delete_after_import = 1
-                  AND plan.final_path IS NOT NULL
-                ORDER BY plan.created_at DESC
-                LIMIT 1
-                """,
-                (job_id,),
-            ).fetchone()
-        return dict(row) if row else None
-
-    def pending_imported_output_cleanups(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self.session() as connection:
-            rows = connection.execute(
-                """
-                SELECT jobs.id AS job_id, jobs.file_path
-                FROM download_plans AS plan
-                JOIN jobs ON jobs.id = plan.job_id
-                WHERE plan.status = 'imported'
-                  AND jobs.status = 'imported'
-                  AND plan.import_to_eagle = 1
-                  AND plan.delete_after_import = 1
-                  AND plan.final_path IS NOT NULL
-                  AND plan.error_code IS NULL
-                ORDER BY jobs.completed_at ASC, plan.created_at ASC
-                LIMIT ?
-                """,
-                (max(1, min(limit, 100)),),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     def record_plan_output_cleanup(
         self,
         plan_id: str,
@@ -789,6 +750,31 @@ class Database:
                     ),
                 )
         return cursor.rowcount == 1
+
+    def expired_retained_plans(self, limit: int = 10) -> list[dict[str, Any]]:
+        retention_days = self.get_setting("file_retention_days", 7)
+        retention_days = max(0, min(365, int(retention_days)))
+        if retention_days == 0:
+            return []
+        cutoff = time.time() - retention_days * 24 * 60 * 60
+        with self.session() as connection:
+            rows = connection.execute(
+                """
+                SELECT plan.id AS plan_id, plan.final_path, plan.completed_at, jobs.id AS job_id
+                FROM download_plans AS plan
+                JOIN jobs ON jobs.id = plan.job_id
+                WHERE plan.status = 'imported'
+                  AND plan.delete_after_import = 1
+                  AND plan.final_path IS NOT NULL
+                  AND plan.error_code IS NULL
+                  AND plan.completed_at IS NOT NULL
+                  AND plan.completed_at <= ?
+                ORDER BY plan.completed_at ASC
+                LIMIT ?
+                """,
+                (cutoff, max(1, min(limit, 100))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def fingerprint_owner(self, fingerprint: str) -> str | None:
         with self.session() as connection:
@@ -865,6 +851,85 @@ class Database:
             )
         return cursor.rowcount == 1
 
+    def remove_job(self, job_id: str) -> bool:
+        """Remove one import queue row without deleting the source file or Eagle item."""
+        now = time.time()
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT id FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            unsupported = connection.execute(
+                """
+                SELECT 1 FROM download_plans
+                WHERE job_id = ?
+                  AND status NOT IN (
+                    'ready_to_import', 'imported', 'completed_local', 'retry', 'canceled'
+                  )
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+            if unsupported is not None:
+                raise ValueError("这条导入记录仍由媒体任务使用，请先清理对应媒体任务")
+            connection.execute(
+                """
+                UPDATE download_plans SET
+                    status = CASE
+                        WHEN status = 'ready_to_import' THEN 'completed_local'
+                        ELSE status
+                    END,
+                    progress = CASE
+                        WHEN status = 'ready_to_import' THEN 100
+                        ELSE progress
+                    END,
+                    import_to_eagle = CASE
+                        WHEN status = 'ready_to_import' THEN 0
+                        ELSE import_to_eagle
+                    END,
+                    delete_after_import = CASE
+                        WHEN status = 'ready_to_import' THEN 0
+                        ELSE delete_after_import
+                    END,
+                    phase_detail = CASE
+                        WHEN status = 'ready_to_import'
+                            THEN '已移出 Eagle 导入队列，本机文件已保留'
+                        ELSE phase_detail
+                    END,
+                    error_code = CASE
+                        WHEN status = 'ready_to_import' THEN NULL
+                        ELSE error_code
+                    END,
+                    error_message = CASE
+                        WHEN status = 'ready_to_import' THEN NULL
+                        ELSE error_message
+                    END,
+                    completed_at = CASE
+                        WHEN status = 'ready_to_import' THEN COALESCE(completed_at, ?)
+                        ELSE completed_at
+                    END,
+                    job_id = NULL,
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                (now, now, job_id),
+            )
+            cursor = connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            connection.execute(
+                """
+                DELETE FROM source_events
+                WHERE consumed_by_job_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jobs
+                      WHERE jobs.source_event_id = source_events.id
+                  )
+                """,
+                (job_id,),
+            )
+        return cursor.rowcount == 1
+
     def assign_source(self, job_id: str, source_url: str, source_title: str = "") -> bool:
         cleaned_url = clean_page_url(source_url)
         with self.session() as connection:
@@ -925,6 +990,20 @@ class Database:
                 """,
                 statuses,
             )
+            connection.execute(
+                """
+                DELETE FROM source_events
+                WHERE consumed_by_job_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jobs
+                      WHERE jobs.id = source_events.consumed_by_job_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jobs
+                      WHERE jobs.source_event_id = source_events.id
+                  )
+                """
+            )
         return max(cursor.rowcount, 0)
 
     def cleanup_history(
@@ -935,18 +1014,54 @@ class Database:
         cutoff = time.time() - max(history_days, 1) * 86400
         statuses = tuple(TERMINAL_JOB_STATUSES)
         placeholders = ",".join("?" for _ in statuses)
-        with self.session() as connection:
+        plan_statuses = tuple(TERMINAL_MEDIA_PLAN_STATUSES)
+        plan_placeholders = ",".join("?" for _ in plan_statuses)
+        with self.transaction() as connection:
             before_jobs = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
             before_sources = connection.execute(
                 "SELECT COUNT(*) FROM source_events"
             ).fetchone()[0]
             connection.execute(
                 f"""
+                UPDATE download_plans SET job_id = NULL, updated_at = ?
+                WHERE status IN ({plan_placeholders})
+                  AND job_id IN (
+                      SELECT id FROM jobs
+                      WHERE status IN ({placeholders})
+                        AND COALESCE(completed_at, updated_at) < ?
+                  )
+                """,
+                (time.time(), *plan_statuses, *statuses, cutoff),
+            )
+            connection.execute(
+                f"""
                 DELETE FROM jobs
                 WHERE status IN ({placeholders})
                   AND COALESCE(completed_at, updated_at) < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM download_plans
+                      WHERE download_plans.job_id = jobs.id
+                  )
                 """,
                 (*statuses, cutoff),
+            )
+            connection.execute(
+                f"""
+                UPDATE download_plans SET job_id = NULL, updated_at = ?
+                WHERE status IN ({plan_placeholders})
+                  AND job_id IN (
+                      SELECT id FROM jobs
+                      WHERE status IN ({placeholders})
+                      ORDER BY created_at DESC
+                      LIMIT -1 OFFSET ?
+                  )
+                """,
+                (
+                    time.time(),
+                    *plan_statuses,
+                    *statuses,
+                    max(history_limit, 1),
+                ),
             )
             connection.execute(
                 f"""
@@ -956,14 +1071,24 @@ class Database:
                     ORDER BY created_at DESC
                     LIMIT -1 OFFSET ?
                 )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM download_plans
+                      WHERE download_plans.job_id = jobs.id
+                  )
                 """,
                 (*statuses, max(history_limit, 1)),
             )
             connection.execute(
                 """
                 DELETE FROM source_events
-                WHERE (consumed_by_job_id IS NOT NULL AND created_at < ?)
-                   OR (consumed_by_job_id IS NULL AND created_at < ?)
+                WHERE (
+                    (consumed_by_job_id IS NOT NULL AND created_at < ?)
+                    OR (consumed_by_job_id IS NULL AND created_at < ?)
+                )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jobs
+                      WHERE jobs.source_event_id = source_events.id
+                  )
                 """,
                 (cutoff, time.time() - 7 * 86400),
             )

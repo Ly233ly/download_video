@@ -4,6 +4,8 @@
     const root = document.getElementById("eagleBridgeRoot");
     const logic = globalThis.EagleBridgeUILogic;
     if (!root || !logic) return;
+    const popupParams = new URL(location.href).searchParams;
+    const isStandaloneWindow = popupParams.get("standalone") === "1";
 
     const zhHans = {
         product: "下载中转站", media: "媒体", tasks: "任务", refresh: "刷新", settings: "设置",
@@ -22,6 +24,7 @@
         copyLink: "复制链接",
         taskTitle: "下载任务", taskSubtitle: "浏览器与视频号任务统一显示在这里。", refreshTasks: "刷新任务", clearTasks: "清除完成",
         clearTasksConfirm: "只清除已完成、失败和已停止的任务记录；进行中的任务与下载文件都会保留。是否继续？", tasksCleared: "已清除 {count} 条任务记录",
+        removeTask: "清理记录", removeTaskConfirm: "将停止并清理这条任务记录；已经下载的本机文件和 Eagle 内容会保留。是否继续？", taskRemoved: "任务记录已清理",
         noTasks: "还没有下载任务。", stop: "停止", backToMedia: "返回媒体重新创建",
         discoverBody: "按当前标签页启动增强发现，状态会在这里保持同步。",
         on: "已开启", off: "已关闭", unavailable: "不可用",
@@ -66,6 +69,7 @@
         openWindow: "Open window", clearMedia: "Clear current media", copyLink: "Copy link",
         taskTitle: "Download tasks", taskSubtitle: "Browser and WeChat Channels tasks appear here together.", refreshTasks: "Refresh tasks", clearTasks: "Clear finished",
         clearTasksConfirm: "Clear completed, failed, and stopped task records? Active tasks and downloaded files will be kept.", tasksCleared: "Cleared {count} task records", noTasks: "No download tasks yet.",
+        removeTask: "Remove record", removeTaskConfirm: "Stop and remove this task record? Downloaded files and Eagle content will be kept.", taskRemoved: "Task record removed",
         stop: "Stop", backToMedia: "Return to media", discoverBody: "Enable enhanced discovery for the current tab.",
         on: "On", off: "Off", unavailable: "Unavailable", taskStarted: "Task started", stopped: "Task stopped", copied: "Link copied", siteUpdated: "Site rule updated",
         pageRecorded: "Page source recorded", nextIgnored: "Next import will be ignored", pairingDone: "Paired", clearConfirm: "Clear all captured media on this page?",
@@ -122,6 +126,7 @@
         taskTimer: null,
         candidateTimer: null,
         snapshotTimer: null,
+        locationTimer: null,
     };
 
     let toastTimer = null;
@@ -224,7 +229,7 @@
     }
 
     function initShell() {
-        if (new URL(location.href).searchParams.has("tabId")) {
+        if (popupParams.has("tabId") || isStandaloneWindow) {
             document.documentElement.classList.add("bridge-expanded");
             document.body.classList.add("bridge-expanded");
         }
@@ -563,7 +568,7 @@
                         ${task.finalPath ? `<div class="bridge-task-path" title="${escapeHtml(task.finalPath)}">${escapeHtml(t("outputLocation", { path: task.finalPath }))}</div>` : ""}
                         ${task.error ? `<div class="bridge-task-error">${escapeHtml(task.error)}</div>` : ""}
                     </div>
-                    <div class="bridge-task-actions">${task.canImportExisting ? `<button class="bridge-small-button bridge-import-existing" data-action="import-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("importExisting"))}</button>` : ""}${task.canOpenOutput ? `<button class="bridge-small-button" data-action="open-task-folder" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openFolder"))}</button>` : ""}${task.canOpenSource ? `<button class="bridge-small-button" data-action="open-task-source" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openSource"))}</button>` : ""}${task.active ? `<button class="bridge-small-button" data-action="stop-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("stop"))}</button>` : task.canRetry ? `<button class="bridge-small-button" data-action="retry-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("retry"))}</button>` : ["import_failed", "failed_permanent", "needs_rebuild"].includes(task.status) ? `<button class="bridge-small-button" data-view="media">${escapeHtml(t("backToMedia"))}</button>` : ""}</div>
+                    <div class="bridge-task-actions">${task.canImportExisting ? `<button class="bridge-small-button bridge-import-existing" data-action="import-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("importExisting"))}</button>` : ""}${task.canOpenOutput ? `<button class="bridge-small-button" data-action="open-task-folder" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openFolder"))}</button>` : ""}${task.canOpenSource ? `<button class="bridge-small-button" data-action="open-task-source" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openSource"))}</button>` : ""}${task.active ? `<button class="bridge-small-button" data-action="stop-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("stop"))}</button>` : task.canRetry ? `<button class="bridge-small-button" data-action="retry-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("retry"))}</button>` : ["import_failed", "failed_permanent", "needs_rebuild"].includes(task.status) ? `<button class="bridge-small-button" data-view="media">${escapeHtml(t("backToMedia"))}</button>` : ""}<button class="bridge-small-button bridge-danger-button" data-action="remove-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("removeTask"))}</button></div>
                 </article>`).join("") : `<div class="bridge-empty-state"><h2>${escapeHtml(t("noTasks"))}</h2></div>`}</div>
         </div>`;
     }
@@ -833,7 +838,16 @@
     }
 
     async function refreshTab() {
-        const requestedTabId = Number(new URL(location.href).searchParams.get("tabId"));
+        if (isStandaloneWindow) {
+            const preferredTabId = Number(popupParams.get("sourceTabId"));
+            const activeWebTab = await send({
+                Message: "getActiveWebTab",
+                preferredTabId: Number.isInteger(preferredTabId) ? preferredTabId : 0
+            }).catch(() => null);
+            if (activeWebTab?.id) state.tab = activeWebTab;
+            return;
+        }
+        const requestedTabId = Number(popupParams.get("tabId"));
         if (Number.isInteger(requestedTabId) && requestedTabId > 0) state.tab = await chrome.tabs.get(requestedTabId);
         else [state.tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     }
@@ -877,6 +891,45 @@
         state.candidates.current = Array.isArray(cache[currentId]) ? cache[currentId].slice(-400).map(item => ({ ...item, __scope: "current" })) : [];
         state.candidates.other = Object.entries(cache).flatMap(([tabId, items]) => tabId === currentId || !Array.isArray(items) ? [] : items.slice(-200).map(item => ({ ...item, __scope: "other" }))).slice(-600);
         rebuildGroups();
+    }
+
+    function resetTabScopedUi() {
+        state.candidates.current = [];
+        state.framePreviews.clear();
+        state.selections.clear();
+        state.drafts.clear();
+        state.selectedGroupIds.clear();
+        state.activeGroupId = "";
+        state.batchMode = false;
+    }
+
+    async function refreshTrackedPage() {
+        const previousTabId = Number(state.tab?.id) || 0;
+        const previousUrl = String(state.tab?.url || "");
+        await refreshTab();
+        const tabChanged = previousTabId !== Number(state.tab?.id)
+            || previousUrl !== String(state.tab?.url || "");
+        if (tabChanged) resetTabScopedUi();
+        patchHeader();
+        await Promise.allSettled([
+            refreshCandidates(),
+            refreshToolState(),
+            refreshSite(),
+            send({ eagleBridge: "ensureDiscovery", tabId: state.tab?.id })
+        ]);
+        renderSettings();
+    }
+
+    function scheduleTrackedPageRefresh(delay = 140) {
+        clearTimeout(state.locationTimer);
+        state.locationTimer = setTimeout(async () => {
+            await refreshTrackedPage().catch(() => undefined);
+            // Titles and structured metadata are often committed shortly
+            // after the URL, so perform one settling read without polling.
+            state.locationTimer = setTimeout(() => {
+                refreshTrackedPage().catch(() => undefined);
+            }, 650);
+        }, delay);
     }
 
     async function refreshPlans() {
@@ -951,6 +1004,10 @@
             const connection = refreshConnection();
             const discovery = send({ eagleBridge: "ensureDiscovery", tabId: state.tab?.id }).catch(() => undefined);
             await connection;
+            // Candidate rendering may finish before the asynchronous auth and
+            // health checks. Rebuild the action state once pairing is known so
+            // the first popup open cannot keep stale "not connected" buttons.
+            renderInspector();
             await Promise.allSettled([candidates, toolState, discovery, refreshPlans(), refreshSite()]);
             renderSettings();
             if (state.view === "tasks") renderTasks();
@@ -1003,6 +1060,22 @@
             const removed = Number(response.data?.removed || 0);
             await refreshPlans();
             showToast(t("tasksCleared", { count: removed }));
+        } catch (error) {
+            showToast(error.message || error, "error", 4200);
+        }
+    }
+
+    async function removeTask(planId) {
+        if (!planId || !window.confirm(t("removeTaskConfirm"))) return;
+        try {
+            const response = await send({ eagleBridge: "removePlan", planId });
+            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+            state.taskPreviews.delete(String(planId));
+            for (const key of [...state.taskPreviewFailures]) {
+                if (key.startsWith(`${planId}:`)) state.taskPreviewFailures.delete(key);
+            }
+            await refreshPlans();
+            showToast(t("taskRemoved"));
         } catch (error) {
             showToast(error.message || error, "error", 4200);
         }
@@ -1084,7 +1157,7 @@
             if (!response?.ok) throw new Error(response?.error || t("connectionError"));
             showToast(action === "record-page" ? t("pageRecorded") : t("nextIgnored"));
         } else if (action === "open-window") chrome.windows.create({
-            url: chrome.runtime.getURL(`popup.html?tabId=${state.tab?.id || ""}`),
+            url: chrome.runtime.getURL(`popup.html?standalone=1&sourceTabId=${state.tab?.id || ""}`),
             type: "popup",
             width: 920,
             height: 680
@@ -1094,6 +1167,11 @@
             await send({ Message: "clearData", tabId: state.tab?.id, type: true });
             await send({ Message: "ClearIcon", type: true, tabId: state.tab?.id });
             state.candidates.current = [];
+            state.framePreviews.clear();
+            state.selections.clear();
+            state.drafts.clear();
+            state.selectedGroupIds.clear();
+            state.activeGroupId = "";
             rebuildGroups();
             showToast(t("clearMedia"));
         }
@@ -1162,6 +1240,7 @@
         else if (action === "clear-tasks") clearTasks();
         else if (action === "stop-task") stopTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "retry-task") retryTask(event.target.closest("[data-plan-id]")?.dataset.planId);
+        else if (action === "remove-task") removeTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "import-task") importExistingTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "open-task-folder") openTaskFolder(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "open-task-source") openTaskSource(event.target.closest("[data-plan-id]")?.dataset.planId);
@@ -1270,6 +1349,14 @@
     });
 
     chrome.runtime.onMessage.addListener(message => {
+        if (message?.Message === "activeWebTabChanged") {
+            if (isStandaloneWindow) scheduleTrackedPageRefresh();
+            return;
+        }
+        if (message?.Message === "tabLocationChanged") {
+            if (Number(message.tabId) === Number(state.tab?.id)) scheduleTrackedPageRefresh(180);
+            return;
+        }
         if (message?.Message !== "popupAddData") return;
         const data = message.data;
         if (!state.tab || Number(data?.tabId) !== Number(state.tab.id)) return;
@@ -1297,6 +1384,7 @@
         clearTimeout(state.taskTimer);
         clearTimeout(state.candidateTimer);
         clearTimeout(state.snapshotTimer);
+        clearTimeout(state.locationTimer);
     });
 
     (async () => {

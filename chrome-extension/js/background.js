@@ -28,7 +28,14 @@ chrome.webNavigation.onBeforeNavigate.addListener(function (details) {
         resolverRequestContextByTab.delete(details.tabId);
     }
 });
-chrome.webNavigation.onHistoryStateUpdated.addListener(function () { return; });
+chrome.webNavigation.onHistoryStateUpdated.addListener(function (details) {
+    if (details?.frameId === 0) handleTabLocationChange(details.tabId, details.url, "history");
+});
+if (chrome.webNavigation.onReferenceFragmentUpdated) {
+    chrome.webNavigation.onReferenceFragmentUpdated.addListener(function (details) {
+        if (details?.frameId === 0) handleTabLocationChange(details.tabId, details.url, "fragment");
+    });
+}
 chrome.runtime.onConnect.addListener(function (Port) {
     if (chrome.runtime.lastError || Port.name !== "HeartBeat") return;
     Port.postMessage("HeartBeat");
@@ -56,6 +63,16 @@ const youtubeRequestContextByTab = new Map();
 // First-party request context for generic page resolvers. Values stay in the
 // service-worker memory and are cleared on top-level navigation/tab close.
 const resolverRequestContextByTab = new Map();
+// Invalidates asynchronous discovery work that was already in flight when a
+// user clears a tab. Without this generation guard, a late visual/manifest
+// callback can append the just-cleared item back into the list.
+const captureGenerationByTab = new Map();
+// Top-level page identity is independent from the document lifecycle because
+// single-page applications can replace their content without reloading.
+const lastPageUrlByTab = new Map();
+const pendingPageLocationByTab = new Map();
+const pageLocationInitializationWaitByTab = new Map();
+let lastActiveWebTabId = 0;
 const MAX_MANIFEST_CATALOG_BYTES = 2_000_000;
 
 async function readBoundedManifestText(response) {
@@ -148,6 +165,142 @@ function mediaFramesForTab(tabId) {
         frames[key.slice(prefix.length)] = value.dataUrl;
     }
     return frames;
+}
+
+function invalidateCapturedTabContext(tabId, resetDedupe = false) {
+    const normalizedTabId = Number(tabId) || 0;
+    captureGenerationByTab.set(
+        normalizedTabId,
+        (captureGenerationByTab.get(normalizedTabId) || 0) + 1
+    );
+    if (resetDedupe) G.urlMap.delete(normalizedTabId);
+    youtubeRequestContextByTab.delete(normalizedTabId);
+    resolverRequestContextByTab.delete(normalizedTabId);
+    const prefix = `${normalizedTabId}:`;
+    for (const key of mediaFramePreviewCache.keys()) {
+        if (key.startsWith(prefix)) mediaFramePreviewCache.delete(key);
+    }
+}
+
+function clearCapturedTab(tabId, resetDedupe = false) {
+    const normalizedTabId = Number(tabId) || 0;
+    invalidateCapturedTabContext(normalizedTabId, resetDedupe);
+    delete cacheData[normalizedTabId];
+}
+
+function sendRuntimeNotice(message) {
+    try {
+        chrome.runtime.sendMessage(message, function () { void chrome.runtime.lastError; });
+    } catch (_error) { /* No extension view is currently open. */ }
+}
+
+function announceTabLocationChanged(tabId, url, source) {
+    sendRuntimeNotice({ Message: "tabLocationChanged", tabId, url, source });
+}
+
+function applyTabLocationChange(tabId, url, source = "history") {
+    const normalizedTabId = Number(tabId) || 0;
+    const normalizedUrl = String(url || "");
+    if (normalizedTabId <= 0 || isSpecialPage(normalizedUrl)) return false;
+    if (lastPageUrlByTab.get(normalizedTabId) === normalizedUrl) return false;
+    lastPageUrlByTab.set(normalizedTabId, normalizedUrl);
+
+    if ([1, 2].includes(Number(G.autoClearMode))) {
+        clearCapturedTab(normalizedTabId, true);
+        saveMediaData(cacheData);
+        SetIcon({ tabId: normalizedTabId });
+    } else {
+        // Keep the user's retained list, but allow the new page to rediscover
+        // URLs that also appeared on the previous page.
+        invalidateCapturedTabContext(normalizedTabId, true);
+    }
+
+    try {
+        chrome.tabs.sendMessage(
+            normalizedTabId,
+            { Message: "pageLocationChanged", url: normalizedUrl, source },
+            function () { void chrome.runtime.lastError; }
+        );
+    } catch (_error) { /* The new document may not have a receiver yet. */ }
+    announceTabLocationChanged(normalizedTabId, normalizedUrl, source);
+    return true;
+}
+
+function handleTabLocationChange(tabId, url, source = "history") {
+    const normalizedTabId = Number(tabId) || 0;
+    const normalizedUrl = String(url || "");
+    if (normalizedTabId <= 0 || isSpecialPage(normalizedUrl)) return false;
+    if (G.initSyncComplete && G.initMediaComplete) {
+        return applyTabLocationChange(normalizedTabId, normalizedUrl, source);
+    }
+
+    pendingPageLocationByTab.set(normalizedTabId, {
+        tabId: normalizedTabId,
+        url: normalizedUrl,
+        source
+    });
+    if (!pageLocationInitializationWaitByTab.has(normalizedTabId)) {
+        const wait = globalThis.EagleBridgeCandidateLogic.waitForSnapshot(
+            () => Boolean(G.initSyncComplete && G.initMediaComplete),
+            () => true,
+            5000
+        ).then(() => {
+            pageLocationInitializationWaitByTab.delete(normalizedTabId);
+            const pending = pendingPageLocationByTab.get(normalizedTabId);
+            pendingPageLocationByTab.delete(normalizedTabId);
+            if (pending) applyTabLocationChange(pending.tabId, pending.url, pending.source);
+        });
+        pageLocationInitializationWaitByTab.set(normalizedTabId, wait);
+    }
+    return true;
+}
+
+function isSupportedWebTab(tab) {
+    return Number.isInteger(Number(tab?.id))
+        && Number(tab.id) > 0
+        && /^https?:\/\//i.test(String(tab?.url || ""));
+}
+
+function rememberActiveWebTab(tab, announce = true) {
+    if (!isSupportedWebTab(tab)) return false;
+    const changed = Number(tab.id) !== lastActiveWebTabId;
+    lastActiveWebTabId = Number(tab.id);
+    G.tabId = lastActiveWebTabId;
+    if (announce && changed) {
+        sendRuntimeNotice({
+            Message: "activeWebTabChanged",
+            tabId: lastActiveWebTabId,
+            url: String(tab.url || "")
+        });
+    }
+    return true;
+}
+
+async function getTabIfSupported(tabId) {
+    const normalizedTabId = Number(tabId) || 0;
+    if (normalizedTabId <= 0) return null;
+    try {
+        const tab = await chrome.tabs.get(normalizedTabId);
+        return isSupportedWebTab(tab) ? tab : null;
+    } catch (_error) {
+        return null;
+    }
+}
+
+async function resolveActiveWebTab(preferredTabId = 0) {
+    for (const tabId of [lastActiveWebTabId, Number(preferredTabId) || 0]) {
+        const tab = await getTabIfSupported(tabId);
+        if (tab) return tab;
+    }
+    const activeTabs = await chrome.tabs.query({ active: true }).catch(() => []);
+    const candidates = activeTabs
+        .filter(isSupportedWebTab)
+        .sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0));
+    if (candidates[0]) {
+        rememberActiveWebTab(candidates[0], false);
+        return candidates[0];
+    }
+    return null;
 }
 
 function getMediaVisualContext(tabId, frameId, mediaUrl) {
@@ -446,6 +599,7 @@ function findMedia(data, isRegex = false, filter = false, timer = false) {
 
     cacheData[data.tabId] ??= [];
     cacheData[G.tabId] ??= [];
+    const captureGeneration = captureGenerationByTab.get(data.tabId) || 0;
 
     // 缓存数据大于9999条 清空缓存 避免内存占用过多
     if (cacheData[data.tabId].length > G.maxLength) {
@@ -478,7 +632,9 @@ function findMedia(data, isRegex = false, filter = false, timer = false) {
 
     chrome.tabs.get(data.tabId, async function (webInfo) {
         if (chrome.runtime.lastError) { return; }
+        if ((captureGenerationByTab.get(data.tabId) || 0) !== captureGeneration) return;
         const visualContext = await getMediaVisualContext(data.tabId, data.frameId, data.url);
+        if ((captureGenerationByTab.get(data.tabId) || 0) !== captureGeneration) return;
         data.requestHeaders = getRequestHeaders(data);
         if (data.mediaMeta?.resolver === "youtube") {
             data.requestHeaders = {
@@ -592,6 +748,7 @@ function findMedia(data, isRegex = false, filter = false, timer = false) {
             info.unboundDouyinMedia = false;
         }
         await enrichManifestQualities(info);
+        if ((captureGenerationByTab.get(data.tabId) || 0) !== captureGeneration) return;
         if (typeof eagleBridgeCandidate === "function") {
             eagleBridgeCandidate(info).catch(function () { return; });
         }
@@ -608,6 +765,7 @@ function findMedia(data, isRegex = false, filter = false, timer = false) {
             : "";
         const capturedFrame = visualFrame || info.resolverFrameDataUrl || cachedFrame
             || await captureVisibleVideoFrame(webInfo, info.frameId, visualContext);
+        if ((captureGenerationByTab.get(data.tabId) || 0) !== captureGeneration) return;
         delete info.resolverFrameDataUrl;
         const frameDataUrl = rememberMediaFrame(info.tabId, info.groupKey, capturedFrame);
         chrome.runtime.sendMessage({
@@ -681,6 +839,14 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
     }
     if (Message.Message == "getMediaPreviews") {
         sendResponse(mediaFramesForTab(Message.tabId ?? G.tabId));
+        return true;
+    }
+    if (Message.Message == "getActiveWebTab") {
+        resolveActiveWebTab(Message.preferredTabId).then(sendResponse);
+        return true;
+    }
+    if (Message.Message == "notifyPageLocationChanged" && sender?.tab?.id) {
+        sendResponse(handleTabLocationChange(sender.tab.id, Message.url, "content"));
         return true;
     }
     if (!G.initLocalComplete || !G.initSyncComplete) {
@@ -802,11 +968,7 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
     if (Message.Message == "clearData") {
         // 当前标签
         if (Message.type) {
-            delete cacheData[Message.tabId];
-            const prefix = `${Number(Message.tabId) || 0}:`;
-            for (const key of mediaFramePreviewCache.keys()) {
-                if (key.startsWith(prefix)) mediaFramePreviewCache.delete(key);
-            }
+            clearCapturedTab(Message.tabId);
             saveMediaData(cacheData);
             clearRedundant();
             sendResponse("OK");
@@ -815,7 +977,7 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
         // 其他标签
         for (let item in cacheData) {
             if (item == Message.tabId) { continue; }
-            delete cacheData[item];
+            clearCapturedTab(item);
         }
         saveMediaData(cacheData);
         clearRedundant();
@@ -870,23 +1032,22 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
  * 更新全局变量 G.tabId 为当前标签
  */
 chrome.tabs.onActivated.addListener(function (activeInfo) {
-    G.tabId = activeInfo.tabId;
-    if (cacheData[G.tabId] !== undefined) {
-        SetIcon({ number: cacheData[G.tabId].length, tabId: G.tabId });
-        return;
-    }
-    SetIcon({ tabId: G.tabId });
+    chrome.tabs.get(activeInfo.tabId, function (tab) {
+        if (chrome.runtime.lastError || !rememberActiveWebTab(tab)) return;
+        if (cacheData[G.tabId] !== undefined) {
+            SetIcon({ number: cacheData[G.tabId].length, tabId: G.tabId });
+            return;
+        }
+        SetIcon({ tabId: G.tabId });
+    });
 });
 
 // 切换窗口，更新全局变量G.tabId
 chrome.windows.onFocusChanged.addListener(function (activeInfo) {
     if (activeInfo == -1) { return; }
     chrome.tabs.query({ active: true, windowId: activeInfo }, function (tabs) {
-        if (tabs[0] && tabs[0].id) {
-            G.tabId = tabs[0].id;
-        } else {
-            G.tabId = -1;
-        }
+        if (chrome.runtime.lastError) return;
+        rememberActiveWebTab(tabs[0]);
     });
 });
 
@@ -936,17 +1097,17 @@ chrome.webNavigation.onCommitted.addListener(function (details) {
 
     // 刷新页面 检查是否在屏蔽列表中
     if (details.frameId == 0) {
+        lastPageUrlByTab.set(details.tabId, String(details.url || ""));
         G.blockUrlSet.delete(details.tabId);
         if (isLockUrl(details.url)) {
             G.blockUrlSet.add(details.tabId);
         }
-
+        announceTabLocationChanged(details.tabId, details.url, "committed");
     }
 
     // 刷新清理角标数
     if (details.frameId == 0 && (!['auto_subframe', 'manual_subframe', 'form_submit'].includes(details.transitionType)) && G.autoClearMode == 1) {
-        delete cacheData[details.tabId];
-        G.urlMap.delete(details.tabId);
+        clearCapturedTab(details.tabId, true);
         saveMediaData(cacheData);
         SetIcon({ tabId: details.tabId });
     }
@@ -978,12 +1139,11 @@ chrome.webNavigation.onCommitted.addListener(function (details) {
  * 监听 标签关闭 清理数据
  */
 chrome.tabs.onRemoved.addListener(function (tabId) {
-    youtubeRequestContextByTab.delete(tabId);
-    resolverRequestContextByTab.delete(tabId);
-    const framePrefix = `${Number(tabId) || 0}:`;
-    for (const key of mediaFramePreviewCache.keys()) {
-        if (key.startsWith(framePrefix)) mediaFramePreviewCache.delete(key);
-    }
+    clearCapturedTab(tabId, true);
+    lastPageUrlByTab.delete(tabId);
+    pendingPageLocationByTab.delete(tabId);
+    pageLocationInitializationWaitByTab.delete(tabId);
+    if (lastActiveWebTabId === Number(tabId)) lastActiveWebTabId = 0;
     // 清理缓存数据
     chrome.alarms.get("nowClear", function (alarm) {
         !alarm && chrome.alarms.create("nowClear", { when: Date.now() + 1000 });
@@ -1170,6 +1330,19 @@ function clearRedundant() {
         G.urlMap.forEach((_, key) => {
             !allTabId.has(key) && G.urlMap.delete(key);
         });
+        captureGenerationByTab.forEach((_, key) => {
+            !allTabId.has(key) && captureGenerationByTab.delete(key);
+        });
+        lastPageUrlByTab.forEach((_, key) => {
+            !allTabId.has(key) && lastPageUrlByTab.delete(key);
+        });
+        pendingPageLocationByTab.forEach((_, key) => {
+            !allTabId.has(key) && pendingPageLocationByTab.delete(key);
+        });
+        pageLocationInitializationWaitByTab.forEach((_, key) => {
+            !allTabId.has(key) && pageLocationInitializationWaitByTab.delete(key);
+        });
+        if (!allTabId.has(lastActiveWebTabId)) lastActiveWebTabId = 0;
 
         // 清理脚本
         G.scriptList.forEach(function (scriptList) {

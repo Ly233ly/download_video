@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import base64
 import fnmatch
+import ipaddress
 import json
 import os
 import re
@@ -136,6 +137,17 @@ class WinInetRegistryBackend:
                     pass
         self.notify()
 
+    def disable_manual_proxy(self) -> None:
+        if os.name != "nt":
+            return
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+        self.notify()
+
     def restore(self, snapshot: ProxySnapshot) -> None:
         if os.name != "nt":
             return
@@ -222,6 +234,41 @@ class WinInetProxyLease:
             raise apply_error
         return snapshot
 
+    def reacquire(self, endpoint: str) -> bool:
+        """Reclaim the proxy after another app changed it, restoring that app on stop."""
+        current = self.backend.snapshot()
+        if self._is_owned(current, endpoint):
+            return False
+        payload = {
+            "instanceId": self.instance_id,
+            "endpoint": endpoint,
+            "createdAt": time.time(),
+            "snapshot": current.to_json(),
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(self.path)
+        self.snapshot = current
+        self.endpoint = endpoint
+        try:
+            self.backend.apply_local(endpoint, "<local>;127.*;localhost")
+        except Exception as apply_error:
+            try:
+                self.backend.restore(current)
+            except Exception as restore_error:
+                raise CaptureProxyError(
+                    "重新接管代理失败，且接管前的代理暂未恢复；恢复记录已保留"
+                ) from restore_error
+            self.snapshot = None
+            self.endpoint = ""
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            raise apply_error
+        return True
+
     def release(self) -> bool:
         if self.snapshot is None:
             return False
@@ -291,6 +338,32 @@ def upstream_http_proxy(snapshot: ProxySnapshot) -> tuple[str, int] | None:
         return parsed.hostname, parsed.port
     except ValueError:
         return None
+
+
+def proxy_endpoint_is_loopback(endpoint: tuple[str, int] | None) -> bool:
+    if not endpoint:
+        return False
+    host = endpoint[0].lower().strip("[]").rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def proxy_endpoint_reachable(
+    endpoint: tuple[str, int] | None,
+    timeout: float = 0.35,
+) -> bool:
+    if not endpoint:
+        return False
+    try:
+        connection = socket.create_connection(endpoint, timeout=timeout)
+    except OSError:
+        return False
+    connection.close()
+    return True
 
 
 def upstream_proxy_bypass(snapshot: ProxySnapshot) -> tuple[str, ...]:

@@ -63,7 +63,7 @@
 | EXT-005 | 401 竞态不能清除刚写入的新令牌；所有扩展持久状态使用串行读改写队列 | `eagle-bridge-auth-logic.js:createStateUpdateQueue`、`unauthorizedAction`；`eagle-bridge.js:eagleBridgeUpdateState`、`eagleBridgeApi` | `PairingManager.authenticate` | `tests/js/test_auth_race.js`；A131、A133 |
 | EXT-006 | 当前网站“记录来源并自动导入 Eagle”开关；规则关闭不影响媒体下载 | `eagle-bridge-ui.js:refreshSite`、`changeSite`、`renderSettings`；`eagle-bridge.js:eagleBridgeSiteStatus` | bridge 消息 `siteStatus`、`setSite`；`POST /api/site/status`、`POST /api/site`；`LocalApi.site_status`、`set_site` | `tests/test_security_api.py`、`tests/test_database.py`；A07–A10 |
 | EXT-007 | 手动记录当前页、忽略下一次 IDM 导入、自动捕获下载点击；离线事件本地排队并补发 | `eagle-bridge-ui.js:settingsAction`；`eagle-bridge.js:eagleBridgeExplicitSource`、`eagleBridgeSourceClick`、`eagleBridgeQueueSourceEvent`、`eagleBridgeFlushEvents`；`content.js:downloadAction` | bridge 消息 `manualSource`、`ignoreNext`、`sourceClick`、`source`；`POST /api/source`；`LocalApi.add_source` | `tests/test_extension.py`、`tests/test_security_api.py`、`tests/test_database.py`；A08、A09 |
-| EXT-008 | 暂停/继续当前捕获、清空当前页候选、打开独立窗口、增强发现入口 | `eagle-bridge-ui.js:runTool`、`settingsAction`；`background.js` 消息 `enable`、`clearData`、`script` | 无远程下载 API；仅扩展会话状态 | `tests/test_extension.py`、`tests/js/test_popup_logic.js`；A145–A148 |
+| EXT-008 | 暂停/继续当前捕获、清空当前页候选、打开独立窗口、增强发现入口；清空时使已在途的旧异步识别回调失效。独立窗口跟随最近活动的 HTTP(S) 标签，不被插件窗口自身焦点覆盖 | `eagle-bridge-ui.js:runTool`、`settingsAction`、`refreshTrackedPage`；`background.js:clearCapturedTab`、`rememberActiveWebTab`、`resolveActiveWebTab`，消息 `enable`、`clearData`、`script`、`getActiveWebTab` | 无远程下载 API；仅扩展会话状态 | `tests/test_extension.py`、`tests/js/test_popup_logic.js`；A145–A148、A245、A248 |
 | EXT-009 | 简体中文、繁体中文、英文文案；图标按钮有可读文本或 `aria-label`，键盘 Escape 可关闭浮层 | `eagle-bridge-ui.js:zhHans`、`zhHant`、`en`、`strings`、`t`、`icon` 及根节点事件处理 | 无 | `tests/test_extension.py`；A79、A101 |
 
 ### 3.2 媒体发现、身份与预览
@@ -72,7 +72,7 @@
 | --- | --- | --- | --- | --- |
 | EXT-010 | 按扩展名、MIME、附件名和安全正则发现 HTTP(S) 媒体，保存当前标签快照并更新角标 | `background.js:findMedia`、`CheckExtension`、`CheckType`、`getResponseHeadersValue`、`save`、`updateVisibleMediaCount` | 无 | `tests/test_extension.py`、`tests/js/test_candidate_presentation.js`；A46、A50–A53 |
 | EXT-011 | 只把白名单请求头作为短时任务上下文；Cookie、Authorization、完整签名 URL 和瞬时帧不得进入扩展持久存储 | `background.js:getRequestHeaders`、`youtubeRequestContextByTab`、`resolverRequestContextByTab`；`eagle-bridge.js:eagleBridgePrivateHeaders` | `MediaCoordinator.create_plan` 将运行时上下文保存在进程内存 | `tests/test_security_api.py`、`tests/test_media.py`；A80、A111、A114 |
-| EXT-012 | 普通页面从 video、结构化元数据、附近内容和稳定内容页发现候选；持续 DOM 变化不能饿死扫描 | `content-script.js:discoverStructuredPlayerMedia`、`discoverPageResolvers`、`discoverStructuredPageResolver`、`startPageResolverDiscovery`；`eagle-bridge-candidate-logic.js:createBoundedScheduler`、`createKeyedBoundedScheduler` | 页面解析计划进入 `MediaCoordinator._resolve_page_streams` | `tests/js/test_candidate_presentation.js`、`tests/test_extension.py`；A159–A163、A169–A179 |
+| EXT-012 | 普通页面从 video、结构化元数据、附近内容和稳定内容页发现候选；持续 DOM 变化不能饿死扫描。任意站点的 History API、查询或片段地址变化都会重置旧页面发现状态并分阶段重扫 | `content-script.js:discoverStructuredPlayerMedia`、`discoverPageResolvers`、`resetPageDiscovery`、`initializePageLocationTracking`；`background.js:handleTabLocationChange`；`eagle-bridge-candidate-logic.js:createBoundedScheduler`、`createKeyedBoundedScheduler`、`createLocationChangeTracker` | 页面解析计划进入 `MediaCoordinator._resolve_page_streams` | `tests/js/test_candidate_presentation.js`、`tests/test_extension.py`；A159–A163、A169–A179、A247 |
 | EXT-013 | B 站从结构化播放数据提取同一内容的视频轨、音轨、标题、封面和质量，按同一内容组提交 | `bilibili-content.js`；`catch-script/bilibili.js:collect`、`publish`、`scan` | 普通 `createPlan`，本机 FFmpeg streamcopy | `tests/js/test_bilibili.js`、`tests/test_media.py`；A66、A67、A103 |
 | EXT-014 | YouTube 从播放器目录提取 videoId、标题、缩略图、时长、实际唯一高度、视频/音频格式；SABR 无直链时仍保留高度选择 | `youtube-content.js`；`catch-script/youtube.js:collect`、`inspectPlayerResponse`、`publish`、`scan` | `MediaCoordinator._resolve_youtube_streams` | `tests/js/test_youtube.js`、`tests/test_media.py`；A152–A158 |
 | EXT-015 | 通用 HLS/DASH 主清单在 2 MB/4 秒门禁内读取实际质量；读取失败不猜档位，也不阻止本机自动选择 | `background.js:readBoundedManifestText`、`enrichManifestQualities`；`eagle-bridge-candidate-logic.js:parseManifestQualities` | `MediaCoordinator._probe_manifest_stream_indexes`、`_select_manifest_stream_indexes` | `tests/js/test_candidate_presentation.js`、`tests/test_media.py`；A119–A124 |
@@ -105,6 +105,7 @@
 | EXT-032 | 活跃任务可停止，失败任务可在同次运行重试；操作只影响目标 `planId` | `stopTask`、`retryTask` | bridge `stopPlan`、`retryPlan`；`POST /api/media/stop`、`POST /api/media/retry`；`MediaCoordinator.stop_plan`、`retry_plan` | `tests/js/test_popup_logic.js`、`tests/test_media.py`；A83、A99 |
 | EXT-033 | `completed_local` 显示 100%、最终路径和“打开所在文件夹”；接口只接收 `planId`，不能传任意路径 | `openTaskFolder`、`taskView` | bridge `openPlanOutput`；`POST /api/media/open`；`MediaCoordinator.open_plan_output`、`_owned_plan_file` | `tests/js/test_popup_logic.js`、`tests/test_media.py`；A107、A126 |
 | EXT-034 | `completed_local` 可补导 Eagle，不重新下载；重复操作幂等，进入 `ready_to_import`/Eagle 队列 | `importExistingTask`、`taskView` | bridge `importPlan`；`POST /api/media/import`；`MediaCoordinator.import_completed_plan` | `tests/js/test_popup_logic.js`、`tests/test_media.py`、`tests/test_processor.py`；A147 |
+| EXT-035 | 每条任务都可“清理记录”；活动目标先停止，只移除指定 `planId` 及关联队列记录，保留下载/预览文件与 Eagle 内容 | `renderTasks`、`removeTask` | bridge `removePlan`；`POST /api/media/remove`；`MediaCoordinator.remove_plan` | `tests/test_extension.py`、`tests/test_security_api.py`、`tests/test_media.py`；A222、A245 |
 
 ## 4. 桌面界面功能
 
@@ -112,7 +113,7 @@
 
 | ID | 重构后必须保留的功能 | 桌面文件与函数 | 依赖 | 回归证据 |
 | --- | --- | --- | --- | --- |
-| DESK-001 | 主窗口左侧显示“下载任务 / 视频号 / IDM 导入 / 设置”，底部为诊断；顶部显示 Eagle、服务、Chrome 与版本 | `ui.py:MainWindow._build`、`_show_page` | `Database`、`LocalApiServer`、`ProcessingService` | `tests/test_ui_layout.py`、视觉 QA；A227 |
+| DESK-001 | 主窗口左侧显示“下载任务 / 视频号 / IDM 导入 / 设置”，底部为诊断；顶部显示 Eagle、服务、Chrome 与版本；Windows 原生标题栏跟随深色外壳并保留全部系统窗口行为 | `ui.py:MainWindow._build`、`_show_page`、`_apply_windows_dark_title_bar` | `Database`、`LocalApiServer`、`ProcessingService`、Windows DWM | `tests/test_ui_layout.py`、视觉 QA；A227、A246 |
 | DESK-002 | 五个页面都可到达；窗口高度不足时外层纵向滚动，Treeview/Combobox 保留自身滚轮 | `_VerticalScrolledFrame`、`MainWindow._build_*_tab` | Tk | `tests/test_ui_layout.py`、视觉 QA；A221、A228 |
 | DESK-003 | 手动刷新、自动刷新和窗口隐藏降频；Eagle 慢探测后台单飞，表格只更新变化行，预览缓存复用 | `_AsyncProbe`、`_PreviewImageCache`、`_sync_tree_rows`、`MainWindow.refresh` | `Database.ui_snapshot`、`MediaCoordinator.health` | `tests/test_ui_layout.py`；A224 |
 | DESK-004 | 复制六位配对码、解除 Chrome 配对并即时刷新状态 | `copy_pairing_code`、`unpair` | `PairingManager.pairing_code`、`unpair` | `tests/test_security_api.py` |
@@ -127,7 +128,7 @@
 | DESK-008 | 选中任务显示本机预览、输出位置、错误和详细状态；未完成时显示明确预览状态 | `selected_plan`、`_update_plan_detail` | `MediaCoordinator.get_plan_preview` | `tests/test_ui_layout.py`、`tests/test_media.py` |
 | DESK-009 | 停止、重试、打开文件位置、打开来源网页 | `stop_selected_plan`、`retry_selected_plan`、`open_plan_location`、`open_plan_source` | `MediaCoordinator.stop_plan`、`retry_plan`、`open_plan_output` | `tests/test_media.py` |
 | DESK-010 | 已完成的仅下载文件可补导 Eagle，不重新下载 | `import_selected_plan` | `MediaCoordinator.import_completed_plan` | `tests/test_media.py`、`tests/test_processor.py`；A147 |
-| DESK-011 | 清除已完成媒体记录只删除终态记录；不删下载/预览文件，不影响活动任务或 Eagle | `clear_media_history` | `MediaCoordinator.clear_terminal_history` | `tests/test_media.py`；A222 |
+| DESK-011 | “清除完成”只批量删除终态记录；任意单条任务可右键“清理任务（保留文件）”，活动目标先停止。两者都不删下载/预览文件或 Eagle 内容 | `clear_media_history`、`remove_selected_plan`、`_show_media_context_menu` | `MediaCoordinator.clear_terminal_history`、`remove_plan` | `tests/test_media.py`、`tests/test_ui_layout.py`；A222、A245 |
 
 ### 4.3 IDM 导入记录标签
 
@@ -136,7 +137,7 @@
 | DESK-012 | 表格显示时间、状态、文件、来源网站和说明 | `MainWindow._build_idm_tab`、`refresh` | `Database.list_jobs`、`ui_snapshot` | `tests/test_ui_layout.py`、`tests/test_processor.py` |
 | DESK-013 | 失败/等待任务可重试；打开文件位置和可靠来源网页 | `retry_selected`、`open_file_location`、`open_source` | `Database.retry_job` | `tests/test_processor.py` |
 | DESK-014 | 可为未导入任务补充来源；已导入且有 Eagle item ID 时直接更新来源，不重复导入文件 | `assign_source` | `Database.assign_source`、`record_imported_source`；`EagleClient.update_source` | `tests/test_database.py`、`tests/test_eagle.py`；A12 |
-| DESK-015 | 清除已完成 IDM 记录只删终态记录，不删 IDM/用户文件，不修改 Eagle | `clear_history` | `Database.clear_terminal_history` | `tests/test_database.py`；A222 |
+| DESK-015 | “清除完成”只批量删除终态 IDM 记录；单条记录可在右键菜单或详情区执行“清理记录”，并安全解除关联媒体计划。两者都不删 IDM/用户文件，不修改 Eagle | `clear_history`、`remove_selected_job`、`_show_job_context_menu` | `Database.clear_terminal_history`、`remove_job` | `tests/test_database.py`、`tests/test_media.py`、`tests/test_ui_layout.py`；A222、A245 |
 
 ### 4.4 微信视频号标签
 
@@ -203,6 +204,8 @@
 | 重试计划 | `retryPlan` | `POST /api/media/retry` | `MediaCoordinator.retry_plan` |
 | 打开输出目录 | `openPlanOutput` | `POST /api/media/open` | `MediaCoordinator.open_plan_output` |
 | 补导现有文件 | `importPlan` | `POST /api/media/import` | `MediaCoordinator.import_completed_plan` |
+| 批量清除终态计划 | `clearPlans` | `POST /api/media/clear` | `MediaCoordinator.clear_terminal_history` |
+| 清理单个计划记录 | `removePlan` | `POST /api/media/remove` | `MediaCoordinator.remove_plan` |
 
 兼容 GET 路由仍由 `api_server.py:build_handler` 保留，但活动 popup 的认证读取必须使用带 JSON 请求体的 POST。
 

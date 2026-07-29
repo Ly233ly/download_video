@@ -1,0 +1,43 @@
+{
+  "startup_ms": 407.59,
+  "initial_widget_count": 223,
+  "final_widget_count": 337,
+  "python_memory_initial_mb": 0.716,
+  "python_memory_current_mb": 0.87,
+  "python_memory_peak_mb": 0.874,
+  "build_ms": {
+    "_build_media_tab": 46.526,
+    "_build_wechat_tab": 33.722,
+    "_build_idm_tab": 39.664,
+    "_build_settings_tab": 26.518,
+    "_build_diagnostics_tab": 14.329
+  },
+  "refresh_warm": {
+    "mean_ms": 5.913,
+    "p95_ms": 6.491,
+    "max_ms": 7.919
+  },
+  "refresh_forced": {
+    "mean_ms": 6.356,
+    "p95_ms": 6.984,
+    "max_ms": 6.984
+  },
+  "first_page_switch_ms": {
+    "media": 10.615,
+    "wechat": 76.988,
+    "idm": 76.617,
+    "settings": 48.906,
+    "diagnostics": 37.27
+  },
+  "warm_page_switch_mean_ms": {
+    "media": 7.069,
+    "wechat": 16.114,
+    "idm": 7.669,
+    "settings": 7.766,
+    "diagnostics": 8.337
+  },
+  "rapid_resize_60_steps_ms": 77.168,
+  "wheel_dispatch_120_events_ms": 1.455,
+  "wheel_router_scrollers": 7,
+  "pending_tk_callbacks": 0
+}

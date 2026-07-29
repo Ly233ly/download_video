@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
+import statistics
 import struct
 import tempfile
 import time
+import tracemalloc
 import zlib
 from ctypes import wintypes
 from pathlib import Path
@@ -109,8 +112,13 @@ def _show_fixture_without_activation(window: MainWindow) -> tuple[int, int]:
     return client_hwnd, top_hwnd
 
 
-def _capture_fixture_window(window: MainWindow, destination: Path) -> None:
-    """Capture only this fixture's client area without input hooks or activation."""
+def _capture_fixture_window(
+    window: MainWindow,
+    destination: Path,
+    *,
+    include_window_frame: bool = False,
+) -> None:
+    """Capture this fixture without input hooks or activation."""
 
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
@@ -126,22 +134,28 @@ def _capture_fixture_window(window: MainWindow, destination: Path) -> None:
     )
     window.root.update()
 
+    target_hwnd = top_hwnd if include_window_frame else client_hwnd
     window_bounds = wintypes.RECT()
-    if not user32.GetClientRect(client_hwnd, ctypes.byref(window_bounds)):
+    bounds_reader = user32.GetWindowRect if include_window_frame else user32.GetClientRect
+    if not bounds_reader(target_hwnd, ctypes.byref(window_bounds)):
         raise ctypes.WinError()
     width = window_bounds.right - window_bounds.left
     height = window_bounds.bottom - window_bounds.top
     if width <= 0 or height <= 0:
         raise RuntimeError(f"invalid fixture window size: {width}x{height}")
 
-    window_dc = user32.GetDC(client_hwnd)
+    window_dc = (
+        user32.GetWindowDC(target_hwnd)
+        if include_window_frame
+        else user32.GetDC(target_hwnd)
+    )
     memory_dc = gdi32.CreateCompatibleDC(window_dc)
     bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
     previous = gdi32.SelectObject(memory_dc, bitmap)
     try:
         pw_renderfullcontent = 0x00000002
         if not user32.PrintWindow(
-            client_hwnd,
+            target_hwnd,
             memory_dc,
             pw_renderfullcontent,
         ):
@@ -170,7 +184,7 @@ def _capture_fixture_window(window: MainWindow, destination: Path) -> None:
         gdi32.SelectObject(memory_dc, previous)
         gdi32.DeleteObject(bitmap)
         gdi32.DeleteDC(memory_dc)
-        user32.ReleaseDC(client_hwnd, window_dc)
+        user32.ReleaseDC(target_hwnd, window_dc)
         user32.ShowWindow(top_hwnd, 0)
 
     rgb = bytearray(width * height * 3)
@@ -178,6 +192,157 @@ def _capture_fixture_window(window: MainWindow, destination: Path) -> None:
     rgb[1::3] = bgra[1::4]
     rgb[2::3] = bgra[0::4]
     _write_rgb_png(destination, width, height, bytes(rgb))
+
+
+def _widget_count(widget: object) -> int:
+    children = list(widget.winfo_children())
+    return 1 + sum(_widget_count(child) for child in children)
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(
+        len(ordered) - 1,
+        max(0, round((len(ordered) - 1) * percentile)),
+    )
+    return ordered[index]
+
+
+def _measure_ui_performance(
+    window: MainWindow,
+    *,
+    startup_ms: float,
+    build_timings: dict[str, list[float]],
+    iterations: int,
+) -> dict[str, object]:
+    root = window.root
+    root.update()
+    if window.performance_after_id:
+        root.after_cancel(window.performance_after_id)
+        window.performance_after_id = None
+    if window.prewarm_after_id:
+        root.after_cancel(window.prewarm_after_id)
+        window.prewarm_after_id = None
+    if window.window_settle_after_id:
+        root.after_cancel(window.window_settle_after_id)
+        window.window_settle_after_id = None
+    window.window_interaction_active = False
+    initial_widget_count = _widget_count(root)
+    initial_memory, _initial_peak = tracemalloc.get_traced_memory()
+
+    def cancel_refresh() -> None:
+        if window.refresh_after_id:
+            root.after_cancel(window.refresh_after_id)
+            window.refresh_after_id = None
+
+    def sample(callback, count: int) -> list[float]:
+        durations = []
+        for _index in range(max(1, count)):
+            started = time.perf_counter()
+            callback()
+            root.update_idletasks()
+            durations.append((time.perf_counter() - started) * 1000)
+            cancel_refresh()
+        return durations
+
+    refresh_warm = sample(lambda: window.refresh(force=False), iterations)
+    refresh_forced = sample(
+        lambda: window.refresh(force=True),
+        max(3, iterations // 4),
+    )
+
+    first_page_switch: dict[str, float] = {}
+    warm_page_switch: dict[str, float] = {}
+    pages = ("media", "wechat", "idm", "settings", "diagnostics")
+    for page in pages:
+        first_page_switch[page] = sample(
+            lambda value=page: window._show_page(value),
+            1,
+        )[0]
+    for page in pages:
+        warm_page_switch[page] = statistics.mean(
+            sample(lambda value=page: window._show_page(value), 3)
+        )
+    window._show_page("media")
+    root.update_idletasks()
+
+    wheel_dispatch_ms = 0.0
+    wheel_router = getattr(root, "_mousewheel_router", None)
+    if wheel_router is not None and window.plan_card_widgets:
+        first_card = next(iter(window.plan_card_widgets.values()))
+        wheel_target = first_card.get("title", window.plan_card_list.content)
+        wheel_started = time.perf_counter()
+        for index in range(120):
+            wheel_router._dispatch(
+                SimpleNamespace(
+                    widget=wheel_target,
+                    delta=-120 if index % 2 == 0 else 120,
+                )
+            )
+        root.update_idletasks()
+        wheel_dispatch_ms = (time.perf_counter() - wheel_started) * 1000
+
+    base_width = max(900, root.winfo_width())
+    base_height = max(600, root.winfo_height())
+    resize_sizes = [
+        (
+            base_width + ((index % 9) - 4) * 18,
+            base_height + ((index % 7) - 3) * 12,
+        )
+        for index in range(60)
+    ]
+    resize_started = time.perf_counter()
+    for width, height in resize_sizes:
+        root.geometry(f"{width}x{height}")
+        root.update_idletasks()
+    root.geometry(f"{base_width}x{base_height}")
+    root.update()
+    resize_ms = (time.perf_counter() - resize_started) * 1000
+    cancel_refresh()
+
+    current_memory, peak_memory = tracemalloc.get_traced_memory()
+    return {
+        "startup_ms": round(startup_ms, 3),
+        "initial_widget_count": initial_widget_count,
+        "final_widget_count": _widget_count(root),
+        "python_memory_initial_mb": round(initial_memory / 1024 / 1024, 3),
+        "python_memory_current_mb": round(current_memory / 1024 / 1024, 3),
+        "python_memory_peak_mb": round(peak_memory / 1024 / 1024, 3),
+        "build_ms": {
+            name: round(sum(values), 3)
+            for name, values in build_timings.items()
+        },
+        "refresh_warm": {
+            "mean_ms": round(statistics.mean(refresh_warm), 3),
+            "p50_ms": round(_percentile(refresh_warm, 0.50), 3),
+            "p95_ms": round(_percentile(refresh_warm, 0.95), 3),
+            "max_ms": round(max(refresh_warm), 3),
+        },
+        "refresh_forced": {
+            "mean_ms": round(statistics.mean(refresh_forced), 3),
+            "p50_ms": round(_percentile(refresh_forced, 0.50), 3),
+            "p95_ms": round(_percentile(refresh_forced, 0.95), 3),
+            "max_ms": round(max(refresh_forced), 3),
+        },
+        "first_page_switch_ms": {
+            key: round(value, 3)
+            for key, value in first_page_switch.items()
+        },
+        "warm_page_switch_mean_ms": {
+            key: round(value, 3)
+            for key, value in warm_page_switch.items()
+        },
+        "rapid_resize_60_steps_ms": round(resize_ms, 3),
+        "wheel_dispatch_120_events_ms": round(wheel_dispatch_ms, 3),
+        "wheel_router_scrollers": (
+            len(wheel_router.scrollers)
+            if wheel_router is not None
+            else 0
+        ),
+        "pending_tk_callbacks": len(root.tk.call("after", "info")),
+    }
 
 
 class _FakeNetworkProxy:
@@ -343,6 +508,30 @@ class _FakeMedia:
     def list_plans(self, _limit: int) -> list[dict[str, object]]:
         return self.plans
 
+    def ui_summary(self) -> dict[str, int | float]:
+        active_statuses = {
+            "queued",
+            "downloading",
+            "merging",
+            "validating",
+            "ready_to_import",
+        }
+        return {
+            "total": len(self.plans),
+            "active": sum(
+                1
+                for plan in self.plans
+                if str(plan.get("status") or "") in active_statuses
+            ),
+            "revision": max(
+                (
+                    float(plan.get("updated_at") or 0)
+                    for plan in self.plans
+                ),
+                default=0.0,
+            ),
+        }
+
     def stop_plan(self, _plan_id: str) -> None:
         return None
 
@@ -424,7 +613,8 @@ class _FakeWechatChannels:
                 }
                 for index in range(20)
             ]
-            self._candidates.reverse()
+        if self._candidates:
+            self._candidates = self._candidates[:1]
 
     def health(self) -> dict[str, object]:
         return {
@@ -432,7 +622,7 @@ class _FakeWechatChannels:
             "running": True,
             "candidateCount": len(self._candidates),
             "endpoint": "127.0.0.1:8899",
-            "lastEvent": "已识别 2 个媒体候选组",
+            "lastEvent": "当前视频已识别",
         }
 
     def candidates(self) -> list[dict[str, object]]:
@@ -467,17 +657,38 @@ def main() -> None:
     )
     parser.add_argument(
         "--settings-tab",
-        choices=("pairing", "sites", "network", "updates"),
+        choices=("pairing", "sites", "network", "storage", "updates"),
         default="pairing",
     )
     parser.add_argument("--selected-id", default="")
     parser.add_argument("--scroll-detail-bottom", action="store_true")
+    parser.add_argument(
+        "--resize-stress",
+        action="store_true",
+        help="Resize the visible fixture repeatedly before capture.",
+    )
+    parser.add_argument(
+        "--navigate-after-show",
+        action="store_true",
+        help="Show the media page first, then navigate to the requested page.",
+    )
+    parser.add_argument(
+        "--metrics-json",
+        type=Path,
+        help="Write repeatable desktop UI timing and resource metrics.",
+    )
+    parser.add_argument("--metrics-iterations", type=int, default=20)
     parser.add_argument(
         "--screenshot",
         type=Path,
         help="Capture only the fixture window to PNG without activating it.",
     )
     parser.add_argument("--screenshot-delay-ms", type=int, default=250)
+    parser.add_argument(
+        "--include-window-frame",
+        action="store_true",
+        help="Include the Windows title bar and frame in the screenshot.",
+    )
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="download-transfer-station-visual-") as folder:
@@ -530,35 +741,146 @@ def main() -> None:
                 wechat_channels=_FakeWechatChannels(args.scenario),
             ),
         )
-        window = MainWindow(
-            database,
-            api_server,
-            _FakeProcessing(),
-            visual_capture_hidden=bool(args.screenshot),
-            visual_capture_geometry=args.geometry if args.screenshot else None,
+        build_timings: dict[str, list[float]] = {}
+        original_builders: dict[str, object] = {}
+        builder_names = (
+            "_build_media_tab",
+            "_build_wechat_tab",
+            "_build_idm_tab",
+            "_build_settings_tab",
+            "_build_diagnostics_tab",
         )
+        if args.metrics_json:
+            tracemalloc.start()
+            for builder_name in builder_names:
+                original = getattr(MainWindow, builder_name)
+                original_builders[builder_name] = original
+
+                def timed_builder(
+                    instance: MainWindow,
+                    *builder_args: object,
+                    _name: str = builder_name,
+                    _original=original,
+                    **builder_kwargs: object,
+                ):
+                    started = time.perf_counter()
+                    try:
+                        return _original(
+                            instance,
+                            *builder_args,
+                            **builder_kwargs,
+                        )
+                    finally:
+                        build_timings.setdefault(_name, []).append(
+                            (time.perf_counter() - started) * 1000
+                        )
+
+                setattr(MainWindow, builder_name, timed_builder)
+        startup_started = time.perf_counter()
+        try:
+            window = MainWindow(
+                database,
+                api_server,
+                _FakeProcessing(),
+                visual_capture_hidden=bool(args.screenshot or args.metrics_json),
+                visual_capture_geometry=(
+                    args.geometry
+                    if args.screenshot or args.metrics_json
+                    else None
+                ),
+            )
+        except Exception:
+            for builder_name, original in original_builders.items():
+                setattr(MainWindow, builder_name, original)
+            if args.metrics_json:
+                tracemalloc.stop()
+            raise
+        startup_ms = (time.perf_counter() - startup_started) * 1000
         window.root.geometry(args.geometry)
-        window._show_page(args.page)
-        if args.page == "settings":
-            window._settings_show_tab(args.settings_tab)
-        elif args.page == "media" and args.selected_id:
-            window._select_plan_card(args.selected_id)
-        elif args.page == "wechat" and args.selected_id:
-            window._select_wechat_card(args.selected_id)
+        deferred_navigation = bool(
+            args.screenshot
+            and args.navigate_after_show
+            and args.page != "media"
+        )
+
+        def apply_requested_state() -> None:
+            window._show_page(args.page)
+            if args.page == "settings":
+                window._settings_show_tab(args.settings_tab)
+            elif args.page == "media" and args.selected_id:
+                window._select_plan_card(args.selected_id)
+            elif args.page == "wechat" and args.selected_id:
+                window._select_wechat_card(args.selected_id)
+
+        if not deferred_navigation:
+            apply_requested_state()
         window._visual_scroll_detail_bottom = args.scroll_detail_bottom
         if window.auto_update_after_id:
             window.root.after_cancel(window.auto_update_after_id)
             window.auto_update_after_id = None
+        if args.metrics_json:
+            try:
+                metrics = _measure_ui_performance(
+                    window,
+                    startup_ms=startup_ms,
+                    build_timings=build_timings,
+                    iterations=max(1, args.metrics_iterations),
+                )
+                args.metrics_json.parent.mkdir(parents=True, exist_ok=True)
+                args.metrics_json.write_text(
+                    json.dumps(metrics, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            finally:
+                for builder_name, original in original_builders.items():
+                    setattr(MainWindow, builder_name, original)
+                tracemalloc.stop()
+            if not args.screenshot:
+                window.quit()
+                return
         if args.screenshot:
             def finish_capture() -> None:
                 try:
-                    _capture_fixture_window(window, args.screenshot)
+                    _capture_fixture_window(
+                        window,
+                        args.screenshot,
+                        include_window_frame=args.include_window_frame,
+                    )
                 finally:
                     window.root.destroy()
 
             def prepare_capture() -> None:
                 _show_fixture_without_activation(window)
-                window.root.after(120, finish_capture)
+                if deferred_navigation:
+                    apply_requested_state()
+                    window.root.update()
+                if not args.resize_stress:
+                    window.root.after(
+                        240 if deferred_navigation else 120,
+                        finish_capture,
+                    )
+                    return
+
+                target_width, target_height = (
+                    int(value)
+                    for value in args.geometry.lower().split("x", 1)
+                )
+                sizes = [
+                    (max(900, target_width - 130), max(600, target_height - 90)),
+                    (target_width + 120, target_height + 70),
+                    (max(900, target_width - 60), target_height + 35),
+                    (target_width, target_height),
+                ]
+
+                def resize_step(index: int = 0) -> None:
+                    if index >= len(sizes):
+                        window.root.after(260, finish_capture)
+                        return
+                    width, height = sizes[index]
+                    window.root.geometry(f"{width}x{height}")
+                    window.root.after(35, lambda: resize_step(index + 1))
+
+                resize_step()
 
             window.root.after(max(0, args.screenshot_delay_ms), prepare_capture)
         window.root.mainloop()

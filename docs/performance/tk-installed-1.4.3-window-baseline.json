@@ -1,0 +1,92 @@
+{
+  "captured_at": "2026-07-29T21:00:00+08:00",
+  "scope": "currently installed frozen application, isolated temporary data directory",
+  "installed_version": "1.4.3",
+  "install_directory": "%LOCALAPPDATA%\\IDM-Eagle自动导入助手",
+  "backend_executable": "%LOCALAPPDATA%\\IDM-Eagle自动导入助手\\runtime\\下载中转站后台\\下载中转站后台.exe",
+  "backend_sha256": "4A8518078639208F8B7CCCA394BE75538A786F2DC096E2DAF8F74C528C63EFF0",
+  "method": "launch the installed frozen backend with an isolated temporary data directory, poll for the visible top-level window, sample the process about 0.4 seconds after window creation, then close it",
+  "window_creation_ms": [
+    755.7,
+    795.1,
+    992.7
+  ],
+  "window_creation_median_ms": 795.1,
+  "process_samples": [
+    {
+      "rss_mb": 51.5,
+      "private_mb": 31.3,
+      "thread_count": 9
+    },
+    {
+      "rss_mb": 51.7,
+      "private_mb": 31.4,
+      "thread_count": 10
+    },
+    {
+      "rss_mb": 51.6,
+      "private_mb": 31.4,
+      "thread_count": 10
+    }
+  ],
+  "idle_soak_seconds": 30,
+  "idle_soak_samples": [
+    {
+      "second": 1,
+      "rss_mb": 63.4,
+      "private_mb": 36.9,
+      "thread_count": 21,
+      "cpu_percent": 1.5
+    },
+    {
+      "second": 5,
+      "rss_mb": 63.7,
+      "private_mb": 37.2,
+      "thread_count": 21,
+      "cpu_percent": 0.0
+    },
+    {
+      "second": 10,
+      "rss_mb": 64.8,
+      "private_mb": 37.3,
+      "thread_count": 22,
+      "cpu_percent": 0.0
+    },
+    {
+      "second": 15,
+      "rss_mb": 65.2,
+      "private_mb": 37.5,
+      "thread_count": 21,
+      "cpu_percent": 0.0
+    },
+    {
+      "second": 20,
+      "rss_mb": 65.2,
+      "private_mb": 37.5,
+      "thread_count": 21,
+      "cpu_percent": 0.0
+    },
+    {
+      "second": 25,
+      "rss_mb": 65.2,
+      "private_mb": 37.5,
+      "thread_count": 21,
+      "cpu_percent": 0.0
+    },
+    {
+      "second": 30,
+      "rss_mb": 65.2,
+      "private_mb": 37.6,
+      "thread_count": 23,
+      "cpu_percent": 0.3
+    }
+  ],
+  "comparison_to_current_source": {
+    "installed_median_window_creation_slower_percent": 62.7
+  },
+  "limitations": [
+    "Frozen startup includes PyInstaller extraction, imports, antivirus inspection, and the older UI implementation; this measurement cannot assign an exact share to each factor.",
+    "The 30-second idle run is enough to detect immediate runaway growth, but it is not proof that a two-hour session is leak-free.",
+    "Internal Python callback timings cannot be attached to this already-frozen executable without a separately instrumented build."
+  ]
+}

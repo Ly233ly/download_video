@@ -216,6 +216,35 @@ class SecurityApiTests(unittest.TestCase):
         finally:
             server.stop()
 
+    def test_authenticated_media_remove_endpoint_uses_single_plan_cleanup(self) -> None:
+        server = LocalApiServer(self.database, host="127.0.0.1", port=0)
+        server.start()
+        host, port = server.address
+        base = f"http://{host}:{port}"
+        try:
+            code = PairingManager(self.database).pairing_code
+            paired = self._json_request(
+                f"{base}/api/pair",
+                {"code": code},
+                origin=ORIGIN,
+            )
+            token = paired["data"]["token"]
+            with patch.object(
+                server.api.media,
+                "remove_plan",
+                return_value={"removed": True, "planId": "plan-1"},
+            ) as remove_plan:
+                response = self._json_request(
+                    f"{base}/api/media/remove",
+                    {"authToken": token, "planId": "plan-1"},
+                    origin=ORIGIN,
+                )
+
+            self.assertTrue(response["data"]["removed"])
+            remove_plan.assert_called_once_with("plan-1")
+        finally:
+            server.stop()
+
     def test_authenticated_preview_and_open_folder_endpoints(self) -> None:
         server = LocalApiServer(self.database, host="127.0.0.1", port=0)
         server.start()

@@ -135,6 +135,28 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn('case "clearPlans"', bridge)
         self.assertIn('"/api/media/clear"', bridge)
 
+    def test_each_popup_task_can_be_removed_while_preserving_downloads(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        bridge = (EXTENSION / "js" / "eagle-bridge.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-action="remove-task"', ui)
+        self.assertIn('eagleBridge: "removePlan"', ui)
+        self.assertIn('case "removePlan"', bridge)
+        self.assertIn('"/api/media/remove"', bridge)
+        self.assertIn("Downloaded files and Eagle content will be kept.", ui)
+
+    def test_clearing_current_media_invalidates_in_flight_capture_callbacks(self) -> None:
+        background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
+
+        self.assertIn("const captureGenerationByTab = new Map()", background)
+        self.assertIn("function clearCapturedTab(tabId, resetDedupe = false)", background)
+        self.assertGreaterEqual(
+            background.count(
+                "(captureGenerationByTab.get(data.tabId) || 0) !== captureGeneration"
+            ),
+            3,
+        )
+
     def test_large_candidate_bursts_do_not_regroup_or_load_every_preview_eagerly(self) -> None:
         background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
         ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
@@ -152,6 +174,46 @@ class ExtensionTests(unittest.TestCase):
         self.assertNotIn("mediaPreviewMarkup(", sidebar_source)
         self.assertIn("sidebarPreviewMarkup(", sidebar_source)
         self.assertIn("content-visibility: auto", css)
+
+    def test_spa_navigation_restarts_generic_discovery(self) -> None:
+        background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
+        content = (EXTENSION / "js" / "content-script.js").read_text(encoding="utf-8")
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            "chrome.webNavigation.onHistoryStateUpdated.addListener(function () { return; });",
+            background,
+        )
+        self.assertIn("function handleTabLocationChange", background)
+        self.assertIn("onReferenceFragmentUpdated", background)
+        self.assertIn('"pageLocationChanged"', background)
+        self.assertIn('"notifyPageLocationChanged"', content)
+        self.assertIn("function resetPageDiscovery", content)
+        self.assertIn("_framePreviewCache.clear()", content)
+        self.assertIn("_structuredCatalogSent.clear()", content)
+        self.assertIn("_pageResolverSent.clear()", content)
+        self.assertIn("createLocationChangeTracker", content)
+        self.assertIn('"tabLocationChanged"', ui)
+
+        handler_start = background.index("function handleTabLocationChange")
+        handler_end = background.index("\nfunction isSupportedWebTab", handler_start)
+        generic_handler = background[handler_start:handler_end].lower()
+        for site_name in ("bilibili", "youtube", "douyin", "vimeo"):
+            self.assertNotIn(site_name, generic_handler)
+
+    def test_standalone_window_follows_the_latest_active_web_tab(self) -> None:
+        background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+
+        self.assertIn("function rememberActiveWebTab", background)
+        self.assertIn("function resolveActiveWebTab", background)
+        self.assertIn('"activeWebTabChanged"', background)
+        self.assertIn('Message.Message == "getActiveWebTab"', background)
+        self.assertIn("popup.html?standalone=1&sourceTabId=", ui)
+        self.assertIn("if (isStandaloneWindow)", ui)
+        self.assertIn('Message: "getActiveWebTab"', ui)
+        self.assertIn('message?.Message === "activeWebTabChanged"', ui)
+        self.assertNotIn("popup.html?tabId=${state.tab?.id", ui)
 
     def test_candidate_presentation_is_cross_site_and_snapshot_safe(self) -> None:
         result = subprocess.run(
@@ -426,6 +488,27 @@ class ExtensionTests(unittest.TestCase):
         self.assertNotIn('await downloadOnlyForGroup(group);\n            showToast(t("downloadStarted"));', ui)
         self.assertIn('case "planPreview":', bridge)
         self.assertIn('case "openPlanOutput":', bridge)
+
+    def test_first_popup_open_revalidates_actions_after_connection_finishes(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        refresh_start = ui.index("async function refreshAll()")
+        refresh_end = ui.index("function scheduleTaskPoll", refresh_start)
+        refresh_source = ui[refresh_start:refresh_end]
+        connection_settled = refresh_source.index("await connection;")
+        inspector_refresh = refresh_source.index("renderInspector();", connection_settled)
+        remaining_refreshes = refresh_source.index(
+            "await Promise.allSettled", connection_settled
+        )
+        self.assertLess(
+            connection_settled,
+            inspector_refresh,
+            "the popup must repaint download actions after pairing is known",
+        )
+        self.assertLess(
+            inspector_refresh,
+            remaining_refreshes,
+            "the connection repaint must not wait behind discovery or plan requests",
+        )
 
     def test_legacy_listener_never_intercepts_bridge_messages(self) -> None:
         background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")

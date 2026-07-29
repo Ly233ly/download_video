@@ -7,7 +7,6 @@ from .constants import DEFAULT_SOURCE_GRACE_PERIOD, VIDEO_EXTENSIONS
 from .database import Database
 from .eagle import EagleClient, EagleImportError, EagleUnavailable
 from .fingerprint import sha256_file
-from .paths import download_station_root
 
 
 class JobProcessor:
@@ -30,13 +29,49 @@ class JobProcessor:
             processed += 1
         remaining = max(0, limit - processed)
         if remaining:
-            for cleanup in self.database.pending_imported_output_cleanups(remaining):
-                self._cleanup_imported_desktop_output(
-                    str(cleanup["job_id"]),
-                    Path(str(cleanup["file_path"])),
-                )
-                processed += 1
+            self.cleanup_retained_files(remaining)
         return processed
+
+    def cleanup_retained_files(self, limit: int = 10) -> None:
+        for plan in self.database.expired_retained_plans(limit):
+            plan_id = str(plan["plan_id"])
+            job_id = str(plan["job_id"])
+            path = Path(str(plan["final_path"]))
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError:
+                self.database.record_plan_output_cleanup(
+                    plan_id, str(path),
+                    deleted=False,
+                    error_code="local_file_delete_not_owned",
+                    error_message="本机下载文件不存在或无法访问",
+                )
+                continue
+            if not resolved.is_file():
+                self.database.record_plan_output_cleanup(
+                    plan_id, str(path),
+                    deleted=False,
+                    error_code="local_file_delete_not_owned",
+                    error_message="本机下载文件已不存在",
+                )
+                continue
+            last_error = ""
+            for attempt in range(4):
+                try:
+                    resolved.unlink()
+                    self.database.record_plan_output_cleanup(plan_id, str(path), deleted=True)
+                    break
+                except OSError as exc:
+                    last_error = type(exc).__name__
+                    if attempt < 3:
+                        time.sleep(0.2)
+            else:
+                self.database.record_plan_output_cleanup(
+                    plan_id, str(path),
+                    deleted=False,
+                    error_code="local_file_delete_failed",
+                    error_message=f"保留期已过，但无法删除本机下载文件（{last_error or 'OSError'}）",
+                )
 
     def process_job(self, job_id: str) -> None:
         job = self.database.get_job(job_id)
@@ -120,7 +155,6 @@ class JobProcessor:
                 error_message=None,
                 completed_at=time.time(),
             )
-            self._cleanup_imported_desktop_output(job_id, path)
             return
         if fingerprint_owner is not None:
             self.database.update_job(
@@ -134,6 +168,9 @@ class JobProcessor:
             return
 
         self.database.update_job(job_id, fingerprint=fingerprint)
+        latest_job = self.database.get_job(job_id)
+        if latest_job is None or latest_job.get("status") == "ignored_by_user":
+            return
         try:
             item_id = self.eagle.add_from_path(str(path), job.get("source_url"))
         except EagleUnavailable:
@@ -153,62 +190,6 @@ class JobProcessor:
             error_code=None,
             error_message=None,
             completed_at=time.time(),
-        )
-        self._cleanup_imported_desktop_output(job_id, path)
-
-    def _cleanup_imported_desktop_output(self, job_id: str, job_path: Path) -> None:
-        plan = self.database.imported_plan_output_for_cleanup(job_id)
-        if not plan:
-            return
-        plan_id = str(plan["plan_id"])
-        expected_path = str(plan["final_path"])
-        try:
-            output = Path(expected_path).resolve(strict=True)
-            resolved_job_path = job_path.resolve(strict=True)
-            completed_root = (download_station_root() / "已完成").resolve(strict=True)
-        except OSError:
-            self.database.record_plan_output_cleanup(
-                plan_id,
-                expected_path,
-                deleted=False,
-                error_code="local_file_delete_not_owned",
-                error_message="本机下载文件不存在或无法通过归属校验，未自动删除",
-            )
-            return
-        if (
-            output != resolved_job_path
-            or not output.is_file()
-            or not output.is_relative_to(completed_root)
-        ):
-            self.database.record_plan_output_cleanup(
-                plan_id,
-                expected_path,
-                deleted=False,
-                error_code="local_file_delete_not_owned",
-                error_message="本机下载文件不属于本程序已完成目录，未自动删除",
-            )
-            return
-
-        last_error = ""
-        for attempt in range(4):
-            try:
-                output.unlink()
-                self.database.record_plan_output_cleanup(
-                    plan_id,
-                    expected_path,
-                    deleted=True,
-                )
-                return
-            except OSError as exc:
-                last_error = type(exc).__name__
-                if attempt < 3:
-                    time.sleep(0.2)
-        self.database.record_plan_output_cleanup(
-            plan_id,
-            expected_path,
-            deleted=False,
-            error_code="local_file_delete_failed",
-            error_message=f"已导入 Eagle，但无法删除本机下载文件（{last_error or 'OSError'}）",
         )
 
     def _retry(

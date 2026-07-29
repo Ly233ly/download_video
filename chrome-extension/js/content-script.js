@@ -249,6 +249,8 @@
     var _structuredCatalogObserver = null;
     var _pageResolverSent = new Set();
     var _pageResolverSchedule = null;
+    var _pageLocationTimer = null;
+    var _pageLocationTracker = null;
 
     function discoverStructuredPlayerMedia() {
         if (location.hostname !== "player.vimeo.com") return false;
@@ -290,6 +292,7 @@
     function startStructuredPlayerDiscovery() {
         if (location.hostname !== "player.vimeo.com") return;
         if (discoverStructuredPlayerMedia()) return;
+        if (_structuredCatalogObserver) return;
         const target = document.documentElement || document;
         _structuredCatalogObserver = new MutationObserver(() => {
             if (!discoverStructuredPlayerMedia()) return;
@@ -483,14 +486,58 @@
         observer.observe(document.documentElement || document, { childList: true, subtree: true });
     }
 
+    function resetPageDiscovery(nextUrl, _previousUrl, context = {}) {
+        _framePreviewCache.clear();
+        _structuredCatalogSent.clear();
+        _pageResolverSent.clear();
+        _structuredCatalogObserver?.disconnect();
+        _structuredCatalogObserver = null;
+
+        startStructuredPlayerDiscovery();
+        if (window.top !== window) return;
+        discoverPageResolvers();
+        [250, 900, 1800].forEach(delay => {
+            setTimeout(schedulePageResolverDiscovery, delay);
+        });
+        if (context.notifyBackground) {
+            chrome.runtime.sendMessage({
+                Message: "notifyPageLocationChanged",
+                url: nextUrl
+            }, () => { void chrome.runtime.lastError; });
+        }
+    }
+
+    function initializePageLocationTracking() {
+        if (window.top !== window || _pageLocationTracker) return;
+        const logic = globalThis.EagleBridgeCandidateLogic;
+        _pageLocationTracker = logic?.createLocationChangeTracker
+            ? logic.createLocationChangeTracker(location.href, resetPageDiscovery)
+            : (() => {
+                let currentUrl = String(location.href || "");
+                return (nextUrl, context) => {
+                    const normalizedUrl = String(nextUrl || "");
+                    if (!normalizedUrl || normalizedUrl === currentUrl) return false;
+                    const previousUrl = currentUrl;
+                    currentUrl = normalizedUrl;
+                    resetPageDiscovery(normalizedUrl, previousUrl, context);
+                    return true;
+                };
+            })();
+        _pageLocationTimer = setInterval(() => {
+            _pageLocationTracker(location.href, { notifyBackground: true });
+        }, 750);
+    }
+
     if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", () => {
             startStructuredPlayerDiscovery();
             startPageResolverDiscovery();
+            initializePageLocationTracking();
         }, { once: true });
     } else {
         startStructuredPlayerDiscovery();
         startPageResolverDiscovery();
+        initializePageLocationTracking();
     }
 
     chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
@@ -505,6 +552,15 @@
         }
         if (Message.Message == "discoverPageResolvers") {
             discoverPageResolvers();
+            sendResponse({ ok: true });
+            return true;
+        }
+        if (Message.Message == "pageLocationChanged") {
+            if (_pageLocationTracker) {
+                _pageLocationTracker(Message.url || location.href, { notifyBackground: false });
+            } else {
+                resetPageDiscovery(Message.url || location.href, "", { notifyBackground: false });
+            }
             sendResponse({ ok: true });
             return true;
         }

@@ -78,6 +78,40 @@ class MediaCoordinatorTests(unittest.TestCase):
         except MediaPlanError:
             self.skipTest("FFmpeg build asset is not available")
 
+    def test_ui_summary_is_lightweight_and_list_projection_is_read_only(self) -> None:
+        with patch.object(self.coordinator, "schedule"):
+            plan = self.coordinator.create_plan(self.payload())
+        job_id = self.database.add_job(str(self.root / "projected.mp4"))
+        fixed_revision = time.time() - 120
+        with self.database.session() as connection:
+            connection.execute(
+                "UPDATE jobs SET status = 'imported' WHERE id = ?",
+                (job_id,),
+            )
+            connection.execute(
+                """
+                UPDATE download_plans SET status = 'ready_to_import',
+                    progress = 90, job_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (job_id, fixed_revision, plan["id"]),
+            )
+
+        summary = self.coordinator.ui_summary()
+        listed = self.coordinator.list_plans()
+        with self.database.session() as connection:
+            stored = connection.execute(
+                "SELECT status, updated_at FROM download_plans WHERE id = ?",
+                (plan["id"],),
+            ).fetchone()
+
+        self.assertEqual(summary["total"], 1)
+        self.assertEqual(summary["active"], 0)
+        self.assertEqual(listed[0]["status"], "imported")
+        self.assertEqual(listed[0]["progress"], 100)
+        self.assertEqual(stored["status"], "ready_to_import")
+        self.assertEqual(stored["updated_at"], fixed_revision)
+
     def _make_video(self, target: Path, color: str = "blue", seconds: int = 1) -> None:
         ffmpeg, _ffprobe = self._media_tools()
         subprocess.run(
@@ -941,6 +975,151 @@ class MediaCoordinatorTests(unittest.TestCase):
         self.assertEqual([plan["id"] for plan in self.coordinator.list_plans()], [active["id"]])
         self.assertNotIn(finished["id"], self.coordinator._remote_inputs)
         self.assertIn(active["id"], self.coordinator._remote_inputs)
+
+    def test_single_plan_cleanup_removes_waiting_import_but_preserves_file(self) -> None:
+        output = self.root / "waiting-import.mp4"
+        output.write_bytes(b"keep-this-local-file")
+        with patch.object(self.coordinator, "schedule"):
+            plan = self.coordinator.create_plan(
+                self.payload(outputName="waiting-import.mp4")
+            )
+        job_id = self.database.add_job(str(output))
+        self.database.update_job(job_id, status="waiting_eagle")
+        with self.database.session() as connection:
+            connection.execute(
+                """
+                UPDATE download_plans SET status = 'ready_to_import',
+                    progress = 90, final_path = ?, job_id = ?
+                WHERE id = ?
+                """,
+                (str(output), job_id, plan["id"]),
+            )
+
+        result = self.coordinator.remove_plan(plan["id"])
+
+        self.assertTrue(result["removed"])
+        self.assertTrue(result["filePreserved"])
+        self.assertTrue(output.is_file())
+        self.assertEqual(self.coordinator.list_plans(), [])
+        self.assertIsNone(self.database.get_job(job_id))
+        self.assertNotIn(plan["id"], self.coordinator._remote_inputs)
+
+    def test_single_idm_cleanup_detaches_waiting_media_plan_and_preserves_file(self) -> None:
+        output = self.root / "waiting-idm-cleanup.mp4"
+        output.write_bytes(b"keep-this-local-file")
+        with patch.object(self.coordinator, "schedule"):
+            plan = self.coordinator.create_plan(
+                self.payload(outputName="waiting-idm-cleanup.mp4")
+            )
+        job_id = self.database.add_job(str(output))
+        self.database.update_job(job_id, status="waiting_eagle")
+        with self.database.session() as connection:
+            connection.execute(
+                """
+                UPDATE download_plans SET status = 'ready_to_import',
+                    progress = 90, final_path = ?, job_id = ?
+                WHERE id = ?
+                """,
+                (str(output), job_id, plan["id"]),
+            )
+
+        self.assertTrue(self.database.remove_job(job_id))
+
+        detached = self.coordinator.get_plan(plan["id"])
+        self.assertEqual(detached["status"], "completed_local")
+        self.assertEqual(detached["progress"], 100)
+        self.assertEqual(detached["import_to_eagle"], 0)
+        self.assertIsNone(detached["job_id"])
+        self.assertTrue(output.is_file())
+        self.assertIsNone(self.database.get_job(job_id))
+
+    def test_automatic_history_cleanup_unlinks_terminal_plan_without_fk_failure(self) -> None:
+        old = time.time() - 120 * 86400
+        with patch.object(self.coordinator, "schedule"):
+            plan = self.coordinator.create_plan(self.payload(outputName="old-import.mp4"))
+        job_id = self.database.add_job(str(self.root / "old-import.mp4"), created_at=old)
+        self.database.update_job(
+            job_id,
+            status="imported",
+            eagle_item_id="old-item",
+            completed_at=old,
+        )
+        with self.database.session() as connection:
+            connection.execute(
+                """
+                UPDATE download_plans SET status = 'imported',
+                    job_id = ?, completed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (job_id, old, old, plan["id"]),
+            )
+
+        removed = self.database.cleanup_history(history_days=90)
+
+        self.assertEqual(removed["jobs"], 1)
+        self.assertIsNone(self.database.get_job(job_id))
+        self.assertIsNone(self.coordinator.get_plan(plan["id"])["job_id"])
+
+    def test_plan_cleanup_removes_orphaned_capture_metadata(self) -> None:
+        with patch.object(self.coordinator, "schedule"):
+            plan = self.coordinator.create_plan(self.payload())
+
+        self.coordinator.remove_plan(plan["id"])
+
+        with self.database.session() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM download_plans").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM media_streams").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM media_groups").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM capture_sessions").fetchone()[0], 0)
+
+    def test_bulk_plan_cleanup_handles_more_than_sqlite_parameter_limit(self) -> None:
+        now = time.time()
+        count = 1_005
+        with self.database.transaction() as connection:
+            connection.executemany(
+                """
+                INSERT INTO capture_sessions(
+                    id, page_url, page_title, created_at, updated_at
+                ) VALUES(?, '', '', ?, ?)
+                """,
+                ((f"session-{index}", now, now) for index in range(count)),
+            )
+            connection.executemany(
+                """
+                INSERT INTO media_groups(
+                    id, session_id, group_key, title, created_at, updated_at
+                ) VALUES(?, ?, ?, '', ?, ?)
+                """,
+                (
+                    (
+                        f"group-{index}",
+                        f"session-{index}",
+                        f"group-key-{index}",
+                        now,
+                        now,
+                    )
+                    for index in range(count)
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO download_plans(
+                    id, group_id, output_name, output_container, merge_mode,
+                    route, status, created_at, updated_at
+                ) VALUES(?, ?, 'finished.mp4', 'mp4', 'direct',
+                    'desktop', 'completed_local', ?, ?)
+                """,
+                (
+                    (f"plan-{index}", f"group-{index}", now, now)
+                    for index in range(count)
+                ),
+            )
+
+        self.assertEqual(self.coordinator.clear_terminal_history(), count)
+        self.assertEqual(self.coordinator.list_plans(), [])
+        with self.database.session() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM media_groups").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM capture_sessions").fetchone()[0], 0)
 
     def test_clearing_idm_history_unlinks_terminal_media_plan_only(self) -> None:
         with patch.object(self.coordinator, "schedule"):

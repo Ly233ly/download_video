@@ -136,7 +136,7 @@ def _proxy_for_target(
 class NetworkProxyManager:
     """Resolve one safe, task-scoped proxy route without touching local APIs."""
 
-    _STATUS_CACHE_SECONDS = 5.0
+    _STATUS_CACHE_SECONDS = 30.0
 
     def __init__(self, database: Database) -> None:
         self.database = database

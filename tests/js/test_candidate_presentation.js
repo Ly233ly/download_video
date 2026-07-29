@@ -144,6 +144,24 @@ if (keyedCallbacks.length !== 1) {
     throw new Error("A tab badge must be schedulable again after its previous refresh completes");
 }
 
+const observedLocations = [];
+const updateLocation = presentation.createLocationChangeTracker(
+    "https://example.com/watch/one",
+    (nextUrl, previousUrl, context) => observedLocations.push({ nextUrl, previousUrl, context })
+);
+if (updateLocation("https://example.com/watch/one", { source: "same" })) {
+    throw new Error("A repeated location must not restart discovery");
+}
+if (!updateLocation("https://example.com/watch/two?autoplay=1", { source: "history" })
+    || !updateLocation("https://example.com/#/watch/three", { source: "fragment" })) {
+    throw new Error("Path, query and hash navigation must all restart generic discovery");
+}
+if (observedLocations.length !== 2
+    || observedLocations[0].previousUrl !== "https://example.com/watch/one"
+    || observedLocations[1].context?.source !== "fragment") {
+    throw new Error("Location tracking must preserve page order and event context");
+}
+
 const injectionCalls = [];
 let discoveryMessageCount = 0;
 const recoveredDiscoveryPromise = presentation.ensureContentDiscovery({

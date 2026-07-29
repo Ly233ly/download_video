@@ -32,6 +32,7 @@ from idm_eagle_bridge.wechat_channels_proxy import (
     RegistryValue,
     WechatLoopbackProxy,
     WinInetProxyLease,
+    proxy_endpoint_is_loopback,
     upstream_http_proxy,
     upstream_proxy_bypass,
     _decompress_limited,
@@ -41,6 +42,7 @@ from idm_eagle_bridge.wechat_channels_proxy import (
 def sample_candidate(object_id: str = "1234567890123456789") -> dict:
     return {
         "action": "candidate",
+        "current": True,
         "objectId": object_id,
         "title": "同一条视频自己的标题",
         "author": "视频号作者",
@@ -141,6 +143,160 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
                 self.assertEqual(service.state, "capturing")
                 self.assertEqual(service._preview_cache, {})
                 self.assertEqual(service._preview_order, [])
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_trusted_certificate_is_reused_without_reinstalling_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            proxy = Mock()
+            proxy.address = ("127.0.0.1", 20230)
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+                proxy_factory=Mock(return_value=proxy),
+            )
+            try:
+                service.certificate.ensure()
+                with (
+                    patch.object(
+                        service.certificate,
+                        "is_trusted",
+                        return_value=True,
+                    ),
+                    patch.object(service.certificate, "install") as install,
+                ):
+                    health = service.start(
+                        configure_system_proxy=False,
+                        trust_certificate=True,
+                    )
+                install.assert_not_called()
+                self.assertTrue(health["certificateTrusted"])
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_start_reports_an_unreachable_loopback_proxy_as_repairable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+            )
+            service.proxy_lease.backend = FakeRegistryBackend(
+                ProxySnapshot(
+                    {
+                        "ProxyEnable": RegistryValue(True, 1, 4),
+                        "ProxyServer": RegistryValue(True, "127.0.0.1:6553", 1),
+                    }
+                )
+            )
+            try:
+                with patch(
+                    "idm_eagle_bridge.wechat_channels.proxy_endpoint_reachable",
+                    return_value=False,
+                ):
+                    with self.assertRaisesRegex(
+                        WechatChannelsError,
+                        "修复代理冲突",
+                    ):
+                        service.start(
+                            configure_system_proxy=False,
+                            trust_certificate=False,
+                        )
+                self.assertEqual(service.health()["state"], "failed")
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_proxy_repair_clears_only_an_unreachable_loopback_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            backend = FakeRegistryBackend(
+                ProxySnapshot(
+                    {
+                        "ProxyEnable": RegistryValue(True, 1, 4),
+                        "ProxyServer": RegistryValue(True, "127.0.0.1:6553", 1),
+                    }
+                )
+            )
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+            )
+            service.proxy_lease.backend = backend
+            try:
+                with patch(
+                    "idm_eagle_bridge.wechat_channels.proxy_endpoint_reachable",
+                    return_value=False,
+                ):
+                    result = service.repair_proxy_conflict()
+                self.assertTrue(result["changed"])
+                self.assertEqual(
+                    backend.current.values["ProxyEnable"].value,
+                    0,
+                )
+                self.assertEqual(
+                    backend.current.values["ProxyServer"].value,
+                    "127.0.0.1:6553",
+                )
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_running_capture_reclaims_proxy_and_restores_latest_external_proxy(self) -> None:
+        class FakeProxy:
+            address = ("127.0.0.1", 20230)
+
+            def start(self) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+        direct = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 0, 4),
+                "ProxyServer": RegistryValue(False),
+            }
+        )
+        external = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 1, 4),
+                "ProxyServer": RegistryValue(True, "10.0.0.2:7890", 1),
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            backend = FakeRegistryBackend(direct)
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+                proxy_factory=lambda *_args, **_kwargs: FakeProxy(),  # type: ignore[arg-type]
+            )
+            service.proxy_lease.backend = backend
+            try:
+                service.start(trust_certificate=False)
+                backend.current = external
+
+                result = service.repair_proxy_conflict()
+
+                self.assertTrue(result["changed"])
+                self.assertEqual(
+                    backend.current.values["ProxyServer"].value,
+                    "127.0.0.1:20230",
+                )
+                self.assertEqual(
+                    service.proxy.upstream_proxy,
+                    ("10.0.0.2", 7890),
+                )
+                service.stop()
+                self.assertEqual(backend.current, external)
             finally:
                 service.close()
                 coordinator.close()
@@ -473,7 +629,7 @@ class CandidateRegistryTests(unittest.TestCase):
         self.assertNotIn("decodeKey", serialized)
         self.assertNotIn("token=one", serialized)
 
-    def test_candidates_are_oldest_first_and_updates_move_to_bottom(self) -> None:
+    def test_candidate_list_only_exposes_the_current_video(self) -> None:
         with patch(
             "idm_eagle_bridge.wechat_channels.time.time",
             side_effect=[1.0, 2.0, 3.0],
@@ -482,14 +638,30 @@ class CandidateRegistryTests(unittest.TestCase):
             self.registry.ingest(sample_candidate("second"))
             self.assertEqual(
                 [item["objectId"] for item in self.registry.list()],
-                ["first", "second"],
+                ["second"],
             )
             self.registry.ingest(sample_candidate("first"))
 
         self.assertEqual(
             [item["objectId"] for item in self.registry.list()],
-            ["second", "first"],
+            ["first"],
         )
+
+    def test_preloads_stay_hidden_and_stale_activation_cannot_replace_current(self) -> None:
+        first = sample_candidate("first")
+        second = sample_candidate("second")
+        self.registry.ingest(first, make_current=False)
+        self.registry.ingest(second, make_current=False)
+        self.assertEqual(self.registry.list(), [])
+
+        current, activated = self.registry.activate("second", 300)
+        self.assertTrue(activated)
+        self.assertEqual(current["objectId"], "second")
+
+        current, activated = self.registry.activate("first", 250)
+        self.assertFalse(activated)
+        self.assertEqual(current["objectId"], "second")
+        self.assertEqual(self.registry.list()[0]["objectId"], "second")
 
     def test_candidate_registry_evicts_oldest_at_session_limit(self) -> None:
         with patch(
@@ -499,10 +671,17 @@ class CandidateRegistryTests(unittest.TestCase):
             for index in range(WechatCandidateRegistry.MAX_CANDIDATES + 1):
                 self.registry.ingest(sample_candidate(f"bounded-{index}"))
 
-        object_ids = [item["objectId"] for item in self.registry.list()]
-        self.assertEqual(len(object_ids), WechatCandidateRegistry.MAX_CANDIDATES)
-        self.assertNotIn("bounded-0", object_ids)
-        self.assertEqual(object_ids[-1], f"bounded-{WechatCandidateRegistry.MAX_CANDIDATES}")
+        self.assertEqual(
+            self.registry.retained_count(),
+            WechatCandidateRegistry.MAX_CANDIDATES,
+        )
+        evicted, activated = self.registry.activate("bounded-0")
+        self.assertIsNone(evicted)
+        self.assertFalse(activated)
+        self.assertEqual(
+            self.registry.list()[0]["objectId"],
+            f"bounded-{WechatCandidateRegistry.MAX_CANDIDATES}",
+        )
 
     def test_plan_uses_selected_variant_and_keeps_secret_only_in_runtime_payload(self) -> None:
         candidate = self.registry.ingest(
@@ -562,6 +741,114 @@ class CandidateRegistryTests(unittest.TestCase):
         self.assertEqual(view["variants"][0]["quality"], "1080p · 原始/最高")
         self.assertFalse(view["variants"][0]["encrypted"])
         self.assertTrue(view["coverUrl"].startswith("http://"))
+
+
+class WechatBridgeSelectionTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for bridge validation")
+    def test_preloads_are_bounded_and_only_active_video_is_published(self) -> None:
+        bridge_path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "idm_eagle_bridge"
+            / "assets"
+            / "wechat_channels_bridge.js"
+        )
+        script = r"""
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const requests = [];
+globalThis.__DOWNLOAD_STATION_TEST__ = true;
+globalThis.location = { href: "https://channels.weixin.qq.com/web/pages/feed" };
+globalThis.document = {
+  readyState: "loading",
+  documentElement: null,
+  querySelectorAll: function () { return []; },
+  addEventListener: function () {},
+  getElementById: function (id) {
+    return id === "download-station-wechat-control" ? { style: {} } : null;
+  },
+};
+globalThis.window = globalThis;
+window.addEventListener = function () {};
+globalThis.MutationObserver = undefined;
+globalThis.Response = undefined;
+globalThis.XMLHttpRequest = function () {};
+XMLHttpRequest.prototype.open = function () {};
+window.fetch = function (_url, options) {
+  const payload = JSON.parse(options.body);
+  requests.push(payload);
+  if (payload.action === "candidate") {
+    return Promise.resolve({
+      ok: true,
+      json: function () {
+        return Promise.resolve({
+          action: "candidate",
+          candidate: { objectId: payload.objectId, variants: [{ id: "auto" }] },
+        });
+      },
+    });
+  }
+  return Promise.resolve({
+    ok: true,
+    json: function () {
+      return Promise.resolve({
+        action: "active",
+        accepted: true,
+        candidate: { objectId: payload.objectId },
+      });
+    },
+  });
+};
+eval(source);
+
+function feed(id) {
+  return {
+    id: id,
+    objectDesc: {
+      description: "视频 " + id,
+      media: [{ url: "https://finder.video.qq.com/" + id + ".mp4" }],
+    },
+  };
+}
+function waitForRequests() {
+  return new Promise(function (resolve) { setTimeout(resolve, 25); });
+}
+
+(async function () {
+  const test = globalThis.__DOWNLOAD_STATION_WECHAT_TEST__;
+  const preload = [];
+  for (let index = 0; index < 100; index += 1) {
+    preload.push(feed("preload-" + index));
+  }
+  test.scan({ items: preload }, "finderGetRecommend");
+  await waitForRequests();
+  if (requests.some(function (item) { return item.action === "candidate"; })) process.exit(2);
+  if (test.seenCount() > 64) process.exit(3);
+
+  test.scan(feed("current-a"), "finderGetCommentDetail");
+  await waitForRequests();
+  test.scan(feed("current-b"), "goToNextFlowFeed");
+  await waitForRequests();
+
+  const candidates = requests.filter(function (item) { return item.action === "candidate"; });
+  const active = requests.filter(function (item) { return item.action === "active"; });
+  if (candidates.map(function (item) { return item.objectId; }).join(",") !== "current-a,current-b") {
+    process.exit(4);
+  }
+  if (candidates.some(function (item) { return item.current !== false; })) process.exit(5);
+  if (active.map(function (item) { return item.objectId; }).join(",") !== "current-a,current-b") {
+    process.exit(6);
+  }
+})().catch(function () { process.exit(7); });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(bridge_path)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class WechatMediaDownloadTests(unittest.TestCase):
@@ -756,6 +1043,11 @@ class FakeRegistryBackend:
         self.restored = snapshot
         self.current = snapshot
 
+    def disable_manual_proxy(self) -> None:
+        values = dict(self.current.values)
+        values["ProxyEnable"] = RegistryValue(True, 0, 4)
+        self.current = ProxySnapshot(values)
+
 
 class FailingApplyRegistryBackend(FakeRegistryBackend):
     def __init__(self, snapshot: ProxySnapshot, *, fail_restore: bool = False) -> None:
@@ -795,6 +1087,8 @@ class ProxyLeaseTests(unittest.TestCase):
         )
         self.assertEqual(upstream_http_proxy(snapshot), ("127.0.0.1", 7890))
         self.assertEqual(upstream_proxy_bypass(snapshot), ("<local>", "*.internal.example"))
+        self.assertTrue(proxy_endpoint_is_loopback(("127.0.0.1", 7890)))
+        self.assertFalse(proxy_endpoint_is_loopback(("10.0.0.2", 7890)))
 
     def test_exact_restore_and_external_change_protection(self) -> None:
         original = ProxySnapshot(
