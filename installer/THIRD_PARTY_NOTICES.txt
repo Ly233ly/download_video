@@ -9,7 +9,7 @@ third_party/cat-catch and docs/UPSTREAM_PROVENANCE.md.
 
 Browser libraries formerly bundled by cat-catch (mux.js, mpd-parser,
 jquery-qrcode, jQuery, hls.js, MQTT.js, jquery.json-viewer, StreamSaver.js and
-the hls.js AES decryptor) are not part of the 1.4.6 active extension payload.
+the hls.js AES decryptor) are not part of the 1.4.7 active extension payload.
 Their original notices remain inside the fixed corresponding-source snapshot at
 third_party/cat-catch/source/lib/third-party-libraries.md.
 
@@ -34,7 +34,7 @@ Copyright 2018-2026 the Deno authors.
 Distributed under the MIT License.
 See licenses/DENO-MIT.txt and media-tools/YOUTUBE-RESOLVER-VERSION.json.
 
-The Download Transfer Station 1.4.6 combined work is distributed under
+The Download Transfer Station 1.4.7 combined work is distributed under
 GNU General Public License v3.0. Original project code from 0.6.0 and earlier
 retains its MIT notice in licenses/PROJECT-MIT-LICENSE.txt.
 

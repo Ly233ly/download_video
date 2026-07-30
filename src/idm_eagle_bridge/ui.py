@@ -21,6 +21,7 @@ from tkinter import (
     Y,
     BooleanVar,
     Canvas,
+    Listbox,
     Menu,
     PhotoImage,
     StringVar,
@@ -35,7 +36,7 @@ from tkinter import font as tkfont
 from urllib.parse import urlsplit
 
 from .api_server import LocalApiServer
-from .constants import APP_VERSION
+from .constants import APP_NAME, APP_VERSION
 from .control_signal import ControlSignals
 from .database import Database
 from .eagle import EagleClient
@@ -102,7 +103,7 @@ MEDIA_CARD_STATUS_TEXT = {
 MEDIA_ACTIVE_STATUSES = {"queued", "downloading", "merging", "validating", "ready_to_import"}
 MEDIA_RETRYABLE_STATUSES = {"retry"}
 
-UI = {
+DARK_UI = {
     "bg": "#0D0F16",
     "sidebar_bg": "#111318",
     "surface": "#161820",
@@ -152,6 +153,72 @@ UI = {
     "job_ignored": ("#9CA3AF", "#17191E"),
 }
 
+LIGHT_UI = {
+    "bg": "#F0F1F6",
+    "sidebar_bg": "#F7F7FB",
+    "surface": "#F5F6FA",
+    "surface_raised": "#FFFFFF",
+    "surface_overlay": "#ECEEF5",
+    "border": "#D8DBE6",
+    "divider": "#E1E3EB",
+    "text": "#252936",
+    "text_secondary": "#535A6D",
+    "text_muted": "#777F92",
+    "text_disabled": "#A3A8B6",
+    "accent": "#6C63D9",
+    "accent_button": "#7168DE",
+    "accent_hover": "#5F57C8",
+    "accent_subtle": "#EAE8FB",
+    "accent_text": "#554FC1",
+    "success": "#23815F",
+    "success_subtle": "#E4F4EC",
+    "warning": "#A66B05",
+    "warning_subtle": "#FFF2D1",
+    "danger": "#C14D5B",
+    "danger_subtle": "#FAE7EA",
+    "info": "#3476BF",
+    "selected": "#E7E6F8",
+    "progress_track": "#E4E6EE",
+
+    "status_queued": ("#697083", "#EEF0F4"),
+    "status_downloading": ("#2D70B7", "#E5F0FA"),
+    "status_merging": ("#2D70B7", "#E5F0FA"),
+    "status_validating": ("#7655B8", "#EEE8FA"),
+    "status_ready_to_import": ("#946100", "#FFF0C7"),
+    "status_waiting_eagle": ("#AA5B18", "#FDEBD9"),
+    "status_imported": ("#247B5D", "#E4F4EC"),
+    "status_completed_local": ("#187B72", "#DFF3F1"),
+    "status_retry": ("#8D6800", "#FFF4CC"),
+    "status_failed_permanent": ("#B84553", "#FAE7EA"),
+    "status_import_failed": ("#B44160", "#F9E7ED"),
+    "status_canceled": ("#737987", "#ECEEF2"),
+    "status_needs_rebuild": ("#9952A5", "#F5E6F7"),
+
+    "job_imported": ("#247B5D", "#E4F4EC"),
+    "job_waiting": ("#946100", "#FFF0C7"),
+    "job_active": ("#2D70B7", "#E5F0FA"),
+    "job_failed": ("#B84553", "#FAE7EA"),
+    "job_ignored": ("#697083", "#EEF0F4"),
+}
+
+THEMES = {
+    "light": LIGHT_UI,
+    "dark": DARK_UI,
+}
+DEFAULT_UI_THEME = "light"
+UI = dict(DARK_UI)
+
+
+def _set_ui_theme(theme: object) -> str:
+    """Apply one complete palette in place so existing widgets can redraw."""
+
+    normalized = str(theme or "").strip().lower()
+    if normalized not in THEMES:
+        normalized = DEFAULT_UI_THEME
+    UI.clear()
+    UI.update(THEMES[normalized])
+    return normalized
+
 METRICS = {
     "topbar_height": 44,
     "topbar_compact_height": 60,
@@ -169,11 +236,11 @@ METRICS = {
 }
 
 RADII = {
-    "thumbnail": 6,
-    "badge": 9,
-    "control": 10,
-    "card": 12,
-    "panel": 14,
+    "thumbnail": 10,
+    "badge": 12,
+    "control": 14,
+    "card": 18,
+    "panel": 22,
 }
 
 FONT_FAMILIES = {
@@ -597,6 +664,7 @@ def _configure_styles(root: Tk, scale: float | None = None) -> None:
     style.configure("SidebarMuted.TLabel", background=UI["sidebar_bg"], foreground=UI["text_muted"])
     style.configure("Surface.TLabel", background=UI["surface"], foreground=UI["text"])
     style.configure("SurfaceRaised.TLabel", background=UI["surface_raised"], foreground=UI["text"])
+    style.configure("Soft.TLabel", background=UI["surface_overlay"], foreground=UI["text_muted"])
     style.configure("Muted.TLabel", background=UI["surface"], foreground=UI["text_muted"])
     style.configure(
         "Title.TLabel",
@@ -1494,49 +1562,72 @@ class _RoundedPanel(Canvas):
 
 
 class _RoundedButton(Canvas):
-    """Small accessible rounded action button used in the media detail header."""
+    """Accessible rounded action button with the subset of ttk.Button we use."""
 
     def __init__(
         self,
         parent: object,
         *,
-        text: str,
-        command,
+        text: str = "",
+        command=None,
         image: PhotoImage | None = None,
-        kind: str = "quiet",
+        compound: object = LEFT,
+        style: str = "Quiet.TButton",
+        state: str = "normal",
+        textvariable: object | None = None,
+        kind: str | None = None,
         width: int = 88,
     ) -> None:
         ui_scale = _widget_ui_scale(parent)
+        resolved_kind = kind or self._kind_from_style(style)
         self._font = tkfont.Font(
             root=parent,
             family=FONT_FAMILIES["ui"],
             size=10,
-            weight="normal" if kind == "quiet" else "bold",
+            weight="bold" if resolved_kind in {"accent", "danger", "nav_selected"} else "normal",
         )
-        content_width = self._font.measure(text)
+        resolved_text = str(textvariable.get()) if textvariable is not None else text
+        content_width = self._font.measure(resolved_text)
         if image is not None:
             content_width += image.width() + round(6 * ui_scale)
+        requested_width = (
+            round(max(32, width * 14) * ui_scale)
+            if width <= 4
+            else round(width * ui_scale)
+        )
         super().__init__(
             parent,
             width=max(
-                round(width * ui_scale),
+                requested_width,
                 content_width + round(24 * ui_scale),
             ),
             height=max(1, round(METRICS["button_height"] * ui_scale)),
-            background=UI["surface_raised"],
+            background=self._parent_background(parent),
             borderwidth=0,
             highlightthickness=0,
             takefocus=True,
-            cursor="hand2",
+            cursor="hand2" if str(state) != "disabled" else "arrow",
         )
-        self._text = text
-        self._command = command
+        self._text = resolved_text
+        self._command = command or (lambda: None)
         self._image = image
-        self._kind = kind
-        self._enabled = True
+        self._compound = compound
+        self._style_name = style
+        self._kind = resolved_kind
+        self._enabled = str(state) != "disabled"
+        self._textvariable = textvariable
+        self._text_trace_id: str | None = None
         self._hovered = False
         self._draw_after_id: str | None = None
         self._last_draw_signature: tuple[object, ...] | None = None
+        if textvariable is not None:
+            try:
+                self._text_trace_id = textvariable.trace_add(
+                    "write",
+                    self._sync_textvariable,
+                )
+            except Exception:
+                self._text_trace_id = None
         self.bind("<Configure>", self._queue_draw, add="+")
         self.bind("<Enter>", self._enter, add="+")
         self.bind("<Leave>", self._leave, add="+")
@@ -1545,7 +1636,60 @@ class _RoundedButton(Canvas):
         self.bind("<space>", self._activate, add="+")
         self.bind("<FocusIn>", self._queue_draw, add="+")
         self.bind("<FocusOut>", self._queue_draw, add="+")
+        self.bind("<Destroy>", self._destroy, add="+")
         self.after_idle(self._queue_draw)
+
+    @staticmethod
+    def _kind_from_style(style: object) -> str:
+        name = str(style or "")
+        if "Accent" in name:
+            return "accent"
+        if "Danger" in name:
+            return "danger"
+        if "NavSelected" in name:
+            return "nav_selected"
+        if "Nav" in name:
+            return "nav"
+        if "Link" in name or "Toolbar" in name:
+            return "link"
+        if "Secondary" in name:
+            return "secondary"
+        return "quiet"
+
+    @staticmethod
+    def _parent_background(parent: object) -> str:
+        try:
+            style_name = str(parent.cget("style") or "")
+            if style_name:
+                background = ttk.Style(parent).lookup(style_name, "background")
+                if background:
+                    return str(background)
+        except Exception:
+            pass
+        try:
+            return str(parent.cget("background"))
+        except Exception:
+            return UI["surface"]
+
+    def _sync_textvariable(self, *_args: object) -> None:
+        try:
+            text = str(self._textvariable.get())
+        except Exception:
+            return
+        if text != self._text:
+            self._text = text
+            self._resize_to_content()
+            self._last_draw_signature = None
+            self._queue_draw()
+
+    def _resize_to_content(self) -> None:
+        image_width = self._image.width() if self._image is not None else 0
+        required = self._font.measure(self._text) + (image_width + 6 if image_width else 0) + 24
+        try:
+            if self.winfo_reqwidth() < required:
+                super().configure(width=required)
+        except Exception:
+            pass
 
     def set_enabled(self, enabled: bool) -> None:
         enabled = bool(enabled)
@@ -1556,22 +1700,105 @@ class _RoundedButton(Canvas):
         self._last_draw_signature = None
         self._queue_draw()
 
-    def _palette(self) -> tuple[str, str]:
+    def state(self, spec: list[str] | tuple[str, ...] | None = None) -> tuple[str, ...]:
+        if spec is not None:
+            if "disabled" in spec:
+                self.set_enabled(False)
+            elif "!disabled" in spec:
+                self.set_enabled(True)
+        return () if self._enabled else ("disabled",)
+
+    def configure(self, cnf: object | None = None, **kwargs: object):
+        if cnf is not None:
+            if isinstance(cnf, dict):
+                kwargs = {**cnf, **kwargs}
+            else:
+                return super().configure(cnf, **kwargs)
+        if not hasattr(self, "_kind"):
+            return super().configure(**kwargs)
+        if "state" in kwargs:
+            self.set_enabled(str(kwargs.pop("state")) != "disabled")
+        if "style" in kwargs:
+            self._style_name = str(kwargs.pop("style"))
+            self._kind = self._kind_from_style(self._style_name)
+        if "text" in kwargs:
+            self._text = str(kwargs.pop("text"))
+        if "image" in kwargs:
+            self._image = kwargs.pop("image")  # type: ignore[assignment]
+        if "command" in kwargs:
+            self._command = kwargs.pop("command") or (lambda: None)
+        if "textvariable" in kwargs:
+            self._textvariable = kwargs.pop("textvariable")
+            self._sync_textvariable()
+        if kwargs:
+            result = super().configure(**kwargs)
+        else:
+            result = None
+        self._resize_to_content()
+        self._last_draw_signature = None
+        self._queue_draw()
+        return result
+
+    config = configure
+
+    def cget(self, key: str):
+        if hasattr(self, "_kind"):
+            values = {
+                "state": "normal" if self._enabled else "disabled",
+                "style": self._style_name,
+                "text": self._text,
+                "image": self._image,
+                "command": self._command,
+                "textvariable": self._textvariable,
+            }
+            if key in values:
+                return values[key]
+        return super().cget(key)
+
+    def invoke(self):
+        if self._enabled:
+            return self._command()
+        return None
+
+    def _palette(self) -> tuple[str, str, str]:
         if not self._enabled:
-            return UI["border"], UI["text_disabled"]
+            return UI["surface_overlay"], UI["text_disabled"], UI["border"]
         if self._kind == "danger":
             return (
-                "#3A1B22" if self._hovered else UI["danger_subtle"],
+                UI["danger"] if self._hovered else UI["danger_subtle"],
+                "#FFFFFF" if self._hovered else UI["danger"],
                 UI["danger"],
             )
         if self._kind == "accent":
             return (
                 UI["accent_hover"] if self._hovered else UI["accent_button"],
                 "#FFFFFF",
+                "",
+            )
+        if self._kind == "nav_selected":
+            return UI["selected"], UI["accent_text"], ""
+        if self._kind == "nav":
+            return (
+                UI["surface_overlay"] if self._hovered else self.cget("background"),
+                UI["text_secondary"],
+                "",
+            )
+        if self._kind == "link":
+            return (
+                UI["surface_overlay"] if self._hovered else self.cget("background"),
+                UI["text_secondary"] if self._hovered else UI["text_muted"],
+                "",
+            )
+        if self._kind == "secondary":
+            return (
+                UI["surface_overlay"] if self._hovered else UI["surface_raised"],
+                UI["text_secondary"],
+                UI["border"],
             )
         return (
-            UI["surface_overlay"] if self._hovered else UI["surface"],
+            UI["surface_raised"] if self._hovered else UI["surface_overlay"],
             UI["text_secondary"],
+            UI["border"],
         )
 
     def _queue_draw(self, _event: object | None = None) -> None:
@@ -1583,12 +1810,13 @@ class _RoundedButton(Canvas):
         self._draw_after_id = None
         width = max(1, self.winfo_width())
         height = max(1, self.winfo_height())
-        fill, foreground = self._palette()
+        fill, foreground, border = self._palette()
         signature = (
             width,
             height,
             fill,
             foreground,
+            border,
             self._text,
             str(self._image),
             self.focus_get() is self,
@@ -1608,7 +1836,7 @@ class _RoundedButton(Canvas):
             smooth=True,
             splinesteps=10,
             fill=fill,
-            outline=UI["accent"] if self.focus_get() is self else "",
+            outline=UI["accent"] if self.focus_get() is self else border,
             width=1,
         )
         image_width = self._image.width() if self._image is not None else 0
@@ -1647,6 +1875,324 @@ class _RoundedButton(Canvas):
         if self._enabled:
             self._command()
         return "break"
+
+    def _destroy(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self:
+            return
+        if self._draw_after_id is not None:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except Exception:
+                pass
+            self._draw_after_id = None
+        if self._textvariable is not None and self._text_trace_id is not None:
+            try:
+                self._textvariable.trace_remove("write", self._text_trace_id)
+            except Exception:
+                pass
+            self._text_trace_id = None
+
+
+class _RoundedCombobox(Canvas):
+    """Rounded selector with a themed popup list."""
+
+    def __init__(
+        self,
+        parent: object,
+        *,
+        state: str = "readonly",
+        textvariable: object | None = None,
+        values: tuple[object, ...] | list[object] = (),
+    ) -> None:
+        ui_scale = _widget_ui_scale(parent)
+        super().__init__(
+            parent,
+            height=max(44, round(44 * ui_scale)),
+            background=_RoundedButton._parent_background(parent),
+            borderwidth=0,
+            highlightthickness=0,
+            takefocus=True,
+            cursor="hand2" if state != "disabled" else "arrow",
+        )
+        self._font = tkfont.Font(
+            root=parent,
+            family=FONT_FAMILIES["ui"],
+            size=10,
+        )
+        self._values = tuple(str(value) for value in values)
+        self._textvariable = textvariable
+        self._state = state
+        self._hovered = False
+        self._popup: Toplevel | None = None
+        self._listbox: Listbox | None = None
+        self._draw_after_id: str | None = None
+        self._last_draw_signature: tuple[object, ...] | None = None
+        self._trace_id: str | None = None
+        if textvariable is not None:
+            try:
+                self._trace_id = textvariable.trace_add(
+                    "write",
+                    self._variable_changed,
+                )
+            except Exception:
+                self._trace_id = None
+        self.bind("<Configure>", self._queue_draw, add="+")
+        self.bind("<Enter>", self._enter, add="+")
+        self.bind("<Leave>", self._leave, add="+")
+        self.bind("<Button-1>", self._open_popup, add="+")
+        self.bind("<Return>", self._open_popup, add="+")
+        self.bind("<space>", self._open_popup, add="+")
+        self.bind("<Escape>", self._close_popup, add="+")
+        self.bind("<FocusIn>", self._queue_draw, add="+")
+        self.bind("<FocusOut>", self._queue_draw, add="+")
+        self.bind("<Destroy>", self._destroy, add="+")
+        self.after_idle(self._queue_draw)
+
+    def _display_text(self) -> str:
+        try:
+            value = str(self._textvariable.get())
+        except Exception:
+            value = ""
+        return value or "请选择下载质量"
+
+    def _variable_changed(self, *_args: object) -> None:
+        self._last_draw_signature = None
+        self._queue_draw()
+
+    def _queue_draw(self, _event: object | None = None) -> None:
+        if self._draw_after_id is None:
+            self._draw_after_id = self.after_idle(self._draw)
+
+    def _draw(self) -> None:
+        self._draw_after_id = None
+        width = max(1, self.winfo_width())
+        height = max(1, self.winfo_height())
+        text = self._display_text()
+        enabled = self._state != "disabled"
+        signature = (
+            width,
+            height,
+            text,
+            enabled,
+            self._hovered,
+            self.focus_get() is self,
+        )
+        if signature == self._last_draw_signature:
+            return
+        self._last_draw_signature = signature
+        self.delete("all")
+        fill = UI["surface_overlay"] if self._hovered and enabled else UI["surface_raised"]
+        border = UI["accent"] if self.focus_get() is self else UI["border"]
+        self.create_polygon(
+            _rounded_polygon_points(1, 1, width - 1, height - 1, RADII["control"]),
+            smooth=True,
+            splinesteps=10,
+            fill=fill,
+            outline=border,
+            width=1,
+        )
+        self.create_text(
+            14,
+            height // 2,
+            text=text,
+            fill=UI["text"] if enabled else UI["text_disabled"],
+            font=self._font,
+            anchor="w",
+            width=max(60, width - 94),
+        )
+        pill_width = max(52, self._font.measure("选择") + 22)
+        self.create_polygon(
+            _rounded_polygon_points(
+                width - pill_width - 7,
+                7,
+                width - 7,
+                height - 7,
+                RADII["badge"],
+            ),
+            smooth=True,
+            splinesteps=8,
+            fill=UI["accent_subtle"] if enabled else UI["surface_overlay"],
+            outline="",
+        )
+        self.create_text(
+            width - pill_width // 2 - 7,
+            height // 2,
+            text="选择",
+            fill=UI["accent_text"] if enabled else UI["text_disabled"],
+            font=self._font,
+        )
+
+    def _enter(self, _event: object | None = None) -> None:
+        self._hovered = True
+        self._queue_draw()
+
+    def _leave(self, _event: object | None = None) -> None:
+        self._hovered = False
+        self._queue_draw()
+
+    def _open_popup(self, _event: object | None = None) -> str:
+        if self._state == "disabled" or not self._values:
+            return "break"
+        if self._popup is not None and self._popup.winfo_exists():
+            self._close_popup()
+            return "break"
+        popup = Toplevel(self)
+        popup.withdraw()
+        popup.overrideredirect(True)
+        popup.transient(self.winfo_toplevel())
+        popup.configure(background=UI["border"])
+        popup.attributes("-topmost", True)
+        width = max(self.winfo_width(), 220)
+        row_height = max(30, round(32 * _widget_ui_scale(self)))
+        visible_rows = min(8, len(self._values))
+        height = visible_rows * row_height + 12
+        panel = _RoundedPanel(
+            popup,
+            fill=UI["surface_raised"],
+            outer_background=UI["border"],
+            style="SurfaceRaised.TFrame",
+            radius=RADII["control"],
+            border=UI["border"],
+            border_width=1,
+            inset=6,
+        )
+        panel.pack(fill=BOTH, expand=True)
+        listbox = Listbox(
+            panel.inner,
+            activestyle="none",
+            background=UI["surface_raised"],
+            foreground=UI["text"],
+            selectbackground=UI["selected"],
+            selectforeground=UI["text"],
+            highlightthickness=0,
+            borderwidth=0,
+            relief="flat",
+            font=self._font,
+            exportselection=False,
+        )
+        for value in self._values:
+            listbox.insert(END, value)
+        selected = self.current()
+        if selected >= 0:
+            listbox.selection_set(selected)
+            listbox.see(selected)
+        listbox.pack(fill=BOTH, expand=True)
+        listbox.bind("<ButtonRelease-1>", self._choose_popup_value, add="+")
+        listbox.bind("<Return>", self._choose_popup_value, add="+")
+        listbox.bind("<Escape>", self._close_popup, add="+")
+        popup.bind("<FocusOut>", self._popup_focus_out, add="+")
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height() + 4
+        screen_height = self.winfo_screenheight()
+        if y + height > screen_height:
+            y = max(0, self.winfo_rooty() - height - 4)
+        popup.geometry(f"{width}x{height}+{x}+{y}")
+        self._popup = popup
+        self._listbox = listbox
+        popup.deiconify()
+        popup.lift()
+        listbox.focus_set()
+        return "break"
+
+    def _popup_focus_out(self, _event: object | None = None) -> None:
+        if self._popup is not None:
+            self.after_idle(self._close_popup_if_unfocused)
+
+    def _close_popup_if_unfocused(self) -> None:
+        popup = self._popup
+        if popup is None:
+            return
+        try:
+            focused = popup.focus_get()
+        except Exception:
+            focused = None
+        if focused is None:
+            self._close_popup()
+
+    def _choose_popup_value(self, _event: object | None = None) -> str:
+        if self._listbox is not None:
+            selection = self._listbox.curselection()
+            if selection:
+                self.current(int(selection[0]))
+        self._close_popup()
+        self.focus_set()
+        return "break"
+
+    def _close_popup(self, _event: object | None = None) -> str:
+        popup = self._popup
+        self._popup = None
+        self._listbox = None
+        if popup is not None:
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+        return "break"
+
+    def current(self, index: int | None = None) -> int:
+        if index is not None:
+            if 0 <= int(index) < len(self._values):
+                value = self._values[int(index)]
+                try:
+                    self._textvariable.set(value)
+                except Exception:
+                    pass
+                return int(index)
+            return -1
+        try:
+            return self._values.index(str(self._textvariable.get()))
+        except (AttributeError, ValueError):
+            return -1
+
+    def configure(self, cnf: object | None = None, **kwargs: object):
+        if cnf is not None:
+            if isinstance(cnf, dict):
+                kwargs = {**cnf, **kwargs}
+            else:
+                return super().configure(cnf, **kwargs)
+        if not hasattr(self, "_values"):
+            return super().configure(**kwargs)
+        if "values" in kwargs:
+            self._values = tuple(str(value) for value in kwargs.pop("values"))
+        if "state" in kwargs:
+            self._state = str(kwargs.pop("state"))
+            super().configure(cursor="hand2" if self._state != "disabled" else "arrow")
+        if kwargs:
+            result = super().configure(**kwargs)
+        else:
+            result = None
+        self._last_draw_signature = None
+        self._queue_draw()
+        return result
+
+    config = configure
+
+    def cget(self, key: str):
+        if hasattr(self, "_values"):
+            if key == "values":
+                return self._values
+            if key == "state":
+                return self._state
+            if key == "textvariable":
+                return self._textvariable
+        return super().cget(key)
+
+    def _destroy(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self:
+            return
+        if self._draw_after_id is not None:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except Exception:
+                pass
+            self._draw_after_id = None
+        self._close_popup()
+        if self._textvariable is not None and self._trace_id is not None:
+            try:
+                self._textvariable.trace_remove("write", self._trace_id)
+            except Exception:
+                pass
+            self._trace_id = None
 
 
 class _RoundedBadge(Canvas):
@@ -1787,6 +2333,14 @@ class _RoundedNavButton(Canvas):
         if changed:
             self._last_draw_signature = None
             self._queue_draw()
+
+    def set_text(self, text: object) -> None:
+        value = str(text)
+        if value == self._text:
+            return
+        self._text = value
+        self._last_draw_signature = None
+        self._queue_draw()
 
     def _queue_draw(self, _event: object | None = None) -> None:
         if self._draw_after_id is not None:
@@ -2118,7 +2672,7 @@ class _MouseWheelRouter:
     def _dispatch(self, event: object) -> str | None:
         current = getattr(event, "widget", None)
         while current is not None:
-            if isinstance(current, (ttk.Treeview, ttk.Combobox)):
+            if isinstance(current, (ttk.Treeview, ttk.Combobox, _RoundedCombobox)):
                 return None
             if current in self.scrollers:
                 return current._on_mousewheel(event)
@@ -2255,8 +2809,11 @@ def _windows_color_ref(color: str) -> int:
     return red | (green << 8) | (blue << 16)
 
 
-def _apply_windows_dark_title_bar(window: Tk | Toplevel) -> bool:
-    """Keep native window behavior while matching the application's dark shell."""
+def _apply_windows_dark_title_bar(
+    window: Tk | Toplevel,
+    dark: bool = True,
+) -> bool:
+    """Keep native window behavior while matching the active application theme."""
 
     if sys.platform != "win32":
         return False
@@ -2271,7 +2828,7 @@ def _apply_windows_dark_title_bar(window: Tk | Toplevel) -> bool:
             hwnd = parent
 
         dwmapi = ctypes.windll.dwmapi
-        enabled = ctypes.c_int(1)
+        enabled = ctypes.c_int(1 if dark else 0)
         dark_result = int(
             dwmapi.DwmSetWindowAttribute(
                 hwnd,
@@ -2529,7 +3086,7 @@ class _VerticalScrolledFrame(ttk.Frame):
     def _inside_independent_scroller(self, widget: object) -> bool:
         current = widget
         while current is not None and current is not self:
-            if isinstance(current, (ttk.Treeview, ttk.Combobox)):
+            if isinstance(current, (ttk.Treeview, ttk.Combobox, _RoundedCombobox)):
                 return True
             current = getattr(current, "master", None)
         return False
@@ -2683,6 +3240,9 @@ class MainWindow:
         self.current_ui_operation = "startup"
         self.eagle = EagleClient()
         self.pairing = PairingManager(database)
+        self.ui_theme = _set_ui_theme(
+            database.get_setting("ui_theme", DEFAULT_UI_THEME)
+        )
         _enable_windows_dpi_awareness()
         self.root = Tk()
         if visual_capture_hidden:
@@ -2700,7 +3260,7 @@ class MainWindow:
         self.root.configure(background=UI["bg"])
         if self.start_hidden:
             self.root.withdraw()
-        self.root.title("下载中转站")
+        self.root.title(f"{APP_NAME} v{APP_VERSION}")
         initial_geometry = visual_capture_geometry or _scale_geometry(
             "1120x720",
             self.ui_scale,
@@ -2711,8 +3271,16 @@ class MainWindow:
             round(600 * self.ui_scale),
         )
         self.root.protocol("WM_DELETE_WINDOW", self.hide if external_tray else self.quit)
-        _apply_windows_dark_title_bar(self.root)
-        self.root.after_idle(lambda: _apply_windows_dark_title_bar(self.root))
+        _apply_windows_dark_title_bar(
+            self.root,
+            dark=self.ui_theme == "dark",
+        )
+        self.root.after_idle(
+            lambda: _apply_windows_dark_title_bar(
+                self.root,
+                dark=self.ui_theme == "dark",
+            )
+        )
         self.status_text = StringVar()
         self.page_title_text = StringVar(value="下载任务")
         self.eagle_status_text = StringVar(value="Eagle 正在检查")
@@ -2724,6 +3292,8 @@ class MainWindow:
         self.settings_proxy_status_text = StringVar(value="正在检测网络…")
         self.settings_site_summary_text = StringVar(value="正在读取网站规则…")
         self.update_button_text = StringVar(value="检查更新")
+        self.theme_button_text = StringVar()
+        self._update_theme_button_text()
         self.current_page = "media"
         self.page_frames: dict[str, ttk.Frame] = {}
         self.nav_buttons: dict[str, _RoundedNavButton] = {}
@@ -2866,27 +3436,10 @@ class MainWindow:
         )
         self.topbar.pack(fill=X)
         self.topbar.grid_propagate(False)
-        self.topbar.columnconfigure(1, weight=1)
-        self.topbar_left = ttk.Frame(self.topbar, style="Topbar.TFrame")
-        self.topbar_left.grid(row=0, column=0, sticky="w", padx=(16, 0))
-        ttk.Label(
-            self.topbar_left,
-            image=self.brand_image,
-            style="Topbar.TLabel",
-        ).pack(side=LEFT, padx=(0, 7))
-        ttk.Label(
-            self.topbar_left,
-            text="下载中转站",
-            style="TopbarBrand.TLabel",
-        ).pack(side=LEFT)
-        ttk.Label(
-            self.topbar_left,
-            text=f"v{APP_VERSION}",
-            style="TopbarVersion.TLabel",
-        ).pack(side=LEFT, padx=(8, 0))
+        self.topbar.columnconfigure(0, weight=1)
 
         self.topbar_statuses = ttk.Frame(self.topbar, style="Topbar.TFrame")
-        self.topbar_statuses.grid(row=0, column=1, sticky="e", padx=(12, 16))
+        self.topbar_statuses.grid(row=0, column=0, sticky="e", padx=(12, 16))
         self.status_dots: dict[str, _StatusIndicator] = {}
         for key, variable in (
             ("eagle", self.eagle_status_text),
@@ -2933,6 +3486,13 @@ class MainWindow:
             button._icon_name = icon_name  # type: ignore[attr-defined]
             self.nav_buttons[key] = button
         ttk.Frame(self.sidebar, style="Sidebar.TFrame").pack(fill=BOTH, expand=True)
+        self.theme_button = _RoundedNavButton(
+            self.sidebar,
+            text=self.theme_button_text.get(),
+            image=None,
+            command=self._toggle_theme,
+        )
+        self.theme_button.pack(fill=X, pady=(8, 0))
         diagnose = _RoundedNavButton(
             self.sidebar,
             text="导出诊断信息",
@@ -2949,6 +3509,120 @@ class MainWindow:
         self.page_host.pack(fill=BOTH, expand=True)
         self._build_media_tab()
         self._show_page("media")
+
+    def _update_theme_button_text(self) -> None:
+        label = (
+            "切换到微亮主题"
+            if self.ui_theme == "dark"
+            else "切换到深色主题"
+        )
+        _set_var_if_changed(self.theme_button_text, label)
+        button = getattr(self, "theme_button", None)
+        if button is not None:
+            button.set_text(label)
+
+    @staticmethod
+    def _theme_color_map(
+        old_palette: dict[str, object],
+        new_palette: dict[str, object],
+    ) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for key, old_value in old_palette.items():
+            new_value = new_palette.get(key)
+            if isinstance(old_value, str) and isinstance(new_value, str):
+                mapping.setdefault(old_value.lower(), new_value)
+            elif isinstance(old_value, tuple) and isinstance(new_value, tuple):
+                for old_color, new_color in zip(old_value, new_value):
+                    if isinstance(old_color, str) and isinstance(new_color, str):
+                        mapping.setdefault(old_color.lower(), new_color)
+        return mapping
+
+    def _retheme_widget_tree(
+        self,
+        widget: object,
+        color_map: dict[str, str],
+    ) -> None:
+        def mapped(value: object) -> object:
+            if isinstance(value, str):
+                return color_map.get(value.lower(), value)
+            if isinstance(value, tuple):
+                return tuple(mapped(part) for part in value)
+            return value
+
+        if isinstance(widget, Canvas):
+            canvas_options: dict[str, object] = {}
+            for option in ("background", "highlightbackground", "highlightcolor"):
+                try:
+                    value = str(widget.cget(option))
+                except Exception:
+                    continue
+                replacement = mapped(value)
+                if replacement != value:
+                    canvas_options[option] = replacement
+            if canvas_options:
+                try:
+                    widget.configure(**canvas_options)
+                except Exception:
+                    pass
+            try:
+                for item in widget.find_all():
+                    options: dict[str, object] = {}
+                    for option in ("fill", "outline"):
+                        try:
+                            value = str(widget.itemcget(item, option))
+                        except Exception:
+                            continue
+                        replacement = mapped(value)
+                        if replacement != value:
+                            options[option] = replacement
+                    if options:
+                        widget.itemconfigure(item, **options)
+            except Exception:
+                pass
+
+        for attribute in ("_fill", "_border", "_color", "_state"):
+            if not hasattr(widget, attribute):
+                continue
+            current = getattr(widget, attribute)
+            replacement = mapped(current)
+            if replacement != current:
+                setattr(widget, attribute, replacement)
+        if hasattr(widget, "_last_draw_signature"):
+            setattr(widget, "_last_draw_signature", None)
+        for method_name in ("_queue_draw", "_queue_redraw"):
+            method = getattr(widget, method_name, None)
+            if callable(method):
+                try:
+                    method()
+                except Exception:
+                    pass
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            children = ()
+        for child in children:
+            self._retheme_widget_tree(child, color_map)
+
+    def _toggle_theme(self) -> None:
+        previous = dict(UI)
+        target = "dark" if self.ui_theme == "light" else "light"
+        self.ui_theme = _set_ui_theme(target)
+        try:
+            self.database.set_setting("ui_theme", self.ui_theme)
+        except Exception:
+            pass
+        _configure_styles(self.root, self.ui_scale)
+        self.root.configure(background=UI["bg"])
+        self._retheme_widget_tree(
+            self.root,
+            self._theme_color_map(previous, UI),
+        )
+        self._update_theme_button_text()
+        _apply_windows_dark_title_bar(
+            self.root,
+            dark=self.ui_theme == "dark",
+        )
+        self.root.after_idle(lambda: self.refresh(force=True))
 
     def _new_page(self, name: str) -> ttk.Frame:
         page = ttk.Frame(self.page_host, style="Surface.TFrame")
@@ -3125,46 +3799,15 @@ class MainWindow:
             )
         )
         self.topbar.configure(
-            height=(
-                self.metrics["topbar_compact_height"]
-                if compact
-                else self.metrics["topbar_height"]
-            )
+            height=self.metrics["topbar_height"]
         )
-        if compact:
-            self.topbar_left.grid(
-                row=0,
-                column=0,
-                columnspan=2,
-                sticky="w",
-                padx=(16, 0),
-                pady=(2, 0),
-            )
-            self.topbar_statuses.grid(
-                row=1,
-                column=0,
-                columnspan=2,
-                sticky="e",
-                padx=(16, 16),
-                pady=(0, 5),
-            )
-        else:
-            self.topbar_left.grid(
-                row=0,
-                column=0,
-                columnspan=1,
-                sticky="w",
-                padx=(16, 0),
-                pady=0,
-            )
-            self.topbar_statuses.grid(
-                row=0,
-                column=1,
-                columnspan=1,
-                sticky="e",
-                padx=(12, 16),
-                pady=0,
-            )
+        self.topbar_statuses.grid(
+            row=0,
+            column=0,
+            sticky="e",
+            padx=(12, 16),
+            pady=0,
+        )
         if hasattr(self, "settings_nav"):
             self.settings_nav.configure(
                 width=(
@@ -3245,14 +3888,14 @@ class MainWindow:
             text="媒体任务",
             style="MediaToolbarTitle.TLabel",
         ).pack(side=LEFT)
-        self.media_clear_button = ttk.Button(
+        self.media_clear_button = _RoundedButton(
             toolbar,
             text="清除完成",
             style="MediaToolbar.TButton",
             command=self.clear_media_history,
         )
         self.media_clear_button.pack(side=RIGHT)
-        self.media_next_button = ttk.Button(
+        self.media_next_button = _RoundedButton(
             toolbar,
             text="›",
             width=2,
@@ -3266,7 +3909,7 @@ class MainWindow:
             textvariable=self.media_page_text,
             style="MediaToolbarTitle.TLabel",
         ).pack(side=RIGHT, padx=3)
-        self.media_previous_button = ttk.Button(
+        self.media_previous_button = _RoundedButton(
             toolbar,
             text="‹",
             width=2,
@@ -3508,20 +4151,20 @@ class MainWindow:
         tab = self._new_page("idm")
         toolbar = ttk.Frame(tab, style="Surface.TFrame", padding=(16, 7))
         toolbar.pack(fill=X)
-        self.idm_clear_button = ttk.Button(
+        self.idm_clear_button = _RoundedButton(
             toolbar,
             text="清除完成",
             style="Link.TButton",
             command=self.clear_history,
         )
         self.idm_clear_button.pack(side=RIGHT)
-        ttk.Button(
+        _RoundedButton(
             toolbar,
             text="刷新",
             style="Link.TButton",
             command=lambda: self.refresh(force=True),
         ).pack(side=RIGHT, padx=(0, 4))
-        self.idm_next_button = ttk.Button(
+        self.idm_next_button = _RoundedButton(
             toolbar,
             text="›",
             width=2,
@@ -3535,7 +4178,7 @@ class MainWindow:
             textvariable=self.idm_page_text,
             style="SectionOnSurface.TLabel",
         ).pack(side=RIGHT, padx=3)
-        self.idm_previous_button = ttk.Button(
+        self.idm_previous_button = _RoundedButton(
             toolbar,
             text="‹",
             width=2,
@@ -3653,7 +4296,7 @@ class MainWindow:
         actions.pack(fill=X, pady=(10, 8))
         self.idm_action_buttons = {
             "retry": actions.add(
-                ttk.Button(
+                _RoundedButton(
                     actions,
                     text="重试导入",
                     image=self.ui_icons.get("retry-white"),
@@ -3663,7 +4306,7 @@ class MainWindow:
                 )
             ),
             "open": actions.add(
-                ttk.Button(
+                _RoundedButton(
                     actions,
                     text="原文件位置",
                     image=self.ui_icons.get("folder-muted"),
@@ -3673,7 +4316,7 @@ class MainWindow:
                 )
             ),
             "source": actions.add(
-                ttk.Button(
+                _RoundedButton(
                     actions,
                     text="可靠来源",
                     image=self.ui_icons.get("globe-muted"),
@@ -3683,7 +4326,7 @@ class MainWindow:
                 )
             ),
             "assign": actions.add(
-                ttk.Button(
+                _RoundedButton(
                     actions,
                     text="补充 / 修改来源",
                     image=self.ui_icons.get("source-muted"),
@@ -3693,7 +4336,7 @@ class MainWindow:
                 )
             ),
             "remove": actions.add(
-                ttk.Button(
+                _RoundedButton(
                     actions,
                     text="清理记录",
                     style="Danger.TButton",
@@ -3759,7 +4402,7 @@ class MainWindow:
             style="Muted.TLabel",
             justify=LEFT,
         ).pack(fill=X, pady=(5, 8))
-        self.wechat_action_button = ttk.Button(
+        self.wechat_action_button = _RoundedButton(
             capture,
             textvariable=self.wechat_action_text,
             image=self.ui_icons.get("play-white"),
@@ -3768,7 +4411,7 @@ class MainWindow:
             style="Accent.TButton",
         )
         self.wechat_action_button.pack(fill=X)
-        self.wechat_proxy_repair_button = ttk.Button(
+        self.wechat_proxy_repair_button = _RoundedButton(
             capture,
             text="修复代理冲突",
             image=self.ui_icons.get("settings-muted"),
@@ -3792,13 +4435,13 @@ class MainWindow:
             textvariable=self.wechat_candidate_count_text,
             style="SectionOnSurface.TLabel",
         ).pack(side=LEFT)
-        ttk.Button(
+        _RoundedButton(
             candidate_toolbar,
             text="清空",
             command=self.clear_wechat_candidates,
             style="Link.TButton",
         ).pack(side=RIGHT)
-        self.wechat_next_button = ttk.Button(
+        self.wechat_next_button = _RoundedButton(
             candidate_toolbar,
             text="›",
             width=2,
@@ -3811,7 +4454,7 @@ class MainWindow:
             textvariable=self.wechat_page_text,
             style="Muted.TLabel",
         )
-        self.wechat_previous_button = ttk.Button(
+        self.wechat_previous_button = _RoundedButton(
             candidate_toolbar,
             text="‹",
             width=2,
@@ -3892,7 +4535,7 @@ class MainWindow:
             text="下载质量",
             style="RaisedMuted.TLabel",
         ).pack(anchor="w", pady=(12, 4))
-        self.wechat_variant_box = ttk.Combobox(
+        self.wechat_variant_box = _RoundedCombobox(
             detail_content,
             state="readonly",
             textvariable=self.wechat_variant_text,
@@ -3909,7 +4552,7 @@ class MainWindow:
         delivery.pack(fill=X, pady=(14, 0))
         self.wechat_delivery_buttons = {
             "eagle": delivery.add(
-                ttk.Button(
+                _RoundedButton(
                     delivery,
                     text="导入 Eagle（完成后删除本机副本）",
                     image=self.ui_icons.get("import-white"),
@@ -3919,7 +4562,7 @@ class MainWindow:
                 )
             ),
             "local": delivery.add(
-                ttk.Button(
+                _RoundedButton(
                     delivery,
                     text="仅下载并保留本机文件",
                     image=self.ui_icons.get("downloads-muted"),
@@ -3969,7 +4612,7 @@ class MainWindow:
             ("storage", "文件管理"),
             ("updates", "更新"),
         ):
-            btn = ttk.Button(
+            btn = _RoundedButton(
                 self.settings_nav,
                 text=label,
                 style="Nav.TButton",
@@ -4075,7 +4718,7 @@ class MainWindow:
         )
         actions.pack(fill=X, pady=(14, 0))
         actions.add(
-            ttk.Button(
+            _RoundedButton(
                 actions,
                 text="复制六位码",
                 image=self.ui_icons.get("copy-white"),
@@ -4085,7 +4728,7 @@ class MainWindow:
             )
         )
         actions.add(
-            ttk.Button(
+            _RoundedButton(
                 actions,
                 text="解除配对",
                 image=self.ui_icons.get("trash-danger"),
@@ -4122,7 +4765,7 @@ class MainWindow:
             textvariable=self.settings_site_input,
         )
         self.settings_site_entry.pack(side=LEFT, fill=X, expand=True)
-        ttk.Button(
+        _RoundedButton(
             add_row,
             text="新增并启用",
             image=self.ui_icons.get("plus-white"),
@@ -4183,7 +4826,7 @@ class MainWindow:
             ("清空", self._settings_clear_rules),
         ):
             site_actions.add(
-                ttk.Button(
+                _RoundedButton(
                     site_actions,
                     text=label,
                     style="Danger.TButton" if label in {"删除", "清空"} else "Quiet.TButton",
@@ -4245,7 +4888,7 @@ class MainWindow:
         ttk.Label(manual, text="代理地址", style="Muted.TLabel").pack(anchor="w")
         self.settings_proxy_entry = ttk.Entry(manual, textvariable=self.settings_proxy_manual)
         self.settings_proxy_entry.pack(fill=X, pady=(5, 0))
-        ttk.Button(
+        _RoundedButton(
             content,
             text="保存并检测",
             style="Accent.TButton",
@@ -4330,7 +4973,7 @@ class MainWindow:
             maximum=820,
         ).pack(fill=X, pady=(9, 0))
 
-        ttk.Button(
+        _RoundedButton(
             content,
             text="保存设置",
             style="Accent.TButton",
@@ -4402,7 +5045,7 @@ class MainWindow:
             justify=LEFT,
             maximum=820,
         ).pack(fill=X, pady=(12, 0))
-        self.update_button = ttk.Button(
+        self.update_button = _RoundedButton(
             content,
             textvariable=self.update_button_text,
             image=self.ui_icons.get("downloads-muted"),
@@ -4471,7 +5114,7 @@ class MainWindow:
             justify=LEFT,
             maximum=780,
         ).pack(fill=X, pady=(6, 0))
-        self.diagnostics_export_button = ttk.Button(
+        self.diagnostics_export_button = _RoundedButton(
             content,
             text="导出脱敏诊断",
             image=self.ui_icons.get("diagnostics-white"),
@@ -4498,14 +5141,14 @@ class MainWindow:
             style="Section.TLabel",
         ).pack(anchor="w", pady=(0, 8))
         if self.external_tray:
-            ttk.Button(
+            _RoundedButton(
                 window,
                 text="隐藏到右下角",
                 style="Quiet.TButton",
                 command=self.hide,
             ).pack(side=LEFT)
         else:
-            ttk.Button(
+            _RoundedButton(
                 window,
                 text="最小化窗口",
                 style="Quiet.TButton",
@@ -4758,7 +5401,10 @@ class MainWindow:
     def show(self) -> None:
         self.visible = True
         self.root.deiconify()
-        _apply_windows_dark_title_bar(self.root)
+        _apply_windows_dark_title_bar(
+            self.root,
+            dark=self.ui_theme == "dark",
+        )
         self.root.lift()
         self.root.focus_force()
         self.refresh(force=True)
@@ -5285,29 +5931,39 @@ class MainWindow:
             meta_style = (
                 "TaskCardMetaSelected.TLabel" if selected else "TaskCardMeta.TLabel"
             )
-            row = ttk.Frame(
+            row = _RoundedPanel(
                 self.wechat_card_list.content,
+                fill=UI["selected"] if selected else UI["surface"],
+                outer_background=UI["surface"],
                 style=frame_style,
-                height=self.metrics["wechat_row_height"],
+                radius=RADII["card"],
+                height=self.metrics["wechat_row_height"] - max(1, round(4 * self.ui_scale)),
+                inset=4,
                 takefocus=True,
             )
-            row.pack(fill=X)
-            row.pack_propagate(False)
-            body = ttk.Frame(row, style=frame_style, padding=(16, 9, 12, 7))
+            row.pack(fill=X, padx=6, pady=2)
+            body = ttk.Frame(
+                row.inner,
+                style=frame_style,
+                padding=(12, 6, 10, 5),
+            )
             body.pack(fill=BOTH, expand=True)
             body.columnconfigure(1, weight=1)
-            thumbnail_host = ttk.Frame(
+            thumbnail_host = _RoundedPanel(
                 body,
+                fill=UI["surface_overlay"],
+                outer_background=UI["selected"] if selected else UI["surface"],
                 style="Soft.TFrame",
                 width=64,
                 height=40,
+                radius=RADII["thumbnail"],
+                inset=2,
             )
             thumbnail_host.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 8))
-            thumbnail_host.grid_propagate(False)
             thumbnail = ttk.Label(
-                thumbnail_host,
+                thumbnail_host.inner,
                 image=self.ui_icons.get("wechat-muted"),
-                style="SurfaceRaised.TLabel",
+                style="Soft.TLabel",
                 anchor="center",
             )
             thumbnail.pack(fill=BOTH, expand=True)
@@ -5346,21 +6002,23 @@ class MainWindow:
             self.wechat_card_widgets[object_id] = {
                 "row": row,
                 "body": body,
+                "thumbnail_host": thumbnail_host,
                 "title": title,
                 "author": author,
                 "metadata": metadata,
             }
             for widget in (
                 row,
+                row.inner,
                 body,
                 thumbnail_host,
+                thumbnail_host.inner,
                 thumbnail,
                 title,
                 author,
                 metadata,
             ):
                 self._bind_wechat_card(widget, object_id)
-            ttk.Separator(self.wechat_card_list.content).pack(fill=X)
 
     def _update_wechat_card_widget(
         self,
@@ -5386,8 +6044,18 @@ class MainWindow:
         quality = str(variants[0].get("quality") or "自动") if variants else "自动"
         updated = float(candidate.get("updatedAt") or 0)
         time_text = time.strftime("%H:%M", time.localtime(updated)) if updated else "—"
-        _configure_if_changed(widgets["row"], style=frame_style)
+        row = widgets["row"]
+        if isinstance(row, _RoundedPanel):
+            row.set_surface(
+                fill=UI["selected"] if selected else UI["surface"],
+                style=frame_style,
+            )
         _configure_if_changed(widgets["body"], style=frame_style)
+        thumbnail_host = widgets.get("thumbnail_host")
+        if isinstance(thumbnail_host, _RoundedPanel):
+            thumbnail_host.configure(
+                background=UI["selected"] if selected else UI["surface"],
+            )
         _configure_if_changed(
             widgets["title"],
             text=_ellipsize(candidate.get("title") or "微信视频号视频", 24),
@@ -6144,7 +6812,7 @@ class MainWindow:
                 thumbnail_host.inner,
                 image=self._plan_thumbnail(plan_id, plan),
                 text="" if self.brand_image else "视频",
-                style="SurfaceRaised.TLabel",
+                style="Soft.TLabel",
                 anchor="center",
             )
             thumbnail.pack(fill=BOTH, expand=True)

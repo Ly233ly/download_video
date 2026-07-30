@@ -11,7 +11,7 @@ from collections import OrderedDict
 from pathlib import Path
 from queue import Queue
 from types import SimpleNamespace
-from tkinter import BOTH, TclError, Tk
+from tkinter import BOTH, StringVar, TclError, Tk
 from tkinter import ttk
 from tkinter import font as tkfont
 from unittest.mock import patch
@@ -21,10 +21,12 @@ from idm_eagle_bridge.database import Database
 from idm_eagle_bridge.performance import PerformanceMonitor
 from idm_eagle_bridge.service import ProcessingService
 from idm_eagle_bridge.ui import (
+    UI,
     _AsyncProbe,
     _DynamicWrapLabel,
     _PreviewImageCache,
     _RoundedPanel,
+    _RoundedCombobox,
     _RoundedProgressBar,
     _RoundedScrollbar,
     _ResponsiveTreeColumns,
@@ -819,7 +821,26 @@ class ResponsiveWidgetTests(unittest.TestCase):
         self.root.update_idletasks()
 
         self.assertEqual(progress._value, 100)
-        self.assertEqual(progress._color, "#34D399")
+        self.assertEqual(progress._color, UI["success"])
+
+    def test_rounded_combobox_preserves_combobox_selection_contract(self) -> None:
+        value = StringVar(master=self.root, value="")
+        selector = _RoundedCombobox(
+            self.root,
+            textvariable=value,
+            values=("1080p", "720p"),
+        )
+        selector.pack(fill="x")
+        selector.current(1)
+        self.root.update_idletasks()
+
+        self.assertEqual(selector.current(), 1)
+        self.assertEqual(value.get(), "720p")
+        selector.configure(values=("4K", "1080p"))
+        selector.current(0)
+        self.assertEqual(selector.cget("values"), ("4K", "1080p"))
+        self.assertEqual(value.get(), "4K")
+        self.root.update_idletasks()
 
     def test_tree_columns_fit_the_available_width(self) -> None:
         tree = ttk.Treeview(
@@ -894,6 +915,18 @@ class ProductionUiIntegrationTests(unittest.TestCase):
 
             window.refresh(force=True)
             window.root.update_idletasks()
+
+            self.assertEqual(window.ui_theme, "light")
+            self.assertEqual(window.root.title(), "下载中转站 v1.4.7")
+            self.assertEqual(window.theme_button_text.get(), "切换到深色主题")
+            window._toggle_theme()
+            window.root.update_idletasks()
+            self.assertEqual(window.ui_theme, "dark")
+            self.assertEqual(database.get_setting("ui_theme"), "dark")
+            self.assertEqual(window.theme_button_text.get(), "切换到微亮主题")
+            window._toggle_theme()
+            window.root.update_idletasks()
+            self.assertEqual(window.ui_theme, "light")
 
             self.assertIs(window.media, server.api.media)
             self.assertIs(window.wechat_channels, server.api.wechat_channels)

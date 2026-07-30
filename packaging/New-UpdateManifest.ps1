@@ -38,6 +38,10 @@ $unsigned = [ordered]@{
     version = $Version
 }
 $canonical = $unsigned | ConvertTo-Json -Compress
+# Windows PowerShell escapes HTML-sensitive characters even when the JSON value
+# itself contains the literal character. The updater canonicalizes with Python's
+# ensure_ascii=False, so normalize those optional JSON escapes before signing.
+$canonical = $canonical.Replace('\u003c', '<').Replace('\u003e', '>').Replace('\u0026', '&').Replace('\u0027', "'")
 $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
 try {
     $rsa.FromXmlString([System.IO.File]::ReadAllText($resolvedKey))

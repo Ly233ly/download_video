@@ -57,7 +57,7 @@ IDM 下载完成：最终路径 ──┴─> SQLite 持久任务
 
 ## 1.4.0 前端投影边界
 
-- 桌面与扩展共享暖灰/白表面、紫灰强调色和下载中转站自有图标，但不共享运行时代码或引入第三方 UI 框架。
+- 桌面提供微亮/深色两套完整令牌并默认使用低眩光微亮主题；扩展继续使用自己的暖灰/白投影。两端共享紫灰强调色和下载中转站自有图标，但不共享运行时代码或引入第三方 UI 框架。
 - 桌面下载与视频号页使用主从详情；IDM、网站规则、网络和更新仍直接调用原有数据库/服务 Seam。界面只决定展示与动作可用性。
 - `_media_plan_view` 与扩展 `taskView` 把持久状态投影为文案、进度和按钮权限。除 `completed_local/imported` 外进度最多 99%，避免校验中或等待 Eagle 被描述为完成。
 - 最终文件的打开、补导和删除仍由服务端按 `planId` 与程序归属校验；客户端不传任意文件路径执行这些动作。
@@ -65,7 +65,7 @@ IDM 下载完成：最终路径 ──┴─> SQLite 持久任务
 
 ### 1.4.1 深色桌面运行时接线
 
-- 正式控制台入口、`launcher/assistant.pyw` 和 Windows Forms 托盘宿主最终都进入 `idm_eagle_bridge.main:main`；该入口创建真实数据库、处理线程与本机 API 后，把同一对象实例传给深色 `MainWindow`。
+- 正式控制台入口、`launcher/assistant.pyw` 和 Windows Forms 托盘宿主最终都进入 `idm_eagle_bridge.main:main`；该入口创建真实数据库、处理线程与本机 API 后，把同一对象实例传给支持微亮/深色切换的 `MainWindow`。
 - `MainWindow` 不维护第二份任务状态：媒体任务来自 `api_server.api.media`，视频号来自 `api_server.api.wechat_channels`，IDM/规则/配对来自同一数据库，处理唤醒来自同一 `ProcessingService`。
 - 产品 PNG、导航和动作图标以 `src/idm_eagle_bridge/assets` 为唯一发行资源目录；仓库根只保留 README 使用的产品图，不再复制 UI 图标。wheel 和 PyInstaller 都携带包内目录，冻结后从 `_MEIPASS/idm_eagle_bridge/assets` 读取。
 
@@ -92,7 +92,7 @@ IDM 下载完成：最终路径 ──┴─> SQLite 持久任务
 
 - Windows DPI 是用户缩放，不一定代表屏幕物理密度。启动时的有效比例取窗口 DPI 比例与屏幕像素相对 1920×1080 比例的较大值，避免 4K/100% 仍按 1080p 像素尺寸绘制；两者不相乘，防止 4K/200% 重复放大。
 - 字体族是 UI 投影的一部分。普通、强调和粗体统一选择微软雅黑 UI（不可用时回退 Microsoft YaHei/Segoe UI），字重使用 Tk `weight`；不再用不同字体文件模拟同一层级。
-- 标题栏继续由 Windows 非客户区管理，Tk 不进入 `overrideredirect` 无边框模式。窗口创建和重新显示时通过 DWM 请求深色模式，并在支持的 Windows 版本设置标题、文字和边框颜色；不支持的属性逐项安全忽略，因此贴边、系统菜单、最小化、最大化、关闭和任务栏行为仍由系统提供。
+- 标题栏继续由 Windows 非客户区管理，Tk 不进入 `overrideredirect` 无边框模式。窗口创建、重新显示和主题切换时通过 DWM 同步当前明暗模式，并在支持的 Windows 版本设置标题、文字和边框颜色；不支持的属性逐项安全忽略，因此贴边、系统菜单、最小化、最大化、关闭和任务栏行为仍由系统提供。标题由 `APP_NAME + APP_VERSION` 生成，应用客户区不再重复绘制品牌标题。
 - Treeview 只负责绘制，不可靠地提供省略号。IDM 投影先用当前命名字体测量列像素宽度并生成单行省略文本，完整领域值仍由详情面板读取数据库原值。
 
 ### 一键安装器与独立运行时

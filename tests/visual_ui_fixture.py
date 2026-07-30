@@ -651,6 +651,12 @@ def main() -> None:
     )
     parser.add_argument("--geometry", default="1120x720")
     parser.add_argument(
+        "--theme",
+        choices=("light", "dark"),
+        default="light",
+    )
+    parser.add_argument("--toggle-theme", action="store_true")
+    parser.add_argument(
         "--scenario",
         choices=("standard", "empty", "stress"),
         default="standard",
@@ -696,6 +702,7 @@ def main() -> None:
         output_path = root / "产品发布会完整回放.mp4"
         output_path.write_bytes(b"visual fixture")
         database = Database(root / "visual.db")
+        database.set_setting("ui_theme", args.theme)
         database.set_setting("pairing_code", "482731")
         database.set_site_rule("bilibili.com", True, True)
         database.set_site_rule("example.com", False, False)
@@ -814,6 +821,8 @@ def main() -> None:
 
         if not deferred_navigation:
             apply_requested_state()
+        if args.toggle_theme:
+            window._toggle_theme()
         window._visual_scroll_detail_bottom = args.scroll_detail_bottom
         if window.auto_update_after_id:
             window.root.after_cancel(window.auto_update_after_id)
