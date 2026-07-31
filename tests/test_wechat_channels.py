@@ -529,13 +529,128 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
             )
             service.proxy_lease = FakeLease()  # type: ignore[assignment]
             try:
-                with self.assertRaisesRegex(WechatChannelsError, "设置本机代理失败"):
-                    service.start(trust_certificate=False)
+                # The fake snapshot points at 127.0.0.1:7890; treat it as
+                # reachable so the start failure happens at lease.acquire and
+                # not at the stale-proxy preflight (which depends on the local
+                # port state and would make this test environment-sensitive).
+                with patch(
+                    "idm_eagle_bridge.wechat_channels.proxy_endpoint_reachable",
+                    return_value=True,
+                ):
+                    with self.assertRaisesRegex(
+                        WechatChannelsError, "设置本机代理失败"
+                    ):
+                        service.start(trust_certificate=False)
                 self.assertEqual(
                     events,
                     ["proxy.start", "lease.acquire", "lease.release", "proxy.stop"],
                 )
                 self.assertEqual(service.health()["state"], "failed")
+            finally:
+                coordinator.close()
+
+    def test_start_resets_needs_recovery_when_system_proxy_is_disabled(self) -> None:
+        events: list[str] = []
+        disabled = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 0, 4),
+                "ProxyServer": RegistryValue(True, "127.0.0.1:20230", 1),
+            }
+        )
+
+        class FakeProxy:
+            address = ("127.0.0.1", 20230)
+
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                pass
+
+            def start(self) -> None:
+                events.append("proxy.start")
+
+            def stop(self) -> None:
+                events.append("proxy.stop")
+
+        class FakeBackend:
+            def snapshot(self) -> ProxySnapshot:
+                return disabled
+
+        class FakeLease:
+            backend = FakeBackend()
+            snapshot: object | None = None
+            path = Path("unused-needs-recovery.json")
+
+            def recover_orphan(self) -> bool:
+                return False
+
+            def acquire(self, endpoint: str) -> ProxySnapshot:
+                self.snapshot = disabled
+                return disabled
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "bridge.db")
+            coordinator = MediaCoordinator(database)
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=Path(directory) / "capture",
+                proxy_factory=FakeProxy,  # type: ignore[arg-type]
+            )
+            service.proxy_lease = FakeLease()  # type: ignore[assignment]
+            service.state = "needs_recovery"
+            service.error = "系统代理已被其他程序修改，未覆盖当前设置"
+            try:
+                health = service.start(trust_certificate=False)
+                self.assertEqual(health["state"], "waiting_wechat")
+                self.assertEqual(service.error, "")
+                self.assertEqual(service.error_code, "")
+            finally:
+                coordinator.close()
+
+    def test_proxy_repair_clears_stale_loopback_when_disabled(self) -> None:
+        stale = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 0, 4),
+                "ProxyServer": RegistryValue(True, "127.0.0.1:20230", 1),
+                "ProxyOverride": RegistryValue(True, "<local>;127.*;localhost", 1),
+            }
+        )
+
+        class FakeBackend:
+            def __init__(self) -> None:
+                self.current = stale
+                self.restored: ProxySnapshot | None = None
+
+            def snapshot(self) -> ProxySnapshot:
+                return self.current
+
+            def restore(self, snapshot: ProxySnapshot) -> None:
+                self.restored = snapshot
+                self.current = snapshot
+
+            def disable_manual_proxy(self) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "bridge.db")
+            coordinator = MediaCoordinator(database)
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=Path(directory) / "capture",
+            )
+            service.proxy_lease.backend = FakeBackend()  # type: ignore[assignment]
+            service.state = "needs_recovery"
+            try:
+                with patch(
+                    "idm_eagle_bridge.wechat_channels.proxy_endpoint_reachable",
+                    return_value=False,
+                ):
+                    result = service.repair_proxy_conflict()
+                self.assertTrue(result["changed"])
+                self.assertEqual(service.state, "off")
+                self.assertEqual(service.error, "")
+                self.assertEqual(service.error_code, "")
+                self.assertFalse(
+                    service.proxy_lease.backend.current.values["ProxyServer"].exists
+                )
             finally:
                 coordinator.close()
 
@@ -1114,6 +1229,55 @@ class ProxyLeaseTests(unittest.TestCase):
             )
             self.assertFalse(lease.release())
             self.assertNotEqual(backend.current, original)
+
+    def test_release_recovers_when_own_proxy_was_disabled_externally(self) -> None:
+        original = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 0, 4),
+                "ProxyServer": RegistryValue(True, "127.0.0.1:7890", 1),
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            backend = FakeRegistryBackend(original)
+            lease = WinInetProxyLease(Path(directory) / "lease.json", backend)  # type: ignore[arg-type]
+            lease.acquire("127.0.0.1:20230")
+            # 外部把本实例设置的代理禁用，但 ProxyServer 仍残留本实例 endpoint
+            backend.current = ProxySnapshot(
+                {
+                    "ProxyEnable": RegistryValue(True, 0, 4),
+                    "ProxyServer": RegistryValue(True, "127.0.0.1:20230", 1),
+                }
+            )
+            self.assertTrue(lease.release())
+            self.assertEqual(backend.restored, original)
+            self.assertFalse(lease.path.exists())
+
+    def test_recover_orphan_recovers_when_own_proxy_was_disabled_externally(self) -> None:
+        original = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 0, 4),
+                "ProxyServer": RegistryValue(True, "127.0.0.1:7890", 1),
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            backend = FakeRegistryBackend(original)
+            path = Path(directory) / "lease.json"
+            WinInetProxyLease(path, backend).acquire("127.0.0.1:20230")  # type: ignore[arg-type]
+            backend.current = ProxySnapshot(
+                {
+                    "ProxyEnable": RegistryValue(True, 0, 4),
+                    "ProxyServer": RegistryValue(True, "127.0.0.1:20230", 1),
+                }
+            )
+            recovery = WinInetProxyLease(path, backend)  # type: ignore[arg-type]
+            self.assertTrue(recovery.recover_orphan())
+            self.assertEqual(
+                backend.restored.values["ProxyEnable"], original.values["ProxyEnable"]
+            )
+            self.assertEqual(
+                backend.restored.values["ProxyServer"], original.values["ProxyServer"]
+            )
+            self.assertFalse(path.exists())
 
     def test_partial_apply_failure_restores_original_before_removing_lease(self) -> None:
         original = ProxySnapshot({

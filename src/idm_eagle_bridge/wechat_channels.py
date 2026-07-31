@@ -17,8 +17,11 @@ from .media import MediaCoordinator, MediaPlanError, resolve_media_tool
 from .paths import ensure_data_dir
 from .wechat_channels_certificate import WechatCertificateAuthority
 from .wechat_channels_proxy import (
+    ProxySnapshot,
+    RegistryValue,
     WechatLoopbackProxy,
     WinInetProxyLease,
+    parse_proxy_server,
     proxy_endpoint_is_loopback,
     proxy_endpoint_reachable,
     upstream_http_proxy,
@@ -566,10 +569,16 @@ class WechatChannelsCaptureService:
                     else self.proxy_lease.recover_orphan()
                 )
                 if not restored:
-                    raise WechatChannelsError(
-                        self.error or "系统代理已由其他程序修改，请先恢复后再开始捕获"
-                    )
+                    current = self.proxy_lease.backend.snapshot()
+                    enabled = current.values.get("ProxyEnable", RegistryValue(False))
+                    if enabled.exists and int(enabled.value or 0) == 1:
+                        raise WechatChannelsError(
+                            self.error or "系统代理已由其他程序修改，请先恢复后再开始捕获"
+                        )
+                    # 系统代理已被外部禁用，没有需要保护的活跃代理，允许重新捕获
                 self.state = "off"
+                self.error = ""
+                self.error_code = ""
                 self.error = ""
                 self.error_code = ""
             self.state = "preparing"
@@ -696,6 +705,37 @@ class WechatChannelsCaptureService:
             current = backend.snapshot()
             upstream = upstream_http_proxy(current)
             if not upstream:
+                enabled = current.values.get("ProxyEnable", RegistryValue(False))
+                server = current.values.get("ProxyServer", RegistryValue(False))
+                stale_disabled = (
+                    enabled.exists
+                    and int(enabled.value or 0) == 0
+                    and server.exists
+                    and str(server.value or "").strip()
+                )
+                if stale_disabled:
+                    stale_endpoint = parse_proxy_server(str(server.value))
+                    if (
+                        stale_endpoint
+                        and proxy_endpoint_is_loopback(stale_endpoint)
+                        and not proxy_endpoint_reachable(stale_endpoint)
+                    ):
+                        cleanup = ProxySnapshot(dict(current.values))
+                        cleanup.values["ProxyEnable"] = RegistryValue(True, 0, 4)
+                        cleanup.values["ProxyServer"] = RegistryValue(False)
+                        backend.restore(cleanup)
+                        self.state = "off"
+                        self.error = ""
+                        self.error_code = ""
+                        self.last_event = (
+                            f"已清除残留的本机代理 {stale_endpoint[0]}:{stale_endpoint[1]}，"
+                            "现在可以开始捕获"
+                        )
+                        return {
+                            "changed": True,
+                            "running": False,
+                            "message": self.last_event,
+                        }
                 self.last_event = "未发现需要修复的系统代理"
                 return {
                     "changed": False,

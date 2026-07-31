@@ -273,7 +273,9 @@ class WinInetProxyLease:
         if self.snapshot is None:
             return False
         current = self.backend.snapshot()
-        if not self._is_owned(current, self.endpoint):
+        if not self._is_owned(current, self.endpoint) and not self._owned_or_disabled(
+            current, self.endpoint
+        ):
             self.snapshot = None
             self.endpoint = ""
             return False
@@ -295,7 +297,10 @@ class WinInetProxyLease:
             snapshot = ProxySnapshot.from_json(payload["snapshot"])
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return False
-        if not self._is_owned(self.backend.snapshot(), endpoint):
+        current = self.backend.snapshot()
+        if not self._is_owned(current, endpoint) and not self._owned_or_disabled(
+            current, endpoint
+        ):
             return False
         self.backend.restore(snapshot)
         try:
@@ -310,16 +315,30 @@ class WinInetProxyLease:
         server = snapshot.values.get("ProxyServer", RegistryValue(False))
         return bool(enabled.exists and int(enabled.value or 0) == 1 and server.exists and str(server.value) == endpoint)
 
+    @staticmethod
+    def _owned_or_disabled(snapshot: ProxySnapshot, endpoint: str) -> bool:
+        """True when the system proxy still points at our endpoint but was
+        disabled externally (ProxyEnable=0). No other active proxy is present,
+        so restoring the pre-capture snapshot cannot overwrite a user choice."""
+        enabled = snapshot.values.get("ProxyEnable", RegistryValue(False))
+        server = snapshot.values.get("ProxyServer", RegistryValue(False))
+        if not enabled.exists or not server.exists or str(server.value) != endpoint:
+            return False
+        return int(enabled.value or 0) == 0
+
 
 def upstream_http_proxy(snapshot: ProxySnapshot) -> tuple[str, int] | None:
     enabled = snapshot.values.get("ProxyEnable", RegistryValue(False))
     server = snapshot.values.get("ProxyServer", RegistryValue(False))
     if not enabled.exists or int(enabled.value or 0) != 1 or not server.exists:
         return None
-    raw = str(server.value or "").strip()
-    if not raw:
-        return None
-    selected = raw
+    return parse_proxy_server(str(server.value or ""))
+
+
+def parse_proxy_server(raw: str) -> tuple[str, int] | None:
+    """Parse a Windows ProxyServer value into a host/port pair regardless of
+    whether the proxy is currently enabled."""
+    selected = raw.strip()
     if ";" in raw or "=" in raw:
         entries: dict[str, str] = {}
         for item in raw.split(";"):
