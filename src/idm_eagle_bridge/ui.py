@@ -2818,7 +2818,9 @@ def _apply_windows_dark_title_bar(
     if sys.platform != "win32":
         return False
     try:
-        window.update_idletasks()
+        # Never call update_idletasks here: it synchronously drains idle
+        # callbacks and livelocks against _DynamicWrapLabel's <Configure>
+        # re-wrap, which freezes the UI thread.
         user32 = ctypes.windll.user32
         hwnd = int(window.winfo_id())
         while True:
