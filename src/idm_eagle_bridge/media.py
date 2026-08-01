@@ -1104,6 +1104,12 @@ class MediaCoordinator:
             target.unlink(missing_ok=True)
             raise MediaPlanError("视频号媒体下载结果为空", "wechat_download_failed")
         self._set_status(plan_id, "downloading", 60, "视频号媒体已下载并解密，正在校验封装")
+        actual_size = target.stat().st_size
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE download_plans SET total_bytes = ?, downloaded_bytes = ? WHERE id = ?",
+                (actual_size, actual_size, plan_id),
+            )
         prepared = dict(context)
         prepared.update(
             {

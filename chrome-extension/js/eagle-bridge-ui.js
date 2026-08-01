@@ -385,10 +385,14 @@
             batchButton.setAttribute("aria-pressed", String(state.batchMode));
         }
         if (!state.groups.length) {
-            list.innerHTML = `<div class="bridge-empty-sidebar">${escapeHtml(t("noMedia"))}</div>`;
+            logic.replaceScrollableContent(
+                list,
+                `<div class="bridge-empty-sidebar">${escapeHtml(t("noMedia"))}</div>`,
+                { preserve: false }
+            );
             return;
         }
-        list.innerHTML = state.groups.map(group => {
+        const markup = state.groups.map(group => {
             const selection = state.selections.get(group.id);
             const duration = logic.formatDuration(group.duration);
             const itemCount = group.items.length;
@@ -408,6 +412,9 @@
                 </span>
             </button></div>`;
         }).join("");
+        logic.replaceScrollableContent(list, markup, {
+            preserve: !options.scrollToLatest
+        });
         if (options.scrollToLatest) requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
     }
 

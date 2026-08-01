@@ -656,6 +656,45 @@ async function testValidatedTaskStart() {
 }
 
 {
+    const list = {
+        scrollTop: 720,
+        scrollHeight: 1400,
+        clientHeight: 400,
+        markup: ""
+    };
+    Object.defineProperty(list, "innerHTML", {
+        set(value) {
+            this.markup = value;
+            // Replacing a scroll container's children reproduces the popup bug:
+            // Chromium resets the list to its first row before the click completes.
+            this.scrollTop = 0;
+        }
+    });
+
+    logic.replaceScrollableContent(list, "<button>selected bottom item</button>");
+
+    assert.strictEqual(list.markup.includes("selected bottom item"), true);
+    assert.strictEqual(
+        list.scrollTop,
+        720,
+        "selecting a candidate near the bottom must preserve the sidebar scroll position"
+    );
+
+    list.scrollTop = 900;
+    list.scrollHeight = 600;
+    logic.replaceScrollableContent(list, "<button>shorter list</button>");
+    assert.strictEqual(
+        list.scrollTop,
+        200,
+        "a shorter refreshed list must clamp the restored position to its new scroll range"
+    );
+
+    list.scrollTop = 200;
+    logic.replaceScrollableContent(list, "<button>latest item</button>", { preserve: false });
+    assert.strictEqual(list.scrollTop, 0, "follow-latest rendering must remain free to choose a new position");
+}
+
+{
     const items = [
         candidate({ requestId: "filter-video", ext: "mp4", type: "video/mp4", role: undefined, groupKey: "", duration: 0, _size: 20 * 1024 * 1024 }),
         candidate({ requestId: "filter-audio", ext: "m4a", type: "audio/mp4", role: undefined, groupKey: "", duration: 0, url: "https://media.example/audio.m4a", _size: 3 * 1024 * 1024 }),

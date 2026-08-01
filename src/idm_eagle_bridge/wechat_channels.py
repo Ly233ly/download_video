@@ -24,6 +24,7 @@ from .wechat_channels_proxy import (
     parse_proxy_server,
     proxy_endpoint_is_loopback,
     proxy_endpoint_reachable,
+    upstream_auto_proxy_resolver,
     upstream_http_proxy,
     upstream_proxy_bypass,
 )
@@ -103,6 +104,28 @@ def _public_https_url(value: Any) -> str:
     return raw
 
 
+def _wechat_original_url(value: Any) -> str:
+    raw = _public_https_url(value)
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    selected: list[str] = []
+    for required_name in ("encfilekey", "token"):
+        argument = ""
+        for item in parts.query.split("&"):
+            name, separator, encoded_value = item.partition("=")
+            if separator and encoded_value and name.lower() == required_name:
+                argument = item
+                break
+        if not argument:
+            return ""
+        selected.append(argument)
+    original = urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, "&".join(selected), "")
+    )
+    return _public_https_url(original)
+
+
 def _public_image_url(value: Any) -> str:
     raw = _text(value, 16_384)
     try:
@@ -160,9 +183,21 @@ def _runtime_headers(
         (str(value or "") for name, value in values.items() if str(name).lower() == "cookie"),
         "",
     )
-    if cookie and media_host and referer_host == media_host and "\r" not in cookie and "\n" not in cookie:
-        result["Cookie"] = cookie[:16_384]
+    if cookie and media_host and "\r" not in cookie and "\n" not in cookie:
+        # 微信媒体 CDN 依赖登录态（Cookie）返回完整清晰度；捕获来源与媒体
+        # 主机属于同一微信域时附带 Cookie，避免无关站点的 Cookie 跨域泄露。
+        if referer_host == media_host or _same_tencent_origin(referer_host, media_host):
+            result["Cookie"] = cookie[:16_384]
     return result
+
+
+def _same_tencent_origin(referer_host: str, media_host: str) -> bool:
+    if not referer_host or not media_host:
+        return False
+    for base in (".qq.com", ".weixin.qq.com", ".wx.qq.com"):
+        if referer_host.endswith(base) and media_host.endswith(base):
+            return True
+    return False
 
 
 class _PublicImageRedirectHandler(HTTPRedirectHandler):
@@ -191,6 +226,7 @@ class WechatMediaVariant:
     file_size: int
     media_type: int
     delivery_spec: str = ""
+    original: bool = False
     format: str = "mp4"
     bitrate: int = 0
     headers: dict[str, str] = field(default_factory=dict)
@@ -199,7 +235,12 @@ class WechatMediaVariant:
         dimensions = [value for value in (self.width, self.height) if value]
         quality_edge = min(dimensions) if len(dimensions) == 2 else (dimensions[0] if dimensions else 0)
         quality = f"{quality_edge}p" if quality_edge else "自动质量"
-        quality += f" · {self.delivery_spec}" if self.delivery_spec else " · 原始/最高"
+        if self.original:
+            quality += " · 原始视频"
+        elif self.delivery_spec:
+            quality += f" · {self.delivery_spec}"
+        else:
+            quality += " · 自动质量"
         return {
             "id": self.variant_id,
             "quality": quality,
@@ -209,6 +250,7 @@ class WechatMediaVariant:
             "fileSize": self.file_size,
             "format": self.format,
             "deliverySpec": self.delivery_spec,
+            "isOriginal": self.original,
             "bitrate": self.bitrate,
             "encrypted": self.decode_key is not None,
         }
@@ -251,7 +293,7 @@ class WechatCandidate:
 
 
 class WechatCandidateRegistry:
-    MAX_CANDIDATES = 24
+    MAX_CANDIDATES = 500
 
     def __init__(self) -> None:
         self._items: dict[str, WechatCandidate] = {}
@@ -318,6 +360,7 @@ class WechatCandidateRegistry:
                 variant_bitrate: int,
                 delivery_spec: str = "",
                 variant_file_size: int = 0,
+                original: bool = False,
             ) -> None:
                 identity = (
                     f"{object_id}\0{parsed_media.hostname}\0{parsed_media.path}\0"
@@ -334,11 +377,21 @@ class WechatCandidateRegistry:
                     file_size=variant_file_size,
                     media_type=media_type,
                     delivery_spec=delivery_spec,
+                    original=original,
                     bitrate=variant_bitrate,
                     headers=_runtime_headers(request_headers, variant_url),
                 )
 
-            add_variant(url, width, height, item_duration, bitrate, variant_file_size=file_size)
+            original_url = _wechat_original_url(url)
+            add_variant(
+                original_url or url,
+                width,
+                height,
+                item_duration,
+                bitrate,
+                variant_file_size=file_size,
+                original=bool(original_url),
+            )
             if isinstance(specs, list):
                 for spec in specs:
                     if not isinstance(spec, dict):
@@ -436,12 +489,18 @@ class WechatCandidateRegistry:
 
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
-            current = self._items.get(self._current_object_id)
-            return [current.view()] if current else []
+            ordered = sorted(
+                self._items.values(),
+                key=lambda item: (
+                    item.object_id != self._current_object_id,
+                    -item.updated_at,
+                ),
+            )
+            return [item.view() for item in ordered]
 
     def count(self) -> int:
         with self._lock:
-            return int(self._current_object_id in self._items)
+            return len(self._items)
 
     def retained_count(self) -> int:
         with self._lock:
@@ -587,6 +646,7 @@ class WechatChannelsCaptureService:
             self.rejected_count = 0
             self.internal_api_observed = 0
             proxy: WechatLoopbackProxy | None = None
+            upstream_resolver = None
             try:
                 files = self.certificate.ensure()
                 certificate_trusted = self.certificate.is_trusted(files.fingerprint)
@@ -597,22 +657,30 @@ class WechatChannelsCaptureService:
                 self._certificate_trusted = certificate_trusted
                 bridge_script = self.bridge_script_path().read_bytes()
                 snapshot = self.proxy_lease.backend.snapshot()
+                upstream_resolver = upstream_auto_proxy_resolver(snapshot)
                 upstream_proxy = upstream_http_proxy(snapshot)
                 if (
-                    proxy_endpoint_is_loopback(upstream_proxy)
+                    upstream_resolver is None
+                    and proxy_endpoint_is_loopback(upstream_proxy)
                     and not proxy_endpoint_reachable(upstream_proxy)
                 ):
                     endpoint = f"{upstream_proxy[0]}:{upstream_proxy[1]}"
                     raise WechatChannelsError(
                         f"检测到已失效的本机代理 {endpoint}，请先点击“修复代理冲突”"
                     )
+                if upstream_resolver:
+                    # Resolve before replacing WinINET so an invalid/unavailable PAC
+                    # cannot silently strand WeChat behind the capture proxy.
+                    upstream_resolver.resolve("https://channels.weixin.qq.com/")
                 proxy = self.proxy_factory(
                     files,
                     bridge_script,
                     self._handle_page_message,
                     upstream_proxy=upstream_proxy,
                     upstream_bypass=upstream_proxy_bypass(snapshot),
+                    upstream_resolver=upstream_resolver,
                 )
+                upstream_resolver = None
                 proxy.start()
                 endpoint = f"{proxy.address[0]}:{proxy.address[1]}"
                 if configure_system_proxy:
@@ -640,6 +708,8 @@ class WechatChannelsCaptureService:
                         restore_error = str(restore_exc) or "原系统代理暂未恢复"
                 if proxy:
                     proxy.stop()
+                elif upstream_resolver:
+                    upstream_resolver.close()
                 self.proxy = None
                 self._system_proxy_configured = False
                 recovery_pending = configured and not restored
@@ -661,17 +731,31 @@ class WechatChannelsCaptureService:
             if self.proxy:
                 local_endpoint = f"{self.proxy.address[0]}:{self.proxy.address[1]}"
                 current = backend.snapshot()
+                resolver = upstream_auto_proxy_resolver(current)
                 upstream = upstream_http_proxy(current)
                 removed_dead_proxy = (
-                    proxy_endpoint_is_loopback(upstream)
+                    resolver is None
+                    and proxy_endpoint_is_loopback(upstream)
                     and not proxy_endpoint_reachable(upstream)
                 )
                 if removed_dead_proxy:
                     backend.disable_manual_proxy()
                     current = backend.snapshot()
                     upstream = None
-                self.proxy.upstream_proxy = upstream
-                self.proxy.upstream_bypass = upstream_proxy_bypass(current)
+                if resolver:
+                    try:
+                        resolver.resolve("https://channels.weixin.qq.com/")
+                    except Exception:
+                        resolver.close()
+                        raise
+                bypass = upstream_proxy_bypass(current)
+                replace_upstream = getattr(self.proxy, "replace_upstream", None)
+                if callable(replace_upstream):
+                    replace_upstream(upstream, bypass, resolver)
+                else:
+                    self.proxy.upstream_proxy = upstream
+                    self.proxy.upstream_bypass = bypass
+                    self.proxy.upstream_resolver = resolver
                 changed = self.proxy_lease.reacquire(local_endpoint)
                 self._system_proxy_configured = True
                 self.error = ""
@@ -831,7 +915,9 @@ class WechatChannelsCaptureService:
             self._preview_failures.discard(candidate.object_id)
             if make_current:
                 self.last_event = f"当前视频：{candidate.title or candidate.object_id}"
-                self.state = "capturing"
+            else:
+                self.last_event = f"已识别视频号内容：{candidate.title or candidate.object_id}"
+            self.state = "capturing"
             return {"action": "candidate", "candidate": candidate.view()}
         if action == "active":
             object_id = _text(payload.get("objectId"), 128)

@@ -17,7 +17,7 @@ import uuid
 import zlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 from urllib.parse import urlsplit
 
 from .wechat_channels_certificate import CertificateFiles
@@ -81,6 +81,18 @@ class ProxySnapshot:
                     bool(raw.get("exists")), value, int(raw.get("kind", 0))
                 )
         return cls(values)
+
+
+@dataclass(frozen=True)
+class AutoProxyConfig:
+    auto_config_url: str = ""
+    auto_detect: bool = False
+
+
+class UpstreamProxyResolver(Protocol):
+    def resolve(self, target_url: str) -> tuple[str, int] | None: ...
+
+    def close(self) -> None: ...
 
 
 class WinInetRegistryBackend:
@@ -335,6 +347,21 @@ def upstream_http_proxy(snapshot: ProxySnapshot) -> tuple[str, int] | None:
     return parse_proxy_server(str(server.value or ""))
 
 
+def upstream_auto_proxy_config(snapshot: ProxySnapshot) -> AutoProxyConfig | None:
+    url_value = snapshot.values.get("AutoConfigURL", RegistryValue(False))
+    detect_value = snapshot.values.get("AutoDetect", RegistryValue(False))
+    auto_config_url = str(url_value.value or "").strip() if url_value.exists else ""
+    try:
+        auto_detect = bool(detect_value.exists and int(detect_value.value or 0))
+    except (TypeError, ValueError):
+        auto_detect = False
+    if not auto_config_url and not auto_detect:
+        return None
+    if any(character in auto_config_url for character in "\r\n\x00"):
+        raise CaptureProxyError("系统 PAC 地址无效")
+    return AutoProxyConfig(auto_config_url=auto_config_url, auto_detect=auto_detect)
+
+
 def parse_proxy_server(raw: str) -> tuple[str, int] | None:
     """Parse a Windows ProxyServer value into a host/port pair regardless of
     whether the proxy is currently enabled."""
@@ -357,6 +384,142 @@ def parse_proxy_server(raw: str) -> tuple[str, int] | None:
         return parsed.hostname, parsed.port
     except ValueError:
         return None
+
+
+class _WinHttpAutoProxyOptions(ctypes.Structure):
+    _fields_ = (
+        ("dwFlags", ctypes.c_uint32),
+        ("dwAutoDetectFlags", ctypes.c_uint32),
+        ("lpszAutoConfigUrl", ctypes.c_wchar_p),
+        ("lpvReserved", ctypes.c_void_p),
+        ("dwReserved", ctypes.c_uint32),
+        ("fAutoLogonIfChallenged", ctypes.c_int),
+    )
+
+
+class _WinHttpProxyInfo(ctypes.Structure):
+    _fields_ = (
+        ("dwAccessType", ctypes.c_uint32),
+        ("lpszProxy", ctypes.c_void_p),
+        ("lpszProxyBypass", ctypes.c_void_p),
+    )
+
+
+class WinHttpAutoProxyResolver:
+    """Resolve an existing WinINET PAC/WPAD route without changing it.
+
+    The resolver keeps an explicit PAC URL/auto-detect configuration captured
+    before the local capture proxy replaces WinINET settings. WinHTTP performs
+    PAC evaluation per URL, so VPN rules remain in force while capture runs.
+    """
+
+    _ACCESS_NO_PROXY = 1
+    _ACCESS_NAMED_PROXY = 3
+    _AUTO_DETECT = 0x00000001
+    _CONFIG_URL = 0x00000002
+    _DETECT_DHCP = 0x00000001
+    _DETECT_DNS_A = 0x00000002
+
+    def __init__(self, config: AutoProxyConfig) -> None:
+        if os.name != "nt":
+            raise CaptureProxyError("PAC 代理解析仅支持 Windows")
+        self.config = config
+        self._lock = threading.Lock()
+        self._winhttp = ctypes.WinDLL("winhttp", use_last_error=True)
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._configure_functions()
+        self._session = self._winhttp.WinHttpOpen(
+            "DownloadStation-WechatCapture/1.0",
+            self._ACCESS_NO_PROXY,
+            None,
+            None,
+            0,
+        )
+        if not self._session:
+            raise CaptureProxyError(
+                f"无法初始化 Windows PAC 解析器（错误 {ctypes.get_last_error()}）"
+            )
+
+    def _configure_functions(self) -> None:
+        self._winhttp.WinHttpOpen.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+        )
+        self._winhttp.WinHttpOpen.restype = ctypes.c_void_p
+        self._winhttp.WinHttpGetProxyForUrl.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.POINTER(_WinHttpAutoProxyOptions),
+            ctypes.POINTER(_WinHttpProxyInfo),
+        )
+        self._winhttp.WinHttpGetProxyForUrl.restype = ctypes.c_int
+        self._winhttp.WinHttpCloseHandle.argtypes = (ctypes.c_void_p,)
+        self._winhttp.WinHttpCloseHandle.restype = ctypes.c_int
+        self._kernel32.GlobalFree.argtypes = (ctypes.c_void_p,)
+        self._kernel32.GlobalFree.restype = ctypes.c_void_p
+
+    def resolve(self, target_url: str) -> tuple[str, int] | None:
+        flags = 0
+        detect_flags = 0
+        if self.config.auto_config_url:
+            flags |= self._CONFIG_URL
+        if self.config.auto_detect:
+            flags |= self._AUTO_DETECT
+            detect_flags = self._DETECT_DHCP | self._DETECT_DNS_A
+        options = _WinHttpAutoProxyOptions(
+            flags,
+            detect_flags,
+            self.config.auto_config_url or None,
+            None,
+            0,
+            1,
+        )
+        info = _WinHttpProxyInfo()
+        with self._lock:
+            if not self._session:
+                raise CaptureProxyError("Windows PAC 解析器已关闭")
+            succeeded = self._winhttp.WinHttpGetProxyForUrl(
+                self._session,
+                target_url,
+                ctypes.byref(options),
+                ctypes.byref(info),
+            )
+            error = ctypes.get_last_error() if not succeeded else 0
+        try:
+            if not succeeded:
+                raise CaptureProxyError(
+                    f"无法解析 VPN/PAC 上游线路（Windows 错误 {error}）"
+                )
+            if info.dwAccessType == self._ACCESS_NO_PROXY:
+                return None
+            raw_proxy = ctypes.wstring_at(info.lpszProxy) if info.lpszProxy else ""
+            endpoint = parse_proxy_server(raw_proxy)
+            if info.dwAccessType != self._ACCESS_NAMED_PROXY or not endpoint:
+                raise CaptureProxyError(
+                    "VPN/PAC 返回了当前不支持的代理类型；请启用 HTTP/Mixed 端口"
+                )
+            return endpoint
+        finally:
+            for pointer in (info.lpszProxy, info.lpszProxyBypass):
+                if pointer:
+                    self._kernel32.GlobalFree(pointer)
+
+    def close(self) -> None:
+        with self._lock:
+            session = self._session
+            self._session = None
+        if session:
+            self._winhttp.WinHttpCloseHandle(session)
+
+
+def upstream_auto_proxy_resolver(
+    snapshot: ProxySnapshot,
+) -> WinHttpAutoProxyResolver | None:
+    config = upstream_auto_proxy_config(snapshot)
+    return WinHttpAutoProxyResolver(config) if config else None
 
 
 def proxy_endpoint_is_loopback(endpoint: tuple[str, int] | None) -> bool:
@@ -447,6 +610,16 @@ def _header(headers: list[tuple[str, str]], name: str) -> str:
         if key.lower() == lowered:
             return value
     return ""
+
+
+def _is_streaming_media(content_type: str) -> bool:
+    lowered = content_type.lower()
+    return (
+        lowered.startswith("video/")
+        or lowered.startswith("audio/")
+        or "octet-stream" in lowered
+        or "mpegurl" in lowered
+    )
 
 
 def _read_exact(sock: socket.socket, initial: bytes, length: int) -> bytes:
@@ -615,11 +788,15 @@ class WechatLoopbackProxy:
         candidate_callback: Callable[
             [dict[str, Any], dict[str, str]], dict[str, Any] | None
         ],
-        allowed_hosts: tuple[str, ...] = ("channels.weixin.qq.com", "res.wx.qq.com"),
+        allowed_hosts: tuple[str, ...] = (
+            "channels.weixin.qq.com",
+            "res.wx.qq.com",
+        ),
         host: str = "127.0.0.1",
         port: int = 0,
         upstream_proxy: tuple[str, int] | None = None,
         upstream_bypass: tuple[str, ...] = (),
+        upstream_resolver: UpstreamProxyResolver | None = None,
     ) -> None:
         self.bridge_script = bridge_script
         self.candidate_callback = candidate_callback
@@ -627,6 +804,8 @@ class WechatLoopbackProxy:
         self.session_token = uuid.uuid4().hex
         self.upstream_proxy = upstream_proxy
         self.upstream_bypass = upstream_bypass
+        self.upstream_resolver = upstream_resolver
+        self._upstream_lock = threading.Lock()
         self._diagnostic_lock = threading.Lock()
         self._diagnostic_counts = {
             "resourceScriptsSeen": 0,
@@ -657,6 +836,7 @@ class WechatLoopbackProxy:
         if self.thread:
             self.thread.join(timeout=3)
         self.thread = None
+        self.replace_upstream(None, (), None)
 
     @staticmethod
     def parse_authority(value: str) -> tuple[str, int]:
@@ -682,10 +862,39 @@ class WechatLoopbackProxy:
         with self._diagnostic_lock:
             return dict(self._diagnostic_counts)
 
+    def _upstream_for_url(
+        self,
+        target_url: str,
+        host: str,
+    ) -> tuple[str, int] | None:
+        with self._upstream_lock:
+            if self._bypass_upstream(host):
+                return None
+            if self.upstream_resolver:
+                return self.upstream_resolver.resolve(target_url)
+            return self.upstream_proxy
+
+    def replace_upstream(
+        self,
+        upstream_proxy: tuple[str, int] | None,
+        upstream_bypass: tuple[str, ...],
+        upstream_resolver: UpstreamProxyResolver | None,
+    ) -> None:
+        with self._upstream_lock:
+            previous = self.upstream_resolver
+            self.upstream_proxy = upstream_proxy
+            self.upstream_bypass = upstream_bypass
+            self.upstream_resolver = upstream_resolver
+        if previous and previous is not upstream_resolver:
+            previous.close()
+
     def connect_remote(self, host: str, port: int, *, tls: bool) -> socket.socket:
-        use_upstream = bool(self.upstream_proxy) and not self._bypass_upstream(host)
-        if use_upstream and self.upstream_proxy:
-            remote = socket.create_connection(self.upstream_proxy, timeout=15)
+        scheme = "https" if tls or port == 443 else "http"
+        display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        target_url = f"{scheme}://{display_host}:{port}/"
+        upstream = self._upstream_for_url(target_url, host)
+        if upstream:
+            remote = socket.create_connection(upstream, timeout=15)
             remote.sendall(
                 f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n".encode("ascii")
             )
@@ -773,8 +982,9 @@ class WechatLoopbackProxy:
         initial: bytes,
     ) -> None:
         host, port, origin_target, absolute_target = self._plain_target(target, headers)
-        use_upstream = bool(self.upstream_proxy) and not self._bypass_upstream(host)
-        address = self.upstream_proxy if use_upstream else (host, port)
+        upstream = self._upstream_for_url(absolute_target, host)
+        use_upstream = bool(upstream)
+        address = upstream if upstream else (host, port)
         if not address:
             raise CaptureProxyError("HTTP 目标地址无效")
         remote = socket.create_connection(address, timeout=15)
@@ -896,6 +1106,15 @@ class WechatLoopbackProxy:
             content_encoding = _header(response_headers, "Content-Encoding").lower()
             if method == "HEAD" or status in {204, 304} or 100 <= status < 200:
                 response_body = b""
+            elif "chunked" in transfer_encoding and _is_streaming_media(content_type):
+                # 视频/音频流不经内存缓冲，直接流式转发，避免大响应导致播放中断。
+                client.sendall(response_head + initial)
+                while True:
+                    chunk = remote.recv(65_536)
+                    if not chunk:
+                        return
+                    client.sendall(chunk)
+                return
             elif "chunked" in transfer_encoding:
                 response_body = _read_chunked(remote, initial)
             elif length_text:

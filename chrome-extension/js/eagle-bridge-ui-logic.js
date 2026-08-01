@@ -811,6 +811,19 @@
         return { started: true, plan, error: "" };
     }
 
+    function replaceScrollableContent(element, markup, options = {}) {
+        if (!element) return;
+        const preserve = options.preserve !== false;
+        const previousScrollTop = preserve ? Math.max(0, number(element.scrollTop)) : 0;
+        element.innerHTML = String(markup ?? "");
+        if (!preserve) return;
+        const maximumScrollTop = Math.max(
+            0,
+            number(element.scrollHeight) - number(element.clientHeight)
+        );
+        element.scrollTop = Math.min(previousScrollTop, maximumScrollTop);
+    }
+
     return {
         MANIFEST_EXTENSIONS,
         ACTIVE_TASK_STATUSES,
@@ -842,6 +855,7 @@
         groupSummary,
         taskView,
         hasActiveTasks,
-        startValidatedTask
+        startValidatedTask,
+        replaceScrollableContent
     };
 });

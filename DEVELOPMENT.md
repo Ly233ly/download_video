@@ -35,15 +35,17 @@
 
 ## 验证
 
-把 `src` 加入 `PYTHONPATH` 后运行 `python -m unittest discover -s tests -p "test_*.py" -v`。当前工作区共 239 项 Python 回归并已全部通过；测试覆盖原有后端/安装/安全能力，以及候选归组、默认隐藏播放分片、信息流内容绑定、SABR 全画质目录、通用页面解析、统一下载、Windows 系统代理检测、本机绕过、FFmpeg/yt-dlp 代理参数、手动/直连持久化、单次线路切换上限、主窗口外层滚动、四类列表安全清理、桌面异步 Eagle 探测、列表增量投影、DPI 与分辨率合并缩放、统一中文字体/字重、Treeview 像素省略、有界分页、视频号捕获异步预检、统一计划变更通知、预览/代理/静态健康缓存、schema 6 旧计划安全迁移、Eagle 成功后显式清理程序自有副本的安全边界、低噪音 Tk 性能监测、有界状态队列、视频号操作代次、后台诊断/清理、双主题切换持久化、圆角质量选择器，以及真实服务对象到 `MainWindow` 的任务投影和 UI 包资源声明。另运行 `node tests/js/test_youtube.js`、`node tests/js/test_popup_logic.js`、`node tests/js/test_candidate_presentation.js`、`node tests/js/test_auth_race.js`、`node tests/js/test_bilibili.js` 与 `node tests/js/test_wechat_channels_bridge.js`。视频号测试还覆盖证书叶配置原地轮换、页面/资源双 TLS 入口、内部 `finder*` 返回值改写语义、模块缓存键、透明代理、二进制代理快照、动态质量、签名查询保真、候选、候选清理不停止捕获、秘密不落盘、ISAAC-64、真实 FFmpeg/ffprobe 纵向闭环，以及退出时先恢复系统代理再等待其他工作线程的顺序门禁。
+把 `src` 加入 `PYTHONPATH` 后运行 `python -m unittest discover -s tests -p "test_*.py" -v`。当前工作区共 251 项 Python 回归并已全部通过；测试覆盖原有后端/安装/安全能力，以及候选归组、默认隐藏播放分片、信息流内容绑定、SABR 全画质目录、通用页面解析、统一下载、Windows 系统代理检测、本机绕过、FFmpeg/yt-dlp 代理参数、手动/直连持久化、单次线路切换上限、主窗口外层滚动、四类列表安全清理、桌面异步 Eagle 探测、列表增量投影、DPI 与分辨率合并缩放、统一中文字体/字重、Treeview 像素省略、有界分页、视频号捕获异步预检、统一计划变更通知、预览/代理/静态健康缓存、schema 6 旧计划安全迁移、Eagle 成功后显式清理程序自有副本的安全边界、低噪音 Tk 性能监测、有界状态队列、视频号操作代次、后台诊断/清理、双主题切换持久化、圆角质量选择器，以及真实服务对象到 `MainWindow` 的任务投影和 UI 包资源声明。另运行 `node tests/js/test_youtube.js`、`node tests/js/test_popup_logic.js`、`node tests/js/test_candidate_presentation.js`、`node tests/js/test_auth_race.js`、`node tests/js/test_bilibili.js` 与 `node tests/js/test_wechat_channels_bridge.js`。视频号测试还覆盖证书叶配置原地轮换、页面/资源双 TLS 入口、内部 `finder*` 返回值改写语义、模块缓存键、透明代理、二进制代理快照、VPN/PAC 配置识别与 WinHTTP 逐 URL 上游、PAC 失败时改写前保护、普通 HTTP/HTTPS CONNECT 串联、动态质量、原始视频只逐字节保留 `encfilekey`/`token`、明确规格签名查询保真、候选、候选清理不停止捕获、秘密不落盘、ISAAC-64、真实 FFmpeg/ffprobe 纵向闭环、证书库删除超时有界失败，以及退出时先恢复系统代理再等待其他工作线程的顺序门禁。
 
-扩展的 JavaScript 使用 `node --check` 检查；`manifest.json` 需通过 JSON 解析。`constants.py`、`pyproject.toml`、扩展清单、弹窗版本、托盘菜单和安装器版本必须同步。
+扩展的 JavaScript 使用 `node --check` 检查；`manifest.json` 需通过 JSON 解析。popup 逻辑回归还模拟候选列表节点替换把 `scrollTop` 归零，验证底部候选点击保持原位置、列表缩短时钳制，以及跟随最新项仍可主动选择新位置。`constants.py`、`pyproject.toml`、扩展清单、弹窗版本、托盘菜单和安装器版本必须同步。
 
 公开媒体复验使用 `packaging/Verify-PublicMedia.py`，当前证据覆盖 Apple HLS 与 B 站非 DRM DASH。安装器使用 `packaging/Test-Installer.ps1`，冻结运行时使用 `packaging/Test-FrozenRuntime.ps1`。Chrome 工具栏视觉、默认分片隐藏、最新项定位和补导动作需要最终人工点验。
 
+扩展视觉夹具默认地址为 `tests/visual_popup_fixture.html`；追加 `?many=1` 会生成 18 个独立候选组，用于复验左侧列表滚到底部后点击候选不会回跳。该参数只存在测试夹具，不进入活动扩展候选生成逻辑。
+
 ## 发行结构
 
-`release/下载中转站-1.4.5-Windows-x64/下载中转站-1.4.5` 包含：
+`release/下载中转站-1.5.0-Windows-x64/下载中转站-1.5.0` 包含：
 
 - `一键安装.exe`：接收者唯一需要运行的入口；
 - `app/`：安装器载荷，包括两个 C# 启动器、Chrome/Firefox 扩展、FFmpeg/ffprobe、yt-dlp/Deno 和独立后端；

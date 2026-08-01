@@ -272,6 +272,7 @@ class WechatCertificateAuthority:
         "*.finder.video.qq.com",
     )
     LEAF_PROFILE = 2
+    CERTUTIL_TIMEOUT_SECONDS = 15
 
     def __init__(
         self,
@@ -401,6 +402,7 @@ class WechatCertificateAuthority:
         result = self.runner(
             ["certutil", "-user", "-store", "Root", target],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            timeout=self.CERTUTIL_TIMEOUT_SECONDS,
         )
         return result.returncode == 0
 
@@ -413,6 +415,7 @@ class WechatCertificateAuthority:
         result = self.runner(
             ["certutil", "-user", "-addstore", "Root", str(files.root_der)],
             capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            timeout=self.CERTUTIL_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
             raise RuntimeError("无法信任视频号本机捕获证书，请检查 Windows 证书权限")
@@ -426,10 +429,14 @@ class WechatCertificateAuthority:
             return False
         if not self.is_trusted(files.fingerprint):
             return False
-        result = self.runner(
-            ["certutil", "-user", "-delstore", "Root", files.fingerprint],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-        )
+        try:
+            result = self.runner(
+                ["certutil", "-user", "-delstore", "Root", files.fingerprint],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+                timeout=self.CERTUTIL_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("移除视频号本机捕获证书超时") from exc
         if result.returncode != 0:
             raise RuntimeError("无法移除视频号本机捕获证书")
         return True

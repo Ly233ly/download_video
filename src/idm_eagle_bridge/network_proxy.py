@@ -115,6 +115,17 @@ def _is_local_target(target_url: str) -> bool:
         return False
 
 
+def _is_tencent_cdn_host(host: str) -> bool:
+    """腾讯媒体 CDN（微信视频号等）经代理/VPN 中转会降级清晰度，需直连。"""
+    if not host:
+        return False
+    lowered = host.strip("[]").lower()
+    for base in (".qq.com", ".weixin.qq.com", ".wx.qq.com"):
+        if lowered == base[1:] or lowered.endswith(base):
+            return True
+    return False
+
+
 def _proxy_for_target(
     target_url: str,
     proxies: Mapping[str, str],
@@ -175,8 +186,12 @@ class NetworkProxyManager:
     def _detected_system_route(self, target_url: str) -> ProxyRoute | None:
         if _is_local_target(target_url):
             return None
+        hostname = (urlsplit(target_url).hostname or "").strip("[]").lower()
+        if _is_tencent_cdn_host(hostname):
+            # 腾讯媒体 CDN 经代理/VPN 中转会降级清晰度，始终直连。
+            return None
         try:
-            if request.proxy_bypass(urlsplit(target_url).hostname or ""):
+            if request.proxy_bypass(hostname):
                 return None
         except (OSError, ValueError):
             pass

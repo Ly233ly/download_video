@@ -72,6 +72,28 @@
     }
   ];
 
+  if (new URLSearchParams(location.search).get("many") === "1") {
+    for (let index = 3; index <= 18; index += 1) {
+      candidates.push({
+        requestId: `visual-video-${index}`,
+        tabId: 77,
+        url: `https://cdn.example.net/visual-video-${index}.mp4`,
+        webUrl: "https://www.bilibili.com/video/BV1visual",
+        title: `候选视频 ${String(index).padStart(2, "0")}`,
+        ext: "mp4",
+        type: "video/mp4",
+        role: "video",
+        label: "720P",
+        codec: "avc1.4d401f",
+        width: 1280,
+        height: 720,
+        duration: 90 + index,
+        groupKey: `visual-video-${index}`,
+        estimatedSize: 100 * 1024 * 1024 + index
+      });
+    }
+  }
+
   const plans = [
     {
       id: "plan-active",

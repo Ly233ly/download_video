@@ -17,12 +17,12 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("下载中转站一键安装程序")]
 [assembly: AssemblyProduct("下载中转站")]
 [assembly: AssemblyCompany("下载中转站")]
-[assembly: AssemblyVersion("1.4.9.0")]
-[assembly: AssemblyFileVersion("1.4.9.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
 
 internal static class SetupProgram
 {
-    internal const string Version = "1.4.9";
+    internal const string Version = "1.5.0";
     internal const string ProductName = "下载中转站";
     internal const string QuitEventName = @"Local\IdmEagleAutoImportQuit";
     internal const string DefaultIdmRegistry = @"Software\DownloadManager";
@@ -416,7 +416,7 @@ internal static class InstallerEngine
         report("正在停止旧版本…");
         SignalQuit();
         Thread.Sleep(testMode ? 50 : (updateMode ? 2500 : 1000));
-        CleanupWechatCapture(installDirectory, testMode);
+        CleanupWechatCapture(installDirectory, testMode, updateMode);
 
         if (updateMode)
         {
@@ -733,7 +733,11 @@ internal static class InstallerEngine
         }
     }
 
-    private static void CleanupWechatCapture(string installDirectory, bool testMode)
+    private static void CleanupWechatCapture(
+        string installDirectory,
+        bool testMode,
+        bool preserveInactiveCertificate = false
+    )
     {
         if (testMode) return;
         string captureRoot = Path.Combine(
@@ -742,6 +746,11 @@ internal static class InstallerEngine
             "wechat-channels"
         );
         if (!Directory.Exists(captureRoot)) return;
+        if (preserveInactiveCertificate
+            && !File.Exists(Path.Combine(captureRoot, "proxy-lease.json")))
+        {
+            return;
+        }
         string backend = Path.Combine(
             installDirectory,
             "runtime",
@@ -762,7 +771,19 @@ internal static class InstallerEngine
             WindowStyle = ProcessWindowStyle.Hidden
         }))
         {
-            if (process == null || !process.WaitForExit(20000) || process.ExitCode != 0)
+            bool exited = process != null && process.WaitForExit(20000);
+            if (process != null && !exited)
+            {
+                try
+                {
+                    process.Kill();
+                    process.WaitForExit(5000);
+                }
+                catch
+                {
+                }
+            }
+            if (process == null || !exited || process.ExitCode != 0)
             {
                 throw new InvalidOperationException("视频号捕获清理未完成；为保护系统代理设置，已中止安装或卸载。 ");
             }

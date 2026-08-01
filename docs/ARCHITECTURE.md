@@ -178,7 +178,9 @@ Chrome/Edge/Firefox 扩展
 - `eagle-bridge-candidate-logic.js` 是后台与所有页面 frame 共用的候选展示边界：选择安全的内容图并在 service worker 启动时等待 `storage.session` 快照恢复；favicon 始终保留为站点身份字段，不进入媒体缩略图。
 - `eagle-bridge-ui.js` 维护唯一弹窗状态：连接、当前标签、当前/其他页候选、内容组、逐组选择与草稿、本机方案列表、瞬时帧映射和增强发现状态。
 - DOM 只有 `#eagleBridgeRoot`。旧 cat-catch popup、设置、下载/解析/预览页和录制/媒体控制脚本已删除；主导航仅有“媒体 / 任务”，设置只控制来源、捕获总开关、增强发现与独立窗口。
+- 左侧候选列表的选中态仍由 `renderSidebar` 统一投影，但节点替换通过 `replaceScrollableContent` 保存并按新内容高度恢复 `scrollTop`。普通点击、质量切换和批量选择不能改变用户浏览位置；只有决策 67 的首次/跟随最新路径显式放弃旧位置并在下一帧滚到底部。
 - 浏览器后台从本机 `plans` 恢复任务；进度、阶段、停止和重试都直接操作目标本机方案，不维护第二份 Chrome 下载状态。
+- 覆盖安装只在存在视频号代理租约时调用旧冻结后端清理捕获；无租约时保留可复用的本机证书。证书外部工具与安装器等待都有上限，超时必须终止子进程并保持旧安装目录。
 - UI 只在受影响区域更新：候选变化重建内容列表与检查器，任务调度器批量刷新方案，输入草稿与每组选择不会被其他任务刷新覆盖。
 - 每个网络候选向产生请求的 frame 查询通用视觉上下文：优先以 canvas 获取真实 `video` 帧；跨域 canvas 被浏览器阻止时，后台用 `captureVisibleTab` 截取对应播放器矩形。帧按 `groupKey` 短时保存在 service worker 内存，popup 通过 `getMediaPreviews` 读取，不写 `storage.session`。poster、邻近内容图和 Open Graph/Twitter/JSON-LD 是回退。后台角标调用同一 `groupCandidates`，因此表示可下载内容组而非原始请求条数。
 - 归组层先按稳定播放器 `groupKey` 划定内容，再删除同一路径的签名参数轮换副本；同组已有 MPD/M3U8 或完整媒体时隐藏普通 `.m4s`/`.ts` 传输分片。只有分片时保留一个不可提交的诊断项。
@@ -539,13 +541,13 @@ WechatChannelsCaptureService
 - 捕获首次默认关闭。开始动作先检查端口和证书，再持久化 WinINET 的 ProxyEnable、ProxyServer、ProxyOverride、AutoConfigURL、AutoDetect 与 `Connections` 二进制值，最后把当前用户代理指向回环服务。写入失败先用租约恢复；恢复也失败时保留租约和“需要恢复”状态。
 - 服务停止、应用退出或启动中途失败时先验证代理所有权并尝试恢复原配置，再结束代理监听、HTTP/媒体和旧任务线程，最后清理会话秘密。异常退出不能保证执行清理，因此下次启动读取带实例标识的租约；仅当当前配置仍指向该实例时恢复。
 - 非目标 CONNECT 不解密。目标主机集合由视频号协议能力维护，不由某条视频 URL、用户账号或页面样本生成。Eagle、回环 API 和本机控制始终绕过。
-- 若捕获前已有系统 HTTP/Mixed 代理，回环代理把公网连接链到原上游，避免开启视频号时切断用户既有线路。PAC/SOCKS 等无法安全链式复用时开始动作明确阻止并说明，不静默改成直连。
+- 若捕获前已有系统 HTTP/Mixed 代理，回环代理把公网连接链到原固定上游。若使用 PAC/WPAD，启动阶段在改写 WinINET 前创建 WinHTTP 解析会话并预检视频号 URL，运行时按每个目标 URL 获取原代理决定，再由回环代理执行 HTTP 或 CONNECT 转发。PAC 解析失败或返回无法作为 HTTP 上游的类型时必须在改写系统代理前阻止并说明；TUN/无代理决定保持系统直连，任何路径都不能因开启捕获而静默丢失 VPN 线路。
 
 ### 页面与候选
 
 - 代理在视频号 HTML 的最早可用位置加入同源静态 `bridge.js`，并给页面脚本/ES 模块依赖追加本次捕获会话缓存键，确保开启后的模块确实经过本机代理。`bridge.js` 继续观察 fetch/XHR/Response JSON；代理还在 `res.wx.qq.com` 返回的微信资源模块中，按稳定的 `finderPcFlow`、`finderGetRecommend`、`finderGetCommentDetail` 等方法边界加入结果观察调用。包装使用内层 async 箭头保留原返回、异常、`this` 和 `await` 语义，只把微信已经取得的结构化对象交给同一白名单扫描器，不调用内部下载能力。
 - 资源脚本已检查数、成功改写数、安装钩子数与实际内部 API 返回次数只作为整数诊断进入健康状态；不记录资源 URL、账号、feed、Cookie、签名或解密键。入口改名或结构失配会显示为“脚本已见但钩子为 0”或“钩子已装但内部数据为 0”，不再把所有失配都显示成无限等待。
-- `CandidateRegistry` 以 `wechat-channel:<objectId>` 为键，把 feed 的媒体项、实际质量、作者、封面、时长和可靠来源归组。原始/最高入口保留原签名查询；每个实际 `fileFormat` 规格只追加 `X-snsvideoflag`，不重编码已有签名参数。签名 URL、请求头和 decodeKey 留在进程内存，桌面 UI/API 返回的是脱敏候选视图。
+- `CandidateRegistry` 以 `wechat-channel:<objectId>` 为键，把 feed 的媒体项、实际质量、作者、封面、时长和可靠来源归组。只有完整地址同时含非空 `encfilekey` 与 `token` 时才建立“原始视频”变体，并逐字节保留这两个查询参数；`basedata`、`sign`、`svrnonce` 等转码上下文不进入原始变体。每个实际 `fileFormat` 规格继续在完整捕获签名查询后追加唯一 `X-snsvideoflag`，不重编码已有签名参数。缺少原始凭据的无规格地址显示“自动质量”，不虚标原始/最高。签名 URL、请求头和 decodeKey 留在进程内存，桌面 UI/API 返回的是脱敏候选视图。
 - `bridge.js` 在首页推荐和详情页已有 `.click-box.op-item` 操作栏旁加入自有下载按钮，并用 MutationObserver 处理微信复用/重建的 DOM；找不到操作栏时才创建固定悬浮后备。普通点击从当前视频 URL 的 `X-snsvideoflag` 或原始规格选择当前 variant，悬停菜单展示服务端脱敏候选视图中的实际 variants。当前内容先按 URL 中 objectId、媒体主机+路径、同一内容标题唯一匹配，再使用内部详情事件；多候选无法唯一绑定时拒绝。页面经随机会话令牌只提交 objectId/variantId，`WechatChannelsCaptureService.submit` 再调用 `MediaCoordinator.create_plan`。桌面候选页仍保留完整核对和手动入口，统一任务页显示下载、解密、合并、校验、等待 Eagle 和终态。
 
 ### 下载与解密

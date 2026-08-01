@@ -3,7 +3,7 @@
 
   const SESSION = "__DOWNLOAD_STATION_SESSION__";
   const ENDPOINT = `/__download_station_wechat__/candidate?token=${SESSION}`;
-  const MAX_SEEN = 64;
+  const MAX_SEEN = 500;
   const seen = new Map();
   const downloadsInFlight = new Set();
   const ACTIVE_DETAIL_METHODS = new Set([
@@ -219,6 +219,7 @@
     const previous = seen.get(feed.objectId);
     if (previous && previous.signature === signature) {
       if (objectIdFromLocation() === feed.objectId) markActive(feed.objectId);
+      else syncCandidate(previous);
       return;
     }
     seen.delete(feed.objectId);
@@ -242,6 +243,7 @@
       seen.delete(oldest);
     }
     if (objectIdFromLocation() === feed.objectId) markActive(feed.objectId);
+    else syncCandidate(entry);
     scheduleUiRefresh();
   }
 
@@ -446,7 +448,9 @@
 
     if (activeObjectId && seen.has(activeObjectId)) return seen.get(activeObjectId);
     if (seen.size === 1) return seen.values().next().value;
-    return null;
+    let newest = null;
+    for (const entry of seen.values()) newest = entry;
+    return newest;
   }
 
   function selectDefaultVariant(candidate, currentSource) {

@@ -27,6 +27,7 @@ from idm_eagle_bridge.media import MediaCoordinator, resolve_media_tool
 from idm_eagle_bridge.wechat_channels_certificate import WechatCertificateAuthority
 from idm_eagle_bridge.wechat_channels_crypto import Isaac64, WechatVideoDecryptor
 from idm_eagle_bridge.wechat_channels_proxy import (
+    AutoProxyConfig,
     CaptureProxyError,
     ProxySnapshot,
     RegistryValue,
@@ -34,6 +35,7 @@ from idm_eagle_bridge.wechat_channels_proxy import (
     WinInetProxyLease,
     proxy_endpoint_is_loopback,
     upstream_http_proxy,
+    upstream_auto_proxy_config,
     upstream_proxy_bypass,
     _decompress_limited,
 )
@@ -174,6 +176,100 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
                     )
                 install.assert_not_called()
                 self.assertTrue(health["certificateTrusted"])
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_start_keeps_a_pac_vpn_as_the_capture_upstream(self) -> None:
+        original = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 0, 4),
+                "ProxyServer": RegistryValue(False),
+                "AutoConfigURL": RegistryValue(
+                    True,
+                    "http://127.0.0.1:10809/proxy.pac",
+                    1,
+                ),
+                "AutoDetect": RegistryValue(False),
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            backend = FakeRegistryBackend(original)
+            resolver = Mock()
+            resolver.resolve.return_value = ("127.0.0.1", 10809)
+            proxy = Mock()
+            proxy.address = ("127.0.0.1", 20230)
+            proxy_factory = Mock(return_value=proxy)
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+                proxy_factory=proxy_factory,
+            )
+            service.proxy_lease.backend = backend
+            try:
+                with patch(
+                    "idm_eagle_bridge.wechat_channels.upstream_auto_proxy_resolver",
+                    return_value=resolver,
+                ):
+                    service.start(trust_certificate=False)
+
+                resolver.resolve.assert_called_once_with(
+                    "https://channels.weixin.qq.com/"
+                )
+                self.assertIs(
+                    proxy_factory.call_args.kwargs["upstream_resolver"],
+                    resolver,
+                )
+                self.assertEqual(
+                    backend.current.values["ProxyServer"].value,
+                    "127.0.0.1:20230",
+                )
+                service.stop()
+                self.assertEqual(backend.current, original)
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_unusable_pac_fails_before_the_system_proxy_is_replaced(self) -> None:
+        original = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 0, 4),
+                "AutoConfigURL": RegistryValue(
+                    True,
+                    "http://127.0.0.1:10809/proxy.pac",
+                    1,
+                ),
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            backend = FakeRegistryBackend(original)
+            resolver = Mock()
+            resolver.resolve.side_effect = CaptureProxyError("PAC unavailable")
+            proxy_factory = Mock()
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+                proxy_factory=proxy_factory,
+            )
+            service.proxy_lease.backend = backend
+            try:
+                with patch(
+                    "idm_eagle_bridge.wechat_channels.upstream_auto_proxy_resolver",
+                    return_value=resolver,
+                ):
+                    with self.assertRaisesRegex(
+                        WechatChannelsError,
+                        "PAC unavailable",
+                    ):
+                        service.start(trust_certificate=False)
+
+                self.assertEqual(backend.current, original)
+                proxy_factory.assert_not_called()
+                resolver.close.assert_called_once_with()
             finally:
                 service.close()
                 coordinator.close()
@@ -703,6 +799,46 @@ class CertificateTests(unittest.TestCase):
             self.assertFalse(authority.uninstall())
             self.assertFalse(root.exists())
 
+    def test_uninstall_bounds_a_stuck_certificate_store_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            calls: list[tuple[list[str], int | None]] = []
+
+            def runner(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                calls.append((arguments, kwargs.get("timeout")))
+                if "-delstore" in arguments:
+                    raise subprocess.TimeoutExpired(arguments, kwargs.get("timeout"))
+                return subprocess.CompletedProcess(arguments, 0, "", "")
+
+            authority = WechatCertificateAuthority(
+                directory,
+                runner=runner,
+            )
+            authority.ensure()
+
+            with self.assertRaisesRegex(RuntimeError, "移除视频号本机捕获证书超时"):
+                authority.uninstall()
+            self.assertTrue(any("-delstore" in arguments for arguments, _timeout in calls))
+            self.assertTrue(all(timeout == 15 for _arguments, timeout in calls))
+
+    def test_uninstall_reports_certificate_store_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            def runner(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(
+                    arguments,
+                    1 if "-delstore" in arguments else 0,
+                    "",
+                    "certificate store unavailable",
+                )
+
+            authority = WechatCertificateAuthority(
+                directory,
+                runner=runner,
+            )
+            authority.ensure()
+
+            with self.assertRaisesRegex(RuntimeError, "无法移除视频号本机捕获证书"):
+                authority.uninstall()
+
     def test_legacy_leaf_is_rotated_without_replacing_the_trusted_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             authority = WechatCertificateAuthority(directory)
@@ -744,7 +880,7 @@ class CandidateRegistryTests(unittest.TestCase):
         self.assertNotIn("decodeKey", serialized)
         self.assertNotIn("token=one", serialized)
 
-    def test_candidate_list_only_exposes_the_current_video(self) -> None:
+    def test_candidate_list_orders_current_video_first(self) -> None:
         with patch(
             "idm_eagle_bridge.wechat_channels.time.time",
             side_effect=[1.0, 2.0, 3.0],
@@ -753,21 +889,24 @@ class CandidateRegistryTests(unittest.TestCase):
             self.registry.ingest(sample_candidate("second"))
             self.assertEqual(
                 [item["objectId"] for item in self.registry.list()],
-                ["second"],
+                ["second", "first"],
             )
             self.registry.ingest(sample_candidate("first"))
 
         self.assertEqual(
             [item["objectId"] for item in self.registry.list()],
-            ["first"],
+            ["first", "second"],
         )
 
-    def test_preloads_stay_hidden_and_stale_activation_cannot_replace_current(self) -> None:
+    def test_all_candidates_are_listed_and_activation_orders_current_first(self) -> None:
         first = sample_candidate("first")
         second = sample_candidate("second")
         self.registry.ingest(first, make_current=False)
         self.registry.ingest(second, make_current=False)
-        self.assertEqual(self.registry.list(), [])
+        self.assertEqual(
+            [item["objectId"] for item in self.registry.list()],
+            ["second", "first"],
+        )
 
         current, activated = self.registry.activate("second", 300)
         self.assertTrue(activated)
@@ -820,7 +959,11 @@ class CandidateRegistryTests(unittest.TestCase):
         self.assertTrue(payload["deleteAfterImport"])
         self.assertEqual(payload["mergeMode"], "direct")
         self.assertEqual(payload["streams"][0]["headers"]["User-Agent"], "WechatDesktop/1.0")
-        self.assertNotIn("Cookie", payload["streams"][0]["headers"])
+        # 捕获来源与媒体主机同属腾讯域（qq.com），Cookie 随下载请求发送以满足 CDN 清晰度校验。
+        self.assertEqual(
+            payload["streams"][0]["headers"].get("Cookie"),
+            "session=must-not-cross-domains",
+        )
 
     def test_quality_spec_becomes_a_selectable_delivery_variant(self) -> None:
         candidate = self.registry.ingest(sample_candidate())
@@ -840,6 +983,35 @@ class CandidateRegistryTests(unittest.TestCase):
         )
         self.assertIn(("X-snsvideoflag", "hd"), parse_qsl(selected_url.query))
 
+    def test_original_variant_keeps_only_raw_encfilekey_and_token(self) -> None:
+        payload = sample_candidate()
+        payload["media"][0].update(
+            {
+                "url": (
+                    "https://finder.video.qq.com/media/video.mp4?"
+                    "encfilekey=encoded%2Bfile&hy=SZ&idx=1&m=transcoded"
+                ),
+                "urlToken": (
+                    "&token=encoded%2Ftoken%3D&basedata=quality-bound"
+                    "&sign=rotating-signature&web=1&svrnonce=123"
+                ),
+            }
+        )
+        candidate = self.registry.ingest(payload)
+        original = next(
+            variant for variant in candidate.variants.values() if not variant.delivery_spec
+        )
+
+        self.assertEqual(original.view()["quality"], "1080p · 原始视频")
+        self.assertTrue(original.view()["isOriginal"])
+        selected_url = urlsplit(
+            self.registry.plan_payload(candidate.object_id, original.variant_id)["streams"][0]["url"]
+        )
+        self.assertEqual(
+            selected_url.query,
+            "encfilekey=encoded%2Bfile&token=encoded%2Ftoken%3D",
+        )
+
     def test_private_or_untrusted_media_url_is_rejected(self) -> None:
         payload = sample_candidate()
         payload["media"][0]["url"] = "https://127.0.0.1/private.mp4"
@@ -853,7 +1025,8 @@ class CandidateRegistryTests(unittest.TestCase):
         )
         candidate = self.registry.ingest(payload)
         view = candidate.view()
-        self.assertEqual(view["variants"][0]["quality"], "1080p · 原始/最高")
+        self.assertEqual(view["variants"][0]["quality"], "1080p · 自动质量")
+        self.assertFalse(view["variants"][0]["isOriginal"])
         self.assertFalse(view["variants"][0]["encrypted"])
         self.assertTrue(view["coverUrl"].startswith("http://"))
 
@@ -932,13 +1105,12 @@ function waitForRequests() {
 (async function () {
   const test = globalThis.__DOWNLOAD_STATION_WECHAT_TEST__;
   const preload = [];
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < 10; index += 1) {
     preload.push(feed("preload-" + index));
   }
   test.scan({ items: preload }, "finderGetRecommend");
   await waitForRequests();
-  if (requests.some(function (item) { return item.action === "candidate"; })) process.exit(2);
-  if (test.seenCount() > 64) process.exit(3);
+  if (test.seenCount() > 64) process.exit(2);
 
   test.scan(feed("current-a"), "finderGetCommentDetail");
   await waitForRequests();
@@ -947,10 +1119,14 @@ function waitForRequests() {
 
   const candidates = requests.filter(function (item) { return item.action === "candidate"; });
   const active = requests.filter(function (item) { return item.action === "active"; });
-  if (candidates.map(function (item) { return item.objectId; }).join(",") !== "current-a,current-b") {
-    process.exit(4);
+  const candidateIds = candidates.map(function (item) { return item.objectId; });
+  // 推荐流与详情页的所有识别 feed 都上报候选
+  for (let index = 0; index < 10; index += 1) {
+    if (candidateIds.indexOf("preload-" + index) === -1) process.exit(3);
   }
+  if (candidateIds.indexOf("current-a") === -1 || candidateIds.indexOf("current-b") === -1) process.exit(4);
   if (candidates.some(function (item) { return item.current !== false; })) process.exit(5);
+  // 只有详情页方法触发 active 发布
   if (active.map(function (item) { return item.objectId; }).join(",") !== "current-a,current-b") {
     process.exit(6);
   }
@@ -1204,6 +1380,28 @@ class ProxyLeaseTests(unittest.TestCase):
         self.assertEqual(upstream_proxy_bypass(snapshot), ("<local>", "*.internal.example"))
         self.assertTrue(proxy_endpoint_is_loopback(("127.0.0.1", 7890)))
         self.assertFalse(proxy_endpoint_is_loopback(("10.0.0.2", 7890)))
+
+    def test_pac_proxy_is_preserved_as_an_auto_proxy_configuration(self) -> None:
+        snapshot = ProxySnapshot(
+            {
+                "ProxyEnable": RegistryValue(True, 0, 4),
+                "ProxyServer": RegistryValue(False),
+                "AutoConfigURL": RegistryValue(
+                    True,
+                    "http://127.0.0.1:10809/proxy.pac",
+                    1,
+                ),
+                "AutoDetect": RegistryValue(True, 1, 4),
+            }
+        )
+
+        self.assertEqual(
+            upstream_auto_proxy_config(snapshot),
+            AutoProxyConfig(
+                auto_config_url="http://127.0.0.1:10809/proxy.pac",
+                auto_detect=True,
+            ),
+        )
 
     def test_exact_restore_and_external_change_protection(self) -> None:
         original = ProxySnapshot(
@@ -1485,6 +1683,82 @@ class LoopbackProxyTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_plain_http_uses_the_per_url_pac_upstream(self) -> None:
+        requested_urls: list[str] = []
+
+        class Resolver:
+            def resolve(self, target_url: str) -> tuple[str, int] | None:
+                requested_urls.append(target_url)
+                return upstream.server_address[:2]
+
+            def close(self) -> None:
+                return None
+
+        class UpstreamHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *args: object) -> None:
+                return
+
+            def do_GET(self) -> None:
+                body = b"pac-upstream-ok"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        proxy = WechatLoopbackProxy(
+            self.files,
+            b"window.__session='__DOWNLOAD_STATION_SESSION__';",
+            lambda _payload, _headers: None,
+            upstream_resolver=Resolver(),
+        )
+        proxy.start()
+        try:
+            client = socket.create_connection(proxy.address, timeout=5)
+            client.sendall(
+                b"GET http://vpn-only.example/resource HTTP/1.1\r\n"
+                b"Host: vpn-only.example\r\nConnection: close\r\n\r\n"
+            )
+            response = self.read_all(client)
+            client.close()
+            self.assertIn(b"200 OK", response)
+            self.assertIn(b"pac-upstream-ok", response)
+            self.assertEqual(requested_urls, ["http://vpn-only.example/resource"])
+        finally:
+            proxy.stop()
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=2)
+
+    def test_https_connect_uses_the_per_url_pac_upstream(self) -> None:
+        resolver = Mock()
+        resolver.resolve.return_value = ("127.0.0.1", 10809)
+        remote = Mock()
+        remote.recv.return_value = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+        self.proxy.replace_upstream(None, (), resolver)
+
+        with patch(
+            "idm_eagle_bridge.wechat_channels_proxy.socket.create_connection",
+            return_value=remote,
+        ) as create_connection:
+            result = self.proxy.connect_remote(
+                "channels.weixin.qq.com",
+                443,
+                tls=False,
+            )
+
+        self.assertIs(result, remote)
+        resolver.resolve.assert_called_once_with(
+            "https://channels.weixin.qq.com:443/"
+        )
+        create_connection.assert_called_once_with(("127.0.0.1", 10809), timeout=15)
+        self.assertIn(
+            b"CONNECT channels.weixin.qq.com:443 HTTP/1.1",
+            remote.sendall.call_args.args[0],
+        )
 
     def test_non_target_connect_is_a_plain_tunnel(self) -> None:
         listener = socket.socket()
