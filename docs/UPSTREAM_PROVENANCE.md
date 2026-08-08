@@ -1,47 +1,46 @@
-# 上游来源与许可记录
+# 上游来源与对应源码
+
+本文件记录当前发行所需的来源和许可证信息。
 
 ## cat-catch
 
 - 项目：`xifangczy/cat-catch`
-- 上游版本：`2.7.1`
+- 固定版本：`2.7.1`
 - 固定提交：`7a77612b3e2a01cedacae6e43eb88a89eee3034f`
-- 获取地址：<https://github.com/xifangczy/cat-catch/tree/7a77612b3e2a01cedacae6e43eb88a89eee3034f>
-- 上游许可证：GNU General Public License v3.0
-- 导入日期：2026-07-18
-- 历史导入范围：浏览器扩展的资源捕获、深度搜索、HLS/DASH、预览、下载、录制、外部路由、媒体控制、设置、国际化及相关第三方浏览器库。
+- 来源：<https://github.com/xifangczy/cat-catch/tree/7a77612b3e2a01cedacae6e43eb88a89eee3034f>
+- 许可证：GNU GPL v3
 
-上游固定对应源码（排除 `.git` 对象库和不参与构建的翻译 README、Issue 模板）、主说明、变更记录与许可证保存在 `third_party/cat-catch/source/`，代码内容对应上述提交。组合发行物采用 GPL-3.0；项目原有 MIT 代码的版权与许可文本继续保存在 `licenses/PROJECT-MIT-LICENSE.txt`，不得移除。
+固定对应源码、原许可证、主说明、变更记录和第三方库许可表保存在 `third_party/cat-catch/source/`。该目录只用于版权、对应源码和审计，不由活动浏览器清单加载。
 
-## 修改说明
+当前活动扩展保留由本项目继续维护的媒体发现与内容适配代码；上游完整 popup、图标、下载页、解析页、录制工具、在线 FFmpeg、移动 UA、密钥面板和浏览器库不进入运行时。
 
-下载中转站在上游扩展基础上增加：
+因此当前组合发行继续采用 GPL-3.0，并保留固定上游源码、版权通知、修改范围和构建材料。
 
-- 下载前默认可见的内容级媒体候选与 Eagle 状态；
-- 现有本机配对、网站规则与来源事件兼容层；
-- 扩展只负责发现、归组、预览和提交，全部普通直链、分轨与清单统一由本机软件下载；
-- 本机 FFmpeg/ffprobe 下载、合并、输出验证、持久计划、预览生成与可选 Eagle 导入；
-- 所选字幕进入方案后作为最终 sidecar 保留，不被误送入音视频 mux 或清理；
-- B 站新版内联 playinfo 与 OG 标题/封面回退；
-- 通用 frame 真实视频帧、跨域播放器矩形裁剪、首次缓存快照门和统一内容组角标；
-- 1.2.0 将增强捕获重写为下载中转站自己的精简脚本；删除上游 popup、下载/解析/预览页、录制/WebRTC/屏幕脚本、移动 UA、密钥面板、在线 FFmpeg、外部路由、完整设置页、国际化、上游图标和浏览器库；
-- 删除旧 Chrome 组件交接、DNR 请求头规则、自动下载快捷键/右键项/后台状态、捕获后自动外发、浏览器 FFmpeg 和外部下载目标；预览、直链与清单页最终改交本机计划；
-- DRM 阻断、敏感字段最小化、临时文件归属和签名升级/回滚约束；
-- 下载中转站名称、图标、版本和安装器集成。
-
-1.4.0 活动扩展仍包含从历史 GPL 工作继续修改的后台网络捕获与内容适配文件，因此不能撤销 GPL 义务或删除本记录。新增 YouTube 主世界格式适配器、通用内容页解析桥、结构化视频元数据入口、邻近内容身份、信息流内容绑定/发现生命周期与抖音当前播放器/逐视频标题适配器由本项目独立实现，不复制站点或 IDM 代码，也不改变既有许可义务。桌面代理路由同样为本项目独立实现，未复制代理软件代码，也未增加浏览器代理权限。`third_party/cat-catch/source/` 是对应源码/审计归档，不会由浏览器清单加载；当前运行时文件清单由 `manifest.json`、`popup.html` 和安装器清理门禁共同限定。
-
-## ltaoo/wx_channels_download（仅行为研究）
+## ltaoo/wx_channels_download
 
 - 项目：`ltaoo/wx_channels_download`
-- 研究提交：`3551436`（2026-07-22 获取的最新提交）
-- 获取地址：<https://github.com/ltaoo/wx_channels_download/tree/3551436>
-- 上游许可：MIT License 加 Commons Clause 限制；其依赖 `Hanson/WechatSphDecrypt` 仓库未发现明确开源许可证。
-- 研究范围：只观察“微信桌面客户端 → 受信任 HTTPS 代理 → 页面入口注入 → feed/媒体元数据 → 本地下载”的产品行为和公开数据形状；交互证据包括把下载按钮加入当前视频原操作栏、操作栏失配时使用悬浮后备、普通点击使用当前播放质量及下拉菜单选择其他质量。
+- 来源：<https://github.com/ltaoo/wx_channels_download>
 
-本项目没有复制、修改或分发该仓库的 Go/JavaScript 源码、SunnyNet/Gopeed 载荷、证书、图标、UI 或构建产物，也没有引入 `WechatSphDecrypt` 的源码。1.4.0 的证书、回环代理、feed 规范化、候选、下载、流式解密和 UI 均按本项目安全边界独立实现；ISAAC-64 算法依据 Bob Jenkins 公开领域算法说明重新实现，并以公开向量和端到端测试验证。该上游仓库不属于发行包第三方组件，不产生需要随包复制其许可证或源码的分发关系。
+该项目只用于研究用户可观察的微信视频号交互链路。本项目没有复制、修改或分发其 Go/JavaScript、SunnyNet、Gopeed、证书、图标、UI、构建产物或 `WechatSphDecrypt` 源码。
 
-## YouTube 桌面解析工具
+当前证书、回环代理、feed 规范化、候选、下载、流式处理和 UI 均由本项目按照自身安全边界独立实现。ISAAC-64 依据 Bob Jenkins 的公共领域算法说明独立实现，并以测试向量验证。
 
-1.4.0 继续固定使用 yt-dlp 2026.06.09 Windows x64 官方发行可执行文件与 Deno 2.8.1 Windows x64 官方运行时；同一受控运行时同时承担 YouTube 准确画质和通用内容页解析，不增加逐站二进制下载器。信息流绑定、结构化视频页面入口、邻近内容链接选择和发现恢复只从页面已有 DOM/元数据选择内容身份与展示信息，抖音适配器只选择/标识页面已有播放器、提取各自公开标题并规范化明确内容 ID，页面分轨兼容仅调整格式属性选择顺序，均不引入额外下载工具。下载地址、压缩包/二进制 SHA-256 和复现脚本记录在 `packaging/Fetch-YouTube-Resolver.ps1` 与 `media-tools/YOUTUBE-RESOLVER-VERSION.json`。yt-dlp 对应源代码发行包固定归档在 `third_party/yt-dlp/yt-dlp-2026.06.09-source.tar.gz`；Unlicense、yt-dlp 可执行文件的第三方许可总表和 Deno MIT 许可证随发行物提供。
+该外部仓库不是当前发行组件，不进入安装包第三方组件清单。
 
-任何继续同步上游的提交都必须在本文件追加固定提交、日期和冲突处理说明。
+## yt-dlp 与 Deno
+
+- yt-dlp：`2026.06.09` Windows x64 官方发行文件
+- Deno：`2.8.1` Windows x64 官方运行时
+- 固定版本、下载地址和 SHA-256：`media-tools/YOUTUBE-RESOLVER-VERSION.json`
+- 可复现获取脚本：`packaging/Fetch-YouTube-Resolver.ps1`
+- yt-dlp 对应源码：`third_party/yt-dlp/yt-dlp-2026.06.09-source.tar.gz`
+
+yt-dlp 与 Deno 用于本机页面格式解析，不增加逐站远程下载服务。许可证和第三方通知随二进制发行提供。
+
+## FFmpeg
+
+- 固定版本和 SHA-256：`media-tools/FFMPEG-VERSION.json`
+- 可复现获取脚本：`packaging/Fetch-FFmpeg.ps1`
+- 许可证：见 `licenses/FFMPEG-GPL-3.0.txt` 和安装包第三方通知
+
+FFmpeg 与 FFprobe 只在本机执行下载、合并、封装和校验。

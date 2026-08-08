@@ -106,7 +106,6 @@ powershell -ExecutionPolicy Bypass -File packaging/Build-Release.ps1
 - [开发、测试与发行](DEVELOPMENT.md)
 - [安装、更新、故障排查与卸载](docs/INSTALLATION_AND_ROLLBACK.md)
 - [系统架构](docs/ARCHITECTURE.md)
-- [关键决策](docs/DECISIONS.md)
 - [微信视频号实现与安全边界](docs/WECHAT_CHANNELS_PLAN.md)
 - [当前状态](STATUS.md)
 

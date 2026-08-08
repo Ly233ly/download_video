@@ -35,8 +35,8 @@ Distributed under the MIT License.
 See licenses/DENO-MIT.txt and media-tools/YOUTUBE-RESOLVER-VERSION.json.
 
 The Download Transfer Station 1.5.0 combined work is distributed under
-GNU General Public License v3.0. Original project code from 0.6.0 and earlier
-retains its MIT notice in licenses/PROJECT-MIT-LICENSE.txt.
+GNU General Public License v3.0. Original project code retains its MIT notice
+in licenses/PROJECT-MIT-LICENSE.txt.
 
 ltaoo/wx_channels_download and Hanson/WechatSphDecrypt were reviewed only to
 understand observable WeChat Channels behavior. No source code, binaries,
