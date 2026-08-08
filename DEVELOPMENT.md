@@ -9,7 +9,7 @@
 
 ## 1.4.7 实现边界
 
-1.0.0 曾按 [cat-catch 迁移总计划](docs/CAT_CATCH_MIGRATION_PLAN.md) 和 [功能对照矩阵](docs/FEATURE_PARITY_MATRIX.md) 完成研究与迁移。固定上游源码保存在 `third_party/cat-catch/source/` 作为 GPL 对应源码；1.4.0 活动浏览器载荷不再复制完整上游工具箱。浏览器只负责发现和提交；无直链候选由桌面固定 yt-dlp/Deno 解析，FFmpeg 继续执行实际下载与合并。桌面网络层默认按任务读取 Windows 系统代理，并将同一 HTTP 代理显式传给 FFmpeg/ffprobe、yt-dlp 与字幕请求；Eagle、本机 API 和控制信号不使用该代理。
+1.0.0 曾参考 `cat-catch` 完成功能研究与迁移，历史计划和矩阵可从 Git 历史恢复。固定上游源码保存在 `third_party/cat-catch/source/` 作为 GPL 对应源码；1.4.0 活动浏览器载荷不再复制完整上游工具箱。浏览器只负责发现和提交；无直链候选由桌面固定 yt-dlp/Deno 解析，FFmpeg 继续执行实际下载与合并。桌面网络层默认按任务读取 Windows 系统代理，并将同一 HTTP 代理显式传给 FFmpeg/ffprobe、yt-dlp 与字幕请求；Eagle、本机 API 和控制信号不使用该代理。
 
 - 浏览器捕获层只负责发现资源、形成媒体候选组、展示选择并经认证回环接口提交计划；专用 bridge 不调用 `chrome.downloads`。
 - 本机后端负责所有普通直链、分轨、HLS/DASH 下载，以及持久状态、FFmpeg/ffprobe、输出验证和现有 Eagle 导入。
@@ -48,12 +48,13 @@
 `release/下载中转站-1.5.0-Windows-x64/下载中转站-1.5.0` 包含：
 
 - `一键安装.exe`：接收者唯一需要运行的入口；
-- `app/`：安装器载荷，包括两个 C# 启动器、Chrome/Firefox 扩展、FFmpeg/ffprobe、yt-dlp/Deno 和独立后端；
-- `source/`、`third_party/`、`licenses/` 与 `THIRD_PARTY_NOTICES.txt`：对应源码、固定 cat-catch 上游快照、构建脚本及全部第三方许可信息；
+- `app/` 只在构建目录中作为临时安装载荷存在，包含两个 C# 启动器、压缩后的 Chrome/Firefox 扩展、FFmpeg/ffprobe、yt-dlp/Deno 和冻结后端；随后整体嵌入 `一键安装.exe`，不会作为用户可见目录进入二进制 ZIP；
+- 用户二进制 ZIP 只包含单文件安装器、使用说明、许可证、二进制清单和源码获取说明；安装载荷嵌入安装器，Python 业务代码不以 `.py`/`.pyw` 形式落在发行目录，浏览器扩展使用压缩后的运行文件；
+- 独立的 `download-transfer-station-<版本>-source.zip` 保存对应源码、固定 cat-catch 上游快照、构建脚本及全部第三方许可信息。GPL-3.0 要求分发二进制时在同一下载位置同步提供该源码包；
 - `使用说明.txt`：非技术用户说明。
 
 发行前必须在隔离目录验证安装器复制结果、测试注册表、独立后端健康接口、冻结版 `--receive`、一次性自动配对凭据消费、ZIP 解压完整性和 SHA-256。
 
 更新发布还需要使用不进入 Git 的 `secrets/update-signing-private.xml` 对 `update.json` 签名，并把签名清单与完整 ZIP 一起上传到 GitHub Release。任何缺少签名、SHA-256 不符或大小不符的更新都会被客户端拒绝。
 
-构建入口是 `powershell -ExecutionPolicy Bypass -File packaging/Build-Release.ps1`。它固定 PyInstaller 6.21.0、FFmpeg 8.1.2、yt-dlp 2026.06.09 和 Deno 2.8.1，先跑全量测试/JavaScript/清单门禁，再构建载荷、对应源码、二进制哈希清单、ZIP 和同名 SHA-256 文件。`Fetch-YouTube-Resolver.ps1` 同时校验并归档 yt-dlp 对应源码与第三方许可总表。
+构建入口是 `powershell -ExecutionPolicy Bypass -File packaging/Build-Release.ps1`。它固定 PyInstaller 6.21.0、Terser 5.49.2、clean-css-cli 5.6.3、html-minifier-terser 7.2.0、FFmpeg 8.1.2、yt-dlp 2026.06.09 和 Deno 2.8.1，先跑全量测试/JavaScript/清单门禁，再生成内嵌载荷的单文件安装器、独立 GPL 对应源码包、二进制哈希清单、用户 ZIP 和 SHA-256 文件。构建会拒绝运行载荷中的外置 `.py`、`.pyw`、`.cs`、`.ps1`、`.spec`、`.toml` 和 source map。`Fetch-YouTube-Resolver.ps1` 同时校验并归档 yt-dlp 对应源码与第三方许可总表。

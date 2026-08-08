@@ -1,12 +1,14 @@
 # 1.5.0 发布验证记录
 
-验证日期：2026-08-01
+验证日期：2026-08-08
 
 ## 发行载荷
 
 - ZIP：`download-transfer-station-1.5.0-windows-x64.zip`
-- 大小：155881753 字节
-- SHA-256：`aeb2d8a35d5e695b539efaee635eec16b6fd16422cade8ac100f57a0d2dd5af8`
+- 大小：147690676 字节
+- SHA-256：`384cd962cbea6ebfa5032db966f7919d6ad9c3e597d0ac621e2f6476cf411809`
+- 用户 ZIP 只包含单文件内嵌安装器、使用说明、许可、二进制清单和源码获取说明，不包含外置 `app`、项目源码或 source map。
+- 独立 GPL 对应源码包：`download-transfer-station-1.5.0-source.zip`，27235455 字节，SHA-256 `b741c5e1e165661dd9a4779b1abf43fc29f98aee3effa2cbeed7785a669c8bbd`。
 - 数据库结构：6
 - 扩展协议：1
 
@@ -17,6 +19,7 @@
 - 活动扩展 JavaScript 语法与 Chrome、Firefox 双清单解析通过。
 - PyInstaller 冻结运行时通过。
 - 隔离安装器的全新安装、覆盖升级、故障回滚和卸载四路径通过。
+- Python 以优化级别 2 冻结，运行载荷扫描不存在 `.py`、`.pyw`、`.cs`、`.ps1`、`.spec`、`.toml` 或 `.map`；17 个扩展 JavaScript 均转换为压缩运行文件。
 
 ## 本机覆盖安装
 

@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(codegraph status:*)",
+      "Bash(npx codegraph:*)",
+      "Bash(npm list:*)",
+      "Bash(pip list:*)",
+      "Bash(dir:*)",
+      "Bash(where codegraph:*)",
+      "Bash(node -e \"console.log\\(require.resolve\\(''@codegraph/cli''\\)\\)\")",
+      "Bash(codegraph --help)",
+      "Bash(\"C:\\\\Users\\\\MSI\\\\AppData\\\\Local\\\\codegraph\\\\current\\\\bin\\\\codegraph.cmd\" --help)"
+    ]
+  }
+}

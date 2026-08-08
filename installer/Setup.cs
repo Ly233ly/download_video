@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Reflection;
@@ -375,6 +376,8 @@ internal sealed class InstallResult
 
 internal static class InstallerEngine
 {
+    private const string EmbeddedPayloadResource = "DownloadTransferStation.Payload.zip";
+
     internal static string GetInstallDirectory(bool testMode)
     {
         if (testMode)
@@ -399,7 +402,7 @@ internal static class InstallerEngine
         bool openChromeSetup = true
     )
     {
-        string payload = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app");
+        string payload = ExtractEmbeddedPayload();
         if (!File.Exists(Path.Combine(payload, "下载中转站.exe"))
             || !File.Exists(Path.Combine(payload, "runtime", "下载中转站后台", "下载中转站后台.exe"))
             || !File.Exists(Path.Combine(payload, "media-tools", "ffmpeg.exe"))
@@ -408,7 +411,7 @@ internal static class InstallerEngine
             || !File.Exists(Path.Combine(payload, "media-tools", "deno.exe"))
             || !File.Exists(Path.Combine(payload, "chrome-extension", "manifest.json")))
         {
-            throw new InvalidOperationException("安装包不完整，请重新解压完整 ZIP 后再运行。");
+            throw new InvalidOperationException("安装器内嵌载荷不完整，请重新下载安装包。");
         }
 
         string installDirectory = GetInstallDirectory(testMode);
@@ -521,6 +524,59 @@ internal static class InstallerEngine
                 "更新没有完成，已自动恢复旧版本。\r\n\r\n" + exception.Message,
                 exception
             );
+        }
+    }
+
+    private static string ExtractEmbeddedPayload()
+    {
+        string temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            "DownloadTransferStation-Install-" + Guid.NewGuid().ToString("N")
+        );
+        Directory.CreateDirectory(temporaryRoot);
+        try
+        {
+            using (Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(EmbeddedPayloadResource))
+            {
+                if (resource == null)
+                {
+                    throw new InvalidOperationException("安装器缺少内嵌程序载荷。");
+                }
+                using (ZipArchive archive = new ZipArchive(resource, ZipArchiveMode.Read, false))
+                {
+                    string allowedPrefix = temporaryRoot.TrimEnd(Path.DirectorySeparatorChar)
+                        + Path.DirectorySeparatorChar;
+                    foreach (ZipArchiveEntry entry in archive.Entries)
+                    {
+                        string relative = entry.FullName.Replace('/', Path.DirectorySeparatorChar);
+                        if (string.IsNullOrWhiteSpace(relative)) continue;
+                        string destination = Path.GetFullPath(Path.Combine(temporaryRoot, relative));
+                        if (!destination.StartsWith(allowedPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new InvalidOperationException("安装载荷包含不安全路径。");
+                        }
+                        if (string.IsNullOrEmpty(entry.Name))
+                        {
+                            Directory.CreateDirectory(destination);
+                            continue;
+                        }
+                        Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                        using (Stream input = entry.Open())
+                        using (FileStream output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None))
+                        {
+                            input.CopyTo(output);
+                        }
+                    }
+                }
+            }
+            string payload = Path.Combine(temporaryRoot, "app");
+            AppDomain.CurrentDomain.ProcessExit += delegate { TryDeleteDirectory(temporaryRoot); };
+            return payload;
+        }
+        catch
+        {
+            TryDeleteDirectory(temporaryRoot);
+            throw;
         }
     }
 

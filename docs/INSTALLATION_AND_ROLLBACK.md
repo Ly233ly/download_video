@@ -117,5 +117,5 @@ Chrome 的最后一次加载确认属于浏览器安全边界，安装器不能�
 - 覆盖升级只有在新后台健康门、快捷方式和卸载注册全部成功后才轮换新的单次 Chrome bootstrap；故障注入回滚发生在轮换前，旧扩展与旧配对保持一致。
 - 程序临时目录与用户数据目录分离。卸载器只删除带安装归属的程序资产和可验证的临时中间文件；卸载本身不删除最终下载文件、用户下载或手动指定文件。运行时只有显式 `delete_after_import=1` 的新计划可在 Eagle 成功和路径归属复验后删除自己的最终副本。
 - 浏览器扩展仍需用户亲自确认安装或商店授权。新增权限必须在安装说明中逐项解释，不用企业策略绕过浏览器确认。
-- 1.4.0 发行物统一采用 GPL-3.0；YouTube、通用内容页/信息流绑定、桌面代理路由、抖音适配器和视频号 Python/JavaScript 实现均由本项目独立编写。`ltaoo/wx_channels_download` 只用于理解可观察行为，其 Go/JavaScript、SunnyNet、Gopeed、证书、图标和 UI 不进入源码或发行包。yt-dlp/Deno 许可证、哈希与 yt-dlp 对应源码继续随包提供。
-- `packaging/Test-Installer.ps1` 可在隔离根目录重复验证全新安装、0.6.0 升级、强制失败回退和卸载；`Test-FrozenRuntime.ps1` 验证冻结后台、健康门和 IDM 接收模式。
+- 1.4.0 发行物统一采用 GPL-3.0；YouTube、通用内容页/信息流绑定、桌面代理路由、抖音适配器和视频号 Python/JavaScript 实现均由本项目独立编写。`ltaoo/wx_channels_download` 只用于理解可观察行为，其 Go/JavaScript、SunnyNet、Gopeed、证书、图标和 UI 不进入源码或发行包。yt-dlp/Deno 许可证与哈希进入二进制 ZIP，yt-dlp 及项目对应源码进入同一下载位置的独立源码 ZIP。
+- `packaging/Test-Installer.ps1` 可从单文件内嵌安装器在隔离根目录重复验证全新安装、升级、强制失败回退和卸载；`Test-FrozenRuntime.ps1` 在构建阶段验证冻结后台、健康门和 IDM 接收模式。用户二进制包不再携带外置 `app` 或 `source` 目录；GPL 对应源码作为独立 ZIP 在同一下载位置提供。

@@ -16,23 +16,23 @@
 
 1.4.9 修复视频号捕获的代理恢复问题：系统代理被其他程序禁用（ProxyEnable=0）但残留本机代理地址时，停止捕获不再误报“系统代理已被其他程序修改、未覆盖当前设置”；“修复代理冲突”现在能清除失效残留；捕获进入“需要人工恢复”状态后，只要没有其他正在运行的系统代理，再次开始捕获即可自动恢复正常，无需重启程序。
 
-1.4.9 已作为 [GitHub 稳定版](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.9) 发布并覆盖安装到当前电脑。正式包已通过 243 项 Python 回归和安装链路验证。数据库结构仍为 6，扩展协议仍为 1，原任务、浏览器配对、设置和用户数据库均已保留。详细结果见 [1.4.9 发布验证报告](docs/RELEASE_VERIFICATION_1.4.9.md)。
+1.4.9 已作为 [GitHub 稳定版](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.9) 发布并覆盖安装到当前电脑。正式包已通过 243 项 Python 回归和安装链路验证。数据库结构仍为 6，扩展协议仍为 1，原任务、浏览器配对、设置和用户数据库均已保留。
 
 ## 1.4.8：修复启动后界面卡死
 
 1.4.8 修复软件启动后主窗口无响应（卡死）的问题：深色标题栏不再同步处理待定界面回调，避免与动态换行控件的尺寸刷新互相触发，窗口启动后立即可以操作，后台下载、IDM 唤醒和 Eagle 导入链路不受影响。
 
-1.4.8 已作为 [GitHub 稳定版](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.8) 发布并覆盖安装到当前电脑。正式包已通过 239 项 Python 回归和安装链路验证。数据库结构仍为 6，扩展协议仍为 1，原任务、浏览器配对、设置和用户数据库均已保留。详细结果见 [1.4.8 发布验证报告](docs/RELEASE_VERIFICATION_1.4.8.md)。
+1.4.8 已作为 [GitHub 稳定版](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.8) 发布并覆盖安装到当前电脑。正式包已通过 239 项 Python 回归和安装链路验证。数据库结构仍为 6，扩展协议仍为 1，原任务、浏览器配对、设置和用户数据库均已保留。
 
 ## 1.4.7：微亮主题与全局圆角
 
 1.4.7 新增微亮/深色双主题：默认使用低眩光的微亮灰紫界面，侧栏底部可切换深色主题并自动记住选择；按钮、导航、候选卡片、缩略图槽和质量选择器统一使用更明显的分级圆角。应用内重复品牌标题已移除，Windows 原生标题栏直接显示“下载中转站 v1.4.7”并随当前主题换色。
 
-1.4.7 已作为 [GitHub 稳定版](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.7) 发布并覆盖安装到当前电脑。正式包已通过 239 项 Python 回归、双主题真实 Tk 截图、界面性能夹具、隔离安装、覆盖升级、故障回滚、卸载和冻结运行时验证。数据库结构仍为 6，扩展协议仍为 1，原任务、浏览器配对、设置和用户数据库均已保留。详细结果见 [1.4.7 发布验证报告](docs/RELEASE_VERIFICATION_1.4.7.md)。
+1.4.7 已作为 [GitHub 稳定版](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.7) 发布并覆盖安装到当前电脑。正式包已通过 239 项 Python 回归、双主题真实 Tk 截图、界面性能夹具、隔离安装、覆盖升级、故障回滚、卸载和冻结运行时验证。数据库结构仍为 6，扩展协议仍为 1，原任务、浏览器配对、设置和用户数据库均已保留。
 
 ## 1.4.6：发布说明编码修正
 
-1.4.6 已作为 [GitHub 稳定版](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.6) 重新发布 1.4.5 的完整性能与可靠性修复，并修正正式发布页中文说明被错误转码为问号的问题。程序功能、数据结构和扩展协议保持兼容；本次发布使用仓库内 UTF-8 Markdown 文件生成说明，避免命令行编码再次污染中文内容。完整结果见 [1.4.6 发布验证报告](docs/RELEASE_VERIFICATION_1.4.6.md)。
+1.4.6 已作为 [GitHub 稳定版](https://github.com/Ly233ly/download-for-eagle/releases/tag/v1.4.6) 重新发布 1.4.5 的完整性能与可靠性修复，并修正正式发布页中文说明被错误转码为问号的问题。程序功能、数据结构和扩展协议保持兼容。
 
 ## 1.4.5：真正可读的自适应界面
 
@@ -46,7 +46,7 @@
 
 媒体、视频号、IDM、设置和诊断五页已在 900×600 与 1120×720 完成视觉检查。500 条 IDM、200 条媒体和 200 条视频号的全刷新约 0.11 秒，分页控件上限保持 80/12/12。
 
-1.4.5 已于 2026-07-29 作为 GitHub 稳定版发布，并覆盖安装到当前电脑；原任务、配对状态和用户数据库均已保留。发布、签名更新、安装回滚与本机核验见 [发布验证报告](docs/RELEASE_VERIFICATION_1.4.5.md)，全面性能优化和压力数据见 [性能审计](docs/PERFORMANCE_AUDIT_2026-07-29.md)。
+1.4.5 已于 2026-07-29 作为 GitHub 稳定版发布，并覆盖安装到当前电脑；原任务、配对状态和用户数据库均已保留。性能优化和压力测试结论已汇总到 [当前状态](STATUS.md)。
 
 ## 1.4.4：高 DPI、长列表与统一任务
 
@@ -56,13 +56,13 @@
 
 视频号证书存在性与信任检查已移出 Tk 主线程，点击“开始捕获”会立即进入后台准备状态。桌面三个列表都保留安全清理入口；浏览器扩展任务页新增“清除完成”，只删除终态记录，不停止活动任务，也不删除下载文件、预览或 Eagle 内容。
 
-自动回归、性能基准、900×600 视觉检查、冻结运行时、安装器回滚与本机覆盖结果见 [1.4.4 发布验证报告](docs/RELEASE_VERIFICATION_1.4.4.md)。
+该版本完成了自动回归、性能基准、900×600 视觉检查、冻结运行时、安装器回滚与本机覆盖验证；详细历史可从 Git 记录恢复。
 
 ## 1.4.3：深色桌面界面与完整功能
 
 当前深色桌面界面已作为正式 `MainWindow` 接入产品启动链路，不再是独立演示版。正常启动、托盘“显示窗口”和安装版后台都使用同一界面，并直接读取真实数据库、媒体下载服务、视频号捕获服务、IDM 队列、网站规则、网络设置、Chrome 配对、Eagle 状态和更新服务；测试夹具仍只用于截图，不进入安装包。1.4.3 同时恢复各状态适用的停止、重试、打开位置、打开来源和补导按钮，并修正任务标题单行省略、视频号捕获控制栏、预览图、圆角、滚动条和 OPPO Sans 字级。
 
-新版产品图、任务图标和状态图标已放入 Python 包资源，并同时声明到普通安装包与 PyInstaller 发行配置。源码运行和冻结安装版使用同一套资源查找顺序，安装后不会因缺少仓库根目录的 `assets` 而丢失预览占位图或导航图标。发行验证记录见 [1.4.3 发布验证报告](docs/RELEASE_VERIFICATION_1.4.3.md)。
+新版产品图、任务图标和状态图标已放入 Python 包资源，并同时声明到普通安装包与 PyInstaller 发行配置。源码运行和冻结安装版使用同一套资源查找顺序，安装后不会因缺少仓库根目录的 `assets` 而丢失预览占位图或导航图标。
 
 视频号页会在切换到该页后恢复自己的主从分隔位置，避免隐藏状态下创建的 Tk 分栏把“开始捕获 / 停止捕获、刷新、清空”控制栏压缩为 0。
 
@@ -72,7 +72,7 @@
 
 这次重构只改变信息架构和状态投影，不改变业务契约。浏览器仍只发现、核对和提交媒体候选组；下载、合并、校验、文件与 Eagle 仍只属于桌面 `MediaCoordinator`。下载中、校验中、等待 Eagle、仅下载完成、导入失败、可重试和需要回来源重建等状态继续独立显示；未完成阶段不会提前显示 100%。无来源 IDM 文件仍直接导入，DRM/固定分片继续阻断，Eagle 成功后的删除仍只作用于有计划归属且通过目录复验的程序自有副本。
 
-功能迁移映射见 [前端重构功能清单](docs/FRONTEND_REFACTOR_FEATURE_INVENTORY.md)，截图对照和视觉结论见 [视觉 QA](design-qa.md)。确定性视觉夹具可分别运行 `tests/visual_ui_fixture.py` 和 `tests/visual_popup_fixture.html`。
+前端重构后的当前功能边界见 [架构](docs/ARCHITECTURE.md)、[关键决策](docs/DECISIONS.md) 和 [验收标准](ACCEPTANCE.md)。确定性视觉夹具可分别运行 `tests/visual_ui_fixture.py` 和 `tests/visual_popup_fixture.html`。
 
 ## 1.3.1：浏览器性能与 Eagle 导入后清理
 
@@ -218,37 +218,13 @@ popup 每次连接检查都会主动重试安装器的一次性自动配对。�
 
 扩展和桌面软件共享同一份持久任务状态。扩展任务页显示实时进度、阶段、错误、停止和本次运行内重试；桌面软件新增“媒体下载”页，显示标题、来源、已处理大小、进度、输出位置以及下载完成后从视频生成的本机预览图，重新打开窗口不会丢失任务。完整签名 URL 和 Cookie/Authorization 等请求上下文只存在于当前软件进程内存；软件重启后未完成任务会明确要求回来源页重新创建，不会猜测或伪造续传地址。
 
-- [完整迁移计划](docs/CAT_CATCH_MIGRATION_PLAN.md)
-- [cat-catch 功能对照矩阵](docs/FEATURE_PARITY_MATRIX.md)
-- [前端重构功能保全清单（功能 → 文件 → 函数 → 测试）](docs/FRONTEND_REFACTOR_FEATURE_INVENTORY.md)
 - [任务总览与依赖](TASKS.md)
 - [A01–A196 验收标准与结果](ACCEPTANCE.md)
-- [1.0.0 验证报告](docs/RELEASE_VERIFICATION_1.0.0.md)
-- [1.1.x UI 重构规范与验收](docs/EXTENSION_UI_REDESIGN.md)
-- [1.1.1 验证报告](docs/RELEASE_VERIFICATION_1.1.1.md)
-- [1.1.2 验证报告](docs/RELEASE_VERIFICATION_1.1.2.md)
-- [1.1.3 验证报告](docs/RELEASE_VERIFICATION_1.1.3.md)
-- [1.1.4 验证报告](docs/RELEASE_VERIFICATION_1.1.4.md)
-- [1.1.5 验证报告](docs/RELEASE_VERIFICATION_1.1.5.md)
-- [1.1.6 验证报告](docs/RELEASE_VERIFICATION_1.1.6.md)
-- [1.1.7 验证报告](docs/RELEASE_VERIFICATION_1.1.7.md)
-- [1.1.8 验证报告](docs/RELEASE_VERIFICATION_1.1.8.md)
-- [1.1.9 验证报告](docs/RELEASE_VERIFICATION_1.1.9.md)
-- [1.1.12 验证报告](docs/RELEASE_VERIFICATION_1.1.12.md)
-- [1.1.11 验证报告](docs/RELEASE_VERIFICATION_1.1.11.md)
-- [1.1.10 验证报告](docs/RELEASE_VERIFICATION_1.1.10.md)
-- [1.2.2 验证报告](docs/RELEASE_VERIFICATION_1.2.2.md)
-- [1.2.3 验证报告](docs/RELEASE_VERIFICATION_1.2.3.md)
-- [1.2.1 验证报告](docs/RELEASE_VERIFICATION_1.2.1.md)
-- [1.2.5 验证报告](docs/RELEASE_VERIFICATION_1.2.5.md)
-- [1.2.6 验证报告](docs/RELEASE_VERIFICATION_1.2.6.md)
-- [1.2.7 验证报告](docs/RELEASE_VERIFICATION_1.2.7.md)
-- [1.2.8 验证报告](docs/RELEASE_VERIFICATION_1.2.8.md)
-- [1.2.9 验证报告](docs/RELEASE_VERIFICATION_1.2.9.md)
-- [1.2.10 验证报告](docs/RELEASE_VERIFICATION_1.2.10.md)
-- [1.2.11 验证报告](docs/RELEASE_VERIFICATION_1.2.11.md)
-- [1.3.1 验证报告（发布候选）](docs/RELEASE_VERIFICATION_1.3.1.md)
-- [1.3.0 验证报告（发布候选）](docs/RELEASE_VERIFICATION_1.3.0.md)
+- [架构与数据流](docs/ARCHITECTURE.md)
+- [关键决策与风险](docs/DECISIONS.md)
+- [当前 1.5.0 发布验证](docs/RELEASE_VERIFICATION_1.5.0.md)
+
+工作区只保留当前版本的发布验证；旧版本细节可从 Git 历史和对应 GitHub Release 恢复。
 
 ## 分享给别人
 
@@ -300,10 +276,10 @@ popup 每次连接检查都会主动重试安装器的一次性自动配对。�
 
 ## 环境与源码运行
 
-发行包支持 Windows 10/11，IDM 与 Eagle 用于原自动导入流程；媒体捕获扩展支持 Chrome/Edge，并提供 Firefox 独立清单。发行包不要求 Python，自带 FFmpeg 8.1.2、ffprobe、yt-dlp、Deno 和冻结 Python 运行时。
+发行包支持 Windows 10/11，IDM 与 Eagle 用于原自动导入流程；媒体捕获扩展支持 Chrome/Edge，并提供 Firefox 独立清单。用户二进制 ZIP 只提供单文件安装器、使用说明和许可材料：Python 业务代码冻结在运行时中，不外置 `.py`/`.pyw`，浏览器扩展使用压缩后的必需运行文件。发行包不要求 Python，自带 FFmpeg 8.1.2、ffprobe、yt-dlp、Deno 和冻结 Python 运行时。
 
 源码开发模式需要 Python 3.11+，运行时代码仅使用标准库。开发入口、打包和测试见 [DEVELOPMENT.md](DEVELOPMENT.md)，详细验收见 [ACCEPTANCE.md](ACCEPTANCE.md)，安装与回滚见 [docs/INSTALLATION_AND_ROLLBACK.md](docs/INSTALLATION_AND_ROLLBACK.md)。
 
 ## 开源许可
 
-1.3.1 发行物统一采用 [GNU GPL v3](LICENSE)。YouTube、通用内容页/信息流绑定、桌面代理路由、抖音适配器与微信视频号捕获链路是本项目独立实现；`ltaoo/wx_channels_download` 只用于行为研究，其代码、二进制、证书、图标和 UI 未进入项目或发行物。固定的 yt-dlp/Deno 解析运行时及其许可证、哈希和 yt-dlp 对应源码随包提供。cat-catch 固定为 2.7.1 / 提交 `7a77612b3e2a01cedacae6e43eb88a89eee3034f`，固定上游快照、修改说明和许可证随对应源码提供，但旧工具箱、图标和浏览器库不进入活动扩展。0.6.0 及更早代码的 MIT 文本继续作为历史版权通知保留，见 `licenses/PROJECT-MIT-LICENSE.txt`。第三方清单见 `installer/THIRD_PARTY_NOTICES.txt` 与 [上游来源记录](docs/UPSTREAM_PROVENANCE.md)。
+1.3.1 发行物统一采用 [GNU GPL v3](LICENSE)。YouTube、通用内容页/信息流绑定、桌面代理路由、抖音适配器与微信视频号捕获链路是本项目独立实现；`ltaoo/wx_channels_download` 只用于行为研究，其代码、二进制、证书、图标和 UI 未进入项目或发行物。固定的 yt-dlp/Deno 解析运行时及其许可证、哈希进入二进制包；yt-dlp 和本项目对应源码放在独立源码 ZIP，并在分发二进制时于同一下载位置同步提供。cat-catch 固定为 2.7.1 / 提交 `7a77612b3e2a01cedacae6e43eb88a89eee3034f`，对应源码保留主 README、变更记录、原许可证和第三方库许可表，但旧工具箱、图标和浏览器库不进入活动扩展。0.6.0 及更早代码的 MIT 文本继续作为历史版权通知保留，见 `licenses/PROJECT-MIT-LICENSE.txt`。第三方清单见 `installer/THIRD_PARTY_NOTICES.txt` 与 [上游来源记录](docs/UPSTREAM_PROVENANCE.md)。

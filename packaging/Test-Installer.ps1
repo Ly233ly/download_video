@@ -18,10 +18,7 @@ if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
 $PackageRoot = [IO.Path]::GetFullPath($PackageRoot)
 $installer = Join-Path $PackageRoot "一键安装.exe"
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "找不到待测试安装器：$installer" }
-$payloadManifest = Join-Path $PackageRoot "app\chrome-extension\manifest.json"
-if (-not (Test-Path -LiteralPath $payloadManifest -PathType Leaf)) { throw "找不到安装载荷版本清单：$payloadManifest" }
-$expectedVersion = [string]((Get-Content -LiteralPath $payloadManifest -Raw -Encoding UTF8 | ConvertFrom-Json).version)
-if ([string]::IsNullOrWhiteSpace($expectedVersion)) { throw "安装载荷版本号为空。" }
+$expectedVersion = $currentVersion
 $projectPrefix = $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $packageDisplay = $PackageRoot
 if ($PackageRoot.StartsWith($projectPrefix, [StringComparison]::OrdinalIgnoreCase)) {

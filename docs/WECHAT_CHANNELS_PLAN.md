@@ -53,7 +53,7 @@ Chrome/Edge/Firefox 扩展仍只负责浏览器网页；微信来源不会塞入
 
 ## 任务与验收
 
-任务 96–103 及 A197–A220 是完整门禁，概要见根目录 `TASKS.md` 与 `ACCEPTANCE.md`，本地详细 issue 位于 `.scratch/wechat-channels-1-3/issues/`：
+任务 96–103 及 A197–A220 是完整门禁，当前状态和验收细节分别见根目录 `TASKS.md` 与 `ACCEPTANCE.md`：
 
 1. 来源生命周期纵向闭环。
 2. 受控证书与 HTTPS 捕获。

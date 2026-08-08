@@ -10,7 +10,7 @@
 - 导入日期：2026-07-18
 - 历史导入范围：浏览器扩展的资源捕获、深度搜索、HLS/DASH、预览、下载、录制、外部路由、媒体控制、设置、国际化及相关第三方浏览器库。
 
-上游完整固定源码快照（排除 `.git` 对象库）、原始说明、变更记录与许可证保存在 `third_party/cat-catch/source/`，其内容对应上述提交。组合发行物采用 GPL-3.0；项目原有 MIT 代码的版权与许可文本继续保存在 `licenses/PROJECT-MIT-LICENSE.txt`，不得移除。
+上游固定对应源码（排除 `.git` 对象库和不参与构建的翻译 README、Issue 模板）、主说明、变更记录与许可证保存在 `third_party/cat-catch/source/`，代码内容对应上述提交。组合发行物采用 GPL-3.0；项目原有 MIT 代码的版权与许可文本继续保存在 `licenses/PROJECT-MIT-LICENSE.txt`，不得移除。
 
 ## 修改说明
 

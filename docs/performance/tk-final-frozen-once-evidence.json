@@ -1,9 +1,0 @@
-﻿{
-    "version":  "1.4.5",
-    "testedAtUtc":  "2026-07-29T14:10:42.3048979Z",
-    "executable":  "release/下载中转站-1.4.5-Windows-x64/下载中转站-1.4.5/app/runtime/下载中转站后台/下载中转站后台.exe",
-    "mode":  "--once",
-    "exitCode":  0,
-    "databaseCreated":  true,
-    "processExited":  true
-}
