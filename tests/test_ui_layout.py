@@ -108,6 +108,23 @@ class _FakeSplit:
 
 
 class UiPerformanceHelpersTests(unittest.TestCase):
+    def test_theme_defaults_to_light_once_and_then_persists_the_last_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database_path = Path(temporary) / "theme.db"
+
+            first_launch = Database(database_path)
+            self.assertEqual(
+                first_launch.get_setting("ui_theme", ui_module.DEFAULT_UI_THEME),
+                "light",
+            )
+            first_launch.set_setting("ui_theme", "dark")
+
+            restarted = Database(database_path)
+            self.assertEqual(
+                restarted.get_setting("ui_theme", ui_module.DEFAULT_UI_THEME),
+                "dark",
+            )
+
     def test_corrupt_retention_setting_falls_back_to_safe_default(self) -> None:
         self.assertEqual(ui_module._bounded_retention_days("broken"), 7)
         self.assertEqual(ui_module._bounded_retention_days(None), 7)
@@ -454,6 +471,48 @@ class UiPerformanceHelpersTests(unittest.TestCase):
         self.assertIn(0, red_values)
         self.assertIn(255, red_values)
         self.assertTrue(any(0 < value < 255 for value in red_values))
+
+    def test_rounded_rect_fill_reaches_the_corner_image_edges(self) -> None:
+        class RecordingCanvas:
+            def __init__(self) -> None:
+                self.rectangles: list[tuple[int, int, int, int]] = []
+
+            def create_rectangle(self, x1, y1, x2, y2, **_kwargs):
+                self.rectangles.append((x1, y1, x2, y2))
+                return len(self.rectangles)
+
+            def create_image(self, *_args, **_kwargs):
+                return 100 + len(self.rectangles)
+
+        canvas = RecordingCanvas()
+        with patch.object(
+            ui_module,
+            "_corner_photo_images",
+            return_value=(object(), object(), object(), object()),
+        ):
+            ui_module._draw_antialiased_rounded_rect(
+                canvas,
+                1,
+                1,
+                65,
+                41,
+                8,
+                fill="#7464DF",
+                border="#5B4CCB",
+                border_width=1,
+                outer_background="#FFFFFF",
+            )
+
+        # Tk Canvas rectangle x2/y2 coordinates are exclusive for the fill.
+        # The central fills and one-pixel border strips must therefore end at
+        # the exact right/bottom boundary shared by the corner images. Using
+        # boundary - 1 leaves the white notch visible in the real UI.
+        self.assertEqual(canvas.rectangles[0], (9, 1, 57, 41))
+        self.assertEqual(canvas.rectangles[1], (1, 9, 65, 33))
+        self.assertEqual(canvas.rectangles[2], (9, 1, 57, 2))
+        self.assertEqual(canvas.rectangles[3], (9, 40, 57, 41))
+        self.assertEqual(canvas.rectangles[4], (1, 9, 2, 33))
+        self.assertEqual(canvas.rectangles[5], (64, 9, 65, 33))
 
     def test_antialias_geometry_is_reused_across_theme_colours(self) -> None:
         ui_module._CIRCLE_COVERAGE_CACHE.clear()
@@ -1203,6 +1262,26 @@ class ResponsiveWidgetTests(unittest.TestCase):
             0,
             "Positive point sizes are required for Windows DPI scaling",
         )
+
+    def test_raised_label_uses_the_active_theme_on_first_render(self) -> None:
+        previous_palette = dict(UI)
+        try:
+            _set_ui_theme("dark")
+            _configure_styles(self.root, 1.0)
+
+            style = ttk.Style(self.root)
+            self.assertEqual(
+                str(style.lookup("Raised.TLabel", "background")),
+                UI["surface_raised"],
+            )
+            self.assertEqual(
+                str(style.lookup("Raised.TLabel", "foreground")),
+                UI["text"],
+            )
+        finally:
+            UI.clear()
+            UI.update(previous_palette)
+            _configure_styles(self.root, 1.0)
 
     def test_named_fonts_use_one_readable_family_and_real_bold_weight(self) -> None:
         _configure_styles(self.root, 1.0)

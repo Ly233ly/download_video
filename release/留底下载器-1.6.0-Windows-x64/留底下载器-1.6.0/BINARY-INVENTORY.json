@@ -2,22 +2,22 @@
     "product":  "留底下载器",
     "version":  "1.6.0",
     "architecture":  "Windows-x64",
-    "generatedAtUtc":  "2026-08-09T02:38:36.4259187Z",
+    "generatedAtUtc":  "2026-08-09T03:46:59.9228595Z",
     "binaries":  [
                      {
                          "path":  "留底安装器.exe",
-                         "bytes":  148182016,
-                         "sha256":  "0f9a59a50c2f5f3b142674987e64fd87c931b36bc1b7fc9a9adab248487f4198"
+                         "bytes":  148181504,
+                         "sha256":  "ebfd71dbb2954dc8afccb973a3add13e759ea3bfdecdd7cf5e7727c57002a122"
                      },
                      {
                          "path":  "app/IdmEagleHook.exe",
                          "bytes":  62976,
-                         "sha256":  "1391458635799cb1ccbaeeff776223947bea49c4f7ab58c8944a6543d2a46717"
+                         "sha256":  "62e0008b1afba7328ef2019ba5f1a07693a00a04708b1661a155585e5bf6a8f6"
                      },
                      {
                          "path":  "app/留底下载器.exe",
                          "bytes":  62976,
-                         "sha256":  "24242749c7aac310d8d6e34120e97cc7e539b5adc70cf56d6092bfcf797a543c"
+                         "sha256":  "3b96ba26ce03aef1c7b214e411ae992241722ec2d0963a8e5f836c50387e1bc3"
                      },
                      {
                          "path":  "app/media-tools/deno.exe",
@@ -41,8 +41,8 @@
                      },
                      {
                          "path":  "app/runtime/留底桌面端后台/留底桌面端后台.exe",
-                         "bytes":  2750117,
-                         "sha256":  "a75e95bac2280e9cc38ed587083c4da2fdb10de61d0482168106a14f7f9b377e"
+                         "bytes":  2750115,
+                         "sha256":  "8c7cf54bc543d81b5b9572bcc476f71d791e6452b8aae10815a53da85ae5d481"
                      },
                      {
                          "path":  "app/runtime/留底桌面端后台/_internal/libcrypto-3.dll",

@@ -690,6 +690,7 @@ def _configure_styles(root: Tk, scale: float | None = None) -> None:
     style.configure("SidebarMuted.TLabel", background=UI["sidebar_bg"], foreground=UI["text_muted"])
     style.configure("Surface.TLabel", background=UI["surface"], foreground=UI["text"])
     style.configure("SurfaceRaised.TLabel", background=UI["surface_raised"], foreground=UI["text"])
+    style.configure("Raised.TLabel", background=UI["surface_raised"], foreground=UI["text"])
     style.configure("Soft.TLabel", background=UI["surface_overlay"], foreground=UI["text_muted"])
     style.configure("Muted.TLabel", background=UI["surface"], foreground=UI["text_muted"])
     style.configure(
@@ -1733,8 +1734,8 @@ def _draw_antialiased_rounded_rect(
             canvas.create_rectangle(
                 left,
                 top,
-                max(left, right - 1),
-                max(top, bottom - 1),
+                max(left + 1, right),
+                max(top + 1, bottom),
                 fill=fill,
                 outline=border,
                 width=border_width if border else 0,
@@ -1749,7 +1750,7 @@ def _draw_antialiased_rounded_rect(
             left + radius,
             top,
             right - radius,
-            bottom - 1,
+            bottom,
             fill=fill,
             outline="",
             tags=tags,
@@ -1759,7 +1760,7 @@ def _draw_antialiased_rounded_rect(
         canvas.create_rectangle(
             left,
             top + radius,
-            right - 1,
+            right,
             bottom - radius,
             fill=fill,
             outline="",
@@ -1768,18 +1769,18 @@ def _draw_antialiased_rounded_rect(
     )
     if effective_border_width:
         edge_rectangles = (
-            (left + radius, top, right - radius, top + effective_border_width - 1),
+            (left + radius, top, right - radius, top + effective_border_width),
             (
                 left + radius,
                 bottom - effective_border_width,
                 right - radius,
-                bottom - 1,
+                bottom,
             ),
-            (left, top + radius, left + effective_border_width - 1, bottom - radius),
+            (left, top + radius, left + effective_border_width, bottom - radius),
             (
                 right - effective_border_width,
                 top + radius,
-                right - 1,
+                right,
                 bottom - radius,
             ),
         )
