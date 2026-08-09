@@ -1,8 +1,18 @@
 from __future__ import annotations
 
-APP_NAME = "下载中转站"
-APP_VERSION = "1.5.0"
+BRAND_NAME = "留底"
+APP_NAME = "留底下载器"
+APP_VERSION = "1.6.0"
+APP_AUTHOR = "阿毅i"
+APP_DESCRIPTION = "免费开源的 Windows 本机媒体下载与归档工具"
+APP_SLOGAN = "想留的，留个底。"
+DESKTOP_COMPONENT_NAME = "留底桌面端"
+EXTENSION_COMPONENT_NAME = "留底浏览器扩展"
+INSTALLER_COMPONENT_NAME = "留底安装器"
+DOWNLOAD_DIR_NAME = APP_NAME
+LEGACY_APP_NAME = "下载中转站"
 EXTENSION_PROTOCOL_VERSION = 1
+# These identifiers remain stable so existing installations upgrade in place.
 DATA_DIR_NAME = "IdmEagleAutoImport"
 DEFAULT_EAGLE_BASE_URL = "http://127.0.0.1:41595"
 DEFAULT_LOCAL_HOST = "127.0.0.1"

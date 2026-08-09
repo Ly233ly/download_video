@@ -7,6 +7,7 @@ from .constants import DEFAULT_SOURCE_GRACE_PERIOD, VIDEO_EXTENSIONS
 from .database import Database
 from .eagle import EagleClient, EagleImportError, EagleUnavailable
 from .fingerprint import sha256_file
+from .paths import download_station_root
 
 
 class JobProcessor:
@@ -21,24 +22,27 @@ class JobProcessor:
         self.eagle = eagle or EagleClient()
         self.minimum_file_age = minimum_file_age
         self.source_grace_period = max(0.0, source_grace_period)
+        self._eagle_unavailable_until = 0.0
 
     def process_once(self, limit: int = 20) -> int:
         processed = 0
         for job in self.database.list_actionable_jobs(limit):
             self.process_job(job["id"])
             processed += 1
-        remaining = max(0, limit - processed)
-        if remaining:
-            self.cleanup_retained_files(remaining)
+        # Retention is independent of the IDM import batch.  In particular, a
+        # machine without Eagle may keep refilling the import batch with due
+        # waiting_eagle rows; that must not starve already-approved cleanup.
+        self.cleanup_retained_files(max(1, min(10, limit)))
         return processed
 
     def cleanup_retained_files(self, limit: int = 10) -> None:
         for plan in self.database.expired_retained_plans(limit):
             plan_id = str(plan["plan_id"])
-            job_id = str(plan["job_id"])
             path = Path(str(plan["final_path"]))
             try:
                 resolved = path.resolve(strict=True)
+                job_path = Path(str(plan["job_file_path"])).resolve(strict=True)
+                completed_root = (download_station_root() / "已完成").resolve(strict=True)
             except OSError:
                 self.database.record_plan_output_cleanup(
                     plan_id, str(path),
@@ -47,12 +51,16 @@ class JobProcessor:
                     error_message="本机下载文件不存在或无法访问",
                 )
                 continue
-            if not resolved.is_file():
+            if (
+                not resolved.is_file()
+                or resolved != job_path
+                or not resolved.is_relative_to(completed_root)
+            ):
                 self.database.record_plan_output_cleanup(
                     plan_id, str(path),
                     deleted=False,
                     error_code="local_file_delete_not_owned",
-                    error_message="本机下载文件已不存在",
+                    error_message="本机下载文件不属于本程序已完成目录或与导入任务不一致",
                 )
                 continue
             last_error = ""
@@ -79,7 +87,10 @@ class JobProcessor:
             return
 
         path = Path(job["file_path"])
-        if path.suffix.lower() not in VIDEO_EXTENSIONS:
+        if (
+            path.suffix.lower() not in VIDEO_EXTENSIONS
+            and not self.database.job_has_download_plan(job_id)
+        ):
             self.database.update_job(
                 job_id,
                 status="ignored_non_video",
@@ -109,6 +120,14 @@ class JobProcessor:
                         error_message="正在短暂等待浏览器来源，无来源时仍会自动导入",
                     )
                     return
+
+        # One unavailable local Eagle endpoint can otherwise consume its full
+        # socket timeout once per queued IDM file.  A short in-memory circuit is
+        # enough to collapse the current batch while still detecting a newly
+        # started Eagle on the next scheduled retry.
+        if time.monotonic() < self._eagle_unavailable_until:
+            self._wait_for_eagle(job)
+            return
 
         try:
             stat = path.stat()
@@ -174,12 +193,14 @@ class JobProcessor:
         try:
             item_id = self.eagle.add_from_path(str(path), job.get("source_url"))
         except EagleUnavailable:
+            self._eagle_unavailable_until = time.monotonic() + 5.0
             self._wait_for_eagle(job)
             return
         except EagleImportError as exc:
             self._retry(job, "eagle_import_error", str(exc))
             return
 
+        self._eagle_unavailable_until = 0.0
         self.database.remember_fingerprint(fingerprint, job_id, stat.st_size)
         self.database.update_job(
             job_id,

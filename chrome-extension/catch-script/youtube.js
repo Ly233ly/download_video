@@ -4,7 +4,7 @@
     const channel = new URL(current?.src || location.href).searchParams.get("channel") || "";
     if (!channel || !/(^|\.)youtube\.com$/i.test(location.hostname)) return;
 
-    const SOURCE = "download-transfer-station-youtube";
+    const SOURCE = "liudi-downloader-youtube";
     let lastFingerprint = "";
 
     function parseValue(value) {

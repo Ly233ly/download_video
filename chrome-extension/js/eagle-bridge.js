@@ -1,5 +1,5 @@
 /*
- * Download Transfer Station bridge.
+ * 留底浏览器扩展 bridge.
  *
  * This file is original project code layered on top of the GPL-3.0
  * cat-catch extension. The extension discovers media and submits an
@@ -13,6 +13,8 @@ const EAGLE_BRIDGE_RETRY_ALARM = "downloadTransferStationRetry";
 const EAGLE_BRIDGE_VERSION_ALARM = "eagleBridgeVersionCheck";
 const EAGLE_BRIDGE_MAX_PENDING_EVENTS = 200;
 const EAGLE_BRIDGE_SITE_CACHE_TTL = 30 * 1000;
+const EAGLE_BRIDGE_API_TIMEOUT_MS = 4000;
+const EAGLE_BRIDGE_AUTO_PAIR_TIMEOUT_MS = 1500;
 
 let eagleBridgeFlushPromise = null;
 let eagleBridgeAutoPairPromise = null;
@@ -58,7 +60,7 @@ async function eagleBridgeUpdateState(changes) {
 
 async function eagleBridgeApi(path, options = {}, allowAuthRecovery = true) {
     let state = await eagleBridgeGetState();
-    if (!state.token && path !== "/api/pair" && path !== "/api/pair/auto") {
+    if (!state.token && !["/api/pair", "/api/pair/auto", "/api/pair/recover"].includes(path)) {
         await eagleBridgeTryAutoPair();
         state = await eagleBridgeGetState();
     }
@@ -70,9 +72,15 @@ async function eagleBridgeApi(path, options = {}, allowAuthRecovery = true) {
         const parsed = typeof body === "string" ? JSON.parse(body) : body;
         body = JSON.stringify({ ...parsed, authToken: state.token });
     }
-    const response = await fetch(`${EAGLE_BRIDGE_API_BASE}${path}`, { ...options, headers, body });
-    const result = await response.json().catch(() => ({ ok: false, error: "本机助手返回格式错误" }));
-    if (response.status === 401 && allowAuthRecovery && path !== "/api/pair" && path !== "/api/pair/auto") {
+    const payload = await EagleBridgeAuthLogic.fetchJsonWithTimeout(
+        fetch,
+        `${EAGLE_BRIDGE_API_BASE}${path}`,
+        { ...options, headers, body },
+        EAGLE_BRIDGE_API_TIMEOUT_MS
+    );
+    const response = payload.response;
+    const result = payload.result || { ok: false, error: "本机助手返回格式错误" };
+    if (response.status === 401 && allowAuthRecovery && !["/api/pair", "/api/pair/auto", "/api/pair/recover"].includes(path)) {
         const latestState = await eagleBridgeGetState();
         const action = EagleBridgeAuthLogic.unauthorizedAction(requestToken, latestState.token);
         if (action === "retry-latest") {
@@ -100,20 +108,26 @@ async function eagleBridgeTryAutoPair() {
     const state = await eagleBridgeGetState();
     if (state.token) return true;
     const secret = String(globalThis.IDM_EAGLE_BOOTSTRAP_SECRET || "");
-    if (!secret) return false;
     if (eagleBridgeAutoPairPromise) return eagleBridgeAutoPairPromise;
     eagleBridgeAutoPairPromise = (async () => {
         try {
-            const response = await fetch(`${EAGLE_BRIDGE_API_BASE}/api/pair/auto`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ secret })
-            });
-            const result = await response.json().catch(() => ({ ok: false }));
-            if (!response.ok || !result.ok || !result.data?.token) return false;
-            await eagleBridgeUpdateState({ token: result.data.token });
-            eagleBridgeScheduleRetry();
-            return true;
+            const attempts = secret
+                ? [["/api/pair/auto", { secret }], ["/api/pair/recover", {}]]
+                : [["/api/pair/recover", {}]];
+            for (const [path, payload] of attempts) {
+                const responsePayload = await EagleBridgeAuthLogic.fetchJsonWithTimeout(fetch, `${EAGLE_BRIDGE_API_BASE}${path}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                }, EAGLE_BRIDGE_AUTO_PAIR_TIMEOUT_MS);
+                const response = responsePayload.response;
+                const result = responsePayload.result || { ok: false };
+                if (!response.ok || !result.ok || !result.data?.token) continue;
+                await eagleBridgeUpdateState({ token: result.data.token });
+                eagleBridgeScheduleRetry();
+                return true;
+            }
+            return false;
         } catch (_error) {
             return false;
         } finally {
@@ -123,15 +137,20 @@ async function eagleBridgeTryAutoPair() {
     return eagleBridgeAutoPairPromise;
 }
 
-async function eagleBridgePair(code) {
-    const data = await eagleBridgeApi("/api/pair", {
-        method: "POST",
-        body: JSON.stringify({ code })
-    });
-    if (!data?.token) throw new Error("本机助手未返回有效配对信息");
-    await eagleBridgeUpdateState({ token: data.token });
-    eagleBridgeScheduleRetry();
-    return data;
+async function eagleBridgeDesktopAvailable() {
+    try {
+        const payload = await EagleBridgeAuthLogic.fetchJsonWithTimeout(
+            fetch,
+            `${EAGLE_BRIDGE_API_BASE}/health`,
+            { cache: "no-store" },
+            2500
+        );
+        const response = payload.response;
+        const result = payload.result;
+        return Boolean(response.ok && result?.ok && result?.service === "idm-eagle");
+    } catch (_error) {
+        return false;
+    }
 }
 
 function eagleBridgeSanitizeEvent(event) {
@@ -266,8 +285,14 @@ function eagleBridgeIsNewerVersion(candidate, current) {
 
 async function eagleBridgeCheckDesktopVersion() {
     try {
-        const response = await fetch(`${EAGLE_BRIDGE_API_BASE}/health`);
-        const health = await response.json();
+        const payload = await EagleBridgeAuthLogic.fetchJsonWithTimeout(
+            fetch,
+            `${EAGLE_BRIDGE_API_BASE}/health`,
+            {},
+            2500
+        );
+        const response = payload.response;
+        const health = payload.result || {};
         if (response.ok && eagleBridgeIsNewerVersion(health.version, chrome.runtime.getManifest().version)) {
             chrome.runtime.reload();
         }
@@ -425,13 +450,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
             case "autoPair": {
                 await eagleBridgeTryAutoPair();
-                const state = await eagleBridgeGetState();
-                return { paired: Boolean(state.token), pendingEvents: state.pendingEvents.length, lastPlanId: state.lastPlanId };
+                const [state, serviceReachable] = await Promise.all([
+                    eagleBridgeGetState(),
+                    eagleBridgeDesktopAvailable()
+                ]);
+                return { paired: Boolean(state.token), serviceReachable, pendingEvents: state.pendingEvents.length, lastPlanId: state.lastPlanId };
             }
             case "health":
                 return eagleBridgeRead("/api/media/health");
-            case "pair":
-                return eagleBridgePair(String(message.code || ""));
             case "resetAuth":
                 await eagleBridgeUpdateState({ token: "" });
                 return { paired: false };
@@ -496,7 +522,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     body: JSON.stringify({})
                 });
             default:
-                throw new Error("未知的下载中转站扩展操作");
+                throw new Error("未知的留底浏览器扩展操作");
         }
     })().then(
         data => sendResponse({ ok: true, data }),

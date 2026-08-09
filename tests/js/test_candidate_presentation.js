@@ -162,6 +162,38 @@ if (observedLocations.length !== 2
     throw new Error("Location tracking must preserve page order and event context");
 }
 
+if (typeof presentation.shouldClearCapturedCandidates !== "function") {
+    throw new Error("Navigation cleanup policy must distinguish SPA video switches from full document loads");
+}
+
+{
+    const snapshot = presentation.boundedMediaSnapshot({
+        1: Array.from({ length: 5 }, (_, index) => ({ requestId: `tab-1-${index}`, getTime: index + 1 })),
+        2: Array.from({ length: 5 }, (_, index) => ({ requestId: `tab-2-${index}`, getTime: index + 11 })),
+        3: Array.from({ length: 5 }, (_, index) => ({ requestId: `tab-3-${index}`, getTime: index + 21 }))
+    }, 3, 5);
+    const saved = Object.values(snapshot).flat();
+    if (saved.length !== 5 || saved.at(-1)?.requestId !== "tab-3-4") {
+        throw new Error("Session persistence must keep a bounded rolling window of the newest captured media");
+    }
+    if (Object.values(snapshot).some(items => items.length > 3)) {
+        throw new Error("No tab may exceed the session snapshot per-tab budget");
+    }
+}
+for (const source of ["history", "fragment", "content"]) {
+    for (const mode of [1, 2]) {
+        if (presentation.shouldClearCapturedCandidates(source, mode)) {
+            throw new Error(`SPA ${source} navigation must retain earlier media candidates in auto-clear mode ${mode}`);
+        }
+    }
+}
+if (!presentation.shouldClearCapturedCandidates("committed", 1)
+    || !presentation.shouldClearCapturedCandidates("loading", 2)
+    || presentation.shouldClearCapturedCandidates("committed", 2)
+    || presentation.shouldClearCapturedCandidates("loading", 1)) {
+    throw new Error("Full document navigation must keep the configured mode-1/mode-2 cleanup behavior");
+}
+
 const injectionCalls = [];
 let discoveryMessageCount = 0;
 const recoveredDiscoveryPromise = presentation.ensureContentDiscovery({
@@ -391,6 +423,47 @@ const grouped = ui.groupCandidates([
     { tabId: 9, requestId: "a", url: "https://cdn.example/audio.m4s", webUrl: "https://example.com/watch", role: "audio", groupKey: "same-content", duration: 10 }
 ]);
 if (grouped.length !== 1) throw new Error("Toolbar count must use the same grouped-content model as the popup");
+
+if (typeof ui.patchSidebarSelection !== "function") {
+    throw new Error("Selecting a sidebar item must patch selection in place instead of rebuilding the scroll container");
+}
+const sidebarRows = ["first", "middle", "last"].map(id => ({
+    dataset: { groupId: id },
+    attributes: {},
+    checkbox: { checked: false },
+    setAttribute(name, value) { this.attributes[name] = String(value); }
+}));
+for (const row of sidebarRows) {
+    row.closest = selector => selector === ".bridge-group-item"
+        ? { querySelector: query => query === "[data-batch-group]" ? row.checkbox : null }
+        : null;
+}
+const sidebarList = {
+    scrollTop: 4820,
+    querySelectorAll(selector) {
+        if (selector !== "[data-group-id]") throw new Error(`Unexpected selector: ${selector}`);
+        return sidebarRows;
+    }
+};
+ui.patchSidebarSelection(sidebarList, "last");
+if (sidebarList.scrollTop !== 4820) {
+    throw new Error("Selecting the last sidebar item must not move the current scroll position");
+}
+if (sidebarRows[2].attributes["aria-current"] !== "true"
+    || sidebarRows[2].attributes["aria-selected"] !== "true"
+    || sidebarRows[0].attributes["aria-current"] !== "false") {
+    throw new Error("In-place sidebar selection must update only the row accessibility state");
+}
+ui.patchSidebarSelection(sidebarList, "middle", {
+    batchMode: true,
+    selectedGroupIds: new Set(["first", "last"])
+});
+if (sidebarList.scrollTop !== 4820
+    || sidebarRows[0].attributes["aria-selected"] !== "true"
+    || sidebarRows[1].attributes["aria-selected"] !== "false"
+    || !sidebarRows[2].checkbox.checked) {
+    throw new Error("Batch selection must also update in place without rebuilding or scrolling the list");
+}
 
 (async () => {
     await Promise.all([recoveredDiscoveryPromise, alreadyReadyDiscoveryPromise, restrictedDiscoveryPromise]);

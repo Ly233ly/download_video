@@ -57,7 +57,7 @@ global.window.postMessage = payload => { posted = payload; };
 const scriptPath = path.resolve(__dirname, "../../chrome-extension/catch-script/bilibili.js");
 vm.runInThisContext(fs.readFileSync(scriptPath, "utf8"), { filename: scriptPath });
 
-if (!posted || posted.source !== "download-transfer-station-bilibili") throw new Error("No Bilibili media message was posted");
+if (!posted || posted.source !== "liudi-downloader-bilibili") throw new Error("No Bilibili media message was posted");
 if (posted.channel !== "test-channel") throw new Error("Channel mismatch");
 if (posted.streams.length !== 2) throw new Error(`Expected 2 streams, got ${posted.streams.length}`);
 const video = posted.streams.find(stream => stream.role === "video");

@@ -14,7 +14,10 @@ function saveMediaData(data, callback = undefined) {
         callback?.();
         return;
     }
-    chrome.storage.session.set({ MediaData: data }, callback);
+    const snapshot = globalThis.EagleBridgeCandidateLogic?.boundedMediaSnapshot
+        ? globalThis.EagleBridgeCandidateLogic.boundedMediaSnapshot(data)
+        : data;
+    chrome.storage.session.set({ MediaData: snapshot }, callback);
 }
 
 function loadMediaData(callback) {

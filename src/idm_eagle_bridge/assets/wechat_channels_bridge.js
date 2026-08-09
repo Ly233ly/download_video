@@ -195,7 +195,7 @@
         scheduleUiRefresh();
       }
     }).catch(function (err) {
-      console.warn("[下载中转站] 提交候选失败:", String(err).slice(0, 200));
+      console.warn("[留底桌面端] 提交候选失败:", String(err).slice(0, 200));
     }).finally(function () {
       const current = seen.get(entry.feed.objectId);
       if (current) current.pending = false;
@@ -324,6 +324,7 @@
       normalizeFeed,
       scan,
       selectDefaultVariant,
+      downloadStartedMessage,
       activeObjectId: function () { return activeObjectId; },
       seenCount: function () { return seen.size; },
     };
@@ -512,6 +513,18 @@
     trigger.style.opacity = busy ? "0.65" : "";
   }
 
+  function downloadStartedMessage(plan, title) {
+    const name = text(title, 512) || "当前视频";
+    const delivery = text(plan && plan.delivery, 16);
+    if (delivery === "local") {
+      return "Eagle 未连接，已改为下载到电脑并保留文件：" + name;
+    }
+    if (delivery === "eagle") {
+      return "已开始下载并导入 Eagle：" + name;
+    }
+    return "已开始下载：" + name;
+  }
+
   function requestDownload(trigger, requestedVariantId) {
     const entry = entryFromTrigger(trigger);
     if (!entry) {
@@ -544,10 +557,10 @@
       if (!result || result.action !== "download" || !result.plan || !result.plan.id) {
         throw new Error("任务响应无效");
       }
-      toast("已开始下载：" + (entry.feed.title || "当前视频"), false);
+      toast(downloadStartedMessage(result.plan, entry.feed.title), false);
     }).catch(function (error) {
-      console.warn("[下载中转站] 创建视频号任务失败:", String(error).slice(0, 200));
-      toast("创建下载任务失败，请确认下载中转站仍在运行", true);
+      console.warn("[留底桌面端] 创建视频号任务失败:", String(error).slice(0, 200));
+      toast("创建下载任务失败，请确认留底桌面端仍在运行", true);
     }).finally(function () {
       downloadsInFlight.delete(entry.feed.objectId);
       setButtonState(trigger, "下载", false);
@@ -623,11 +636,11 @@
     trigger.setAttribute("tabindex", "0");
     trigger.setAttribute(
       "aria-label",
-      "下载并导入 Eagle，成功后删除本机下载文件"
+      "下载视频；Eagle 可用时导入，否则保留在电脑中"
     );
     trigger.setAttribute(
       "title",
-      "导入 Eagle 成功后会自动删除本机下载文件"
+      "Eagle 为可选功能；未连接时仍可正常下载并保留文件"
     );
     trigger.style.cssText = floating
       ? "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;width:58px;height:58px;border-radius:10px;background:rgba(31,31,31,.96);box-shadow:0 8px 28px rgba(0,0,0,.32);color:#fff;cursor:pointer;user-select:none"

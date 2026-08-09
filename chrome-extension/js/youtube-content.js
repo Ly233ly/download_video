@@ -1,7 +1,7 @@
 (function () {
     "use strict";
     if (window.top !== window) return;
-    const channel = `download-transfer-station-${crypto.randomUUID()}`;
+    const channel = `liudi-downloader-${crypto.randomUUID()}`;
     const script = document.createElement("script");
     script.src = chrome.runtime.getURL(`catch-script/youtube.js?channel=${encodeURIComponent(channel)}`);
     script.async = false;
@@ -11,7 +11,7 @@
     window.addEventListener("message", event => {
         if (event.source !== window || event.origin !== location.origin) return;
         const message = event.data;
-        if (!message || message.channel !== channel || message.source !== "download-transfer-station-youtube") return;
+        if (!message || message.channel !== channel || message.source !== "liudi-downloader-youtube") return;
         if (!Array.isArray(message.streams) || message.streams.length > 200) return;
         for (const stream of message.streams) {
             if (!stream || typeof stream.url !== "string" || !/^https?:\/\//i.test(stream.url)) continue;

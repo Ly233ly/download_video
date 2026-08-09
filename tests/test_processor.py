@@ -136,7 +136,7 @@ class ProcessorTests(unittest.TestCase):
         self,
     ) -> None:
         download_root = Path(self.temp_dir.name) / "owned-downloads"
-        output = download_root / "下载中转站" / "已完成" / "owned.mp4"
+        output = download_root / "留底下载器" / "已完成" / "owned.mp4"
         output.parent.mkdir(parents=True)
         output.write_bytes(b"owned-desktop-video")
         job_id = self.database.add_job(str(output))
@@ -170,7 +170,7 @@ class ProcessorTests(unittest.TestCase):
 
     def test_unchecked_or_failed_import_keeps_owned_desktop_output(self) -> None:
         download_root = Path(self.temp_dir.name) / "kept-downloads"
-        output = download_root / "下载中转站" / "已完成" / "kept.mp4"
+        output = download_root / "留底下载器" / "已完成" / "kept.mp4"
         output.parent.mkdir(parents=True)
         output.write_bytes(b"kept-desktop-video")
         job_id = self.database.add_job(str(output))
@@ -250,7 +250,7 @@ class ProcessorTests(unittest.TestCase):
         self,
     ) -> None:
         download_root = Path(self.temp_dir.name) / "locked-downloads"
-        output = download_root / "下载中转站" / "已完成" / "locked.mp4"
+        output = download_root / "留底下载器" / "已完成" / "locked.mp4"
         output.parent.mkdir(parents=True)
         output.write_bytes(b"locked-desktop-video")
         job_id = self.database.add_job(str(output))
@@ -284,7 +284,7 @@ class ProcessorTests(unittest.TestCase):
 
     def test_retained_files_cleanup_after_expiry(self) -> None:
         download_root = Path(self.temp_dir.name) / "recovery-downloads"
-        output = download_root / "下载中转站" / "已完成" / "recover.mp4"
+        output = download_root / "留底下载器" / "已完成" / "recover.mp4"
         output.parent.mkdir(parents=True)
         output.write_bytes(b"recover-desktop-video")
         job_id = self.database.add_job(str(output))
@@ -323,6 +323,73 @@ class ProcessorTests(unittest.TestCase):
         self.assertIsNone(plan["final_path"])
         self.assertEqual(plan["phase_detail"], "已导入 Eagle，本机下载文件已自动删除")
 
+    def test_retained_cleanup_never_deletes_file_outside_owned_completed_directory(self) -> None:
+        job_id = self.database.add_job(str(self.video))
+        plan_id = self._link_download_plan(
+            job_id,
+            self.video,
+            delete_after_import=True,
+        )
+        self.database.update_job(
+            job_id,
+            status="imported",
+            eagle_item_id="outside-item",
+            completed_at=time.time() - 86401,
+        )
+        self.database.set_setting("file_retention_days", 1)
+        processor = JobProcessor(
+            self.database,
+            eagle=FakeEagle(),
+            minimum_file_age=0,
+            source_grace_period=0,
+        )
+
+        with patch.dict(
+            os.environ,
+            {"IDM_EAGLE_DOWNLOAD_ROOT": str(Path(self.temp_dir.name) / "owned-root")},
+        ):
+            processor.cleanup_retained_files()
+
+        self.assertTrue(self.video.is_file())
+        with self.database.session() as connection:
+            plan = connection.execute(
+                "SELECT final_path, error_code FROM download_plans WHERE id = ?",
+                (plan_id,),
+            ).fetchone()
+        self.assertEqual(plan["final_path"], str(self.video))
+        self.assertEqual(plan["error_code"], "local_file_delete_not_owned")
+
+    def test_retained_cleanup_is_not_starved_by_full_import_batch(self) -> None:
+        download_root = Path(self.temp_dir.name) / "busy-downloads"
+        output = download_root / "留底下载器" / "已完成" / "expired.mp4"
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"expired-owned-video")
+        imported_job = self.database.add_job(str(output))
+        self._link_download_plan(imported_job, output, delete_after_import=True)
+        self.database.update_job(
+            imported_job,
+            status="imported",
+            eagle_item_id="expired-item",
+            completed_at=time.time() - 86401,
+        )
+        self.database.set_setting("file_retention_days", 1)
+
+        busy = Path(self.temp_dir.name) / "busy.mp4"
+        busy.write_bytes(b"busy-video")
+        self.database.add_job(str(busy), created_at=time.time() - 10)
+        processor = JobProcessor(
+            self.database,
+            eagle=FakeEagle(available=False),
+            minimum_file_age=0,
+            source_grace_period=0,
+        )
+
+        with patch.dict(os.environ, {"IDM_EAGLE_DOWNLOAD_ROOT": str(download_root)}):
+            processed = processor.process_once(limit=1)
+
+        self.assertEqual(processed, 1)
+        self.assertFalse(output.exists(), "retention must run even when the IDM batch uses its full limit")
+
     def test_same_content_is_skipped_even_with_different_name(self) -> None:
         eagle = FakeEagle()
         processor = JobProcessor(
@@ -339,6 +406,36 @@ class ProcessorTests(unittest.TestCase):
 
         self.assertEqual(self.database.get_job(second_job)["status"], "skipped_duplicate")
         self.assertEqual(len(eagle.imports), 1)
+
+    def test_duplicate_owned_media_plan_finishes_without_deleting_local_file(self) -> None:
+        eagle = FakeEagle()
+        processor = JobProcessor(
+            self.database, eagle=eagle, minimum_file_age=0, source_grace_period=0
+        )
+        first_job = self._add_job(self.video)
+        processor.process_job(first_job)
+
+        duplicate = Path(self.temp_dir.name) / "duplicate-owned.mp4"
+        duplicate.write_bytes(self.video.read_bytes())
+        duplicate_job = self.database.add_job(str(duplicate))
+        plan_id = self._link_download_plan(
+            duplicate_job,
+            duplicate,
+            delete_after_import=True,
+        )
+
+        processor.process_job(duplicate_job)
+
+        self.assertEqual(self.database.get_job(duplicate_job)["status"], "skipped_duplicate")
+        self.assertTrue(duplicate.is_file())
+        with self.database.session() as connection:
+            plan = connection.execute(
+                "SELECT status, delete_after_import, phase_detail FROM download_plans WHERE id = ?",
+                (plan_id,),
+            ).fetchone()
+        self.assertEqual(plan["status"], "imported")
+        self.assertEqual(plan["delete_after_import"], 0)
+        self.assertIn("相同内容", plan["phase_detail"])
 
     def test_eagle_offline_keeps_waiting_job(self) -> None:
         job_id = self._add_job(self.video)
@@ -357,6 +454,42 @@ class ProcessorTests(unittest.TestCase):
         self.assertIsNotNone(job["next_retry_at"])
         self.assertIn("自动重试", job["error_message"])
 
+    def test_one_eagle_timeout_opens_short_batch_circuit(self) -> None:
+        class CountingUnavailableEagle(FakeEagle):
+            def __init__(self) -> None:
+                super().__init__(available=False)
+                self.calls = 0
+
+            def add_from_path(self, file_path: str, website: str | None = None) -> str:
+                self.calls += 1
+                time.sleep(0.02)
+                return super().add_from_path(file_path, website)
+
+        job_ids: list[str] = []
+        for index in range(5):
+            video = Path(self.temp_dir.name) / f"offline-{index}.mp4"
+            video.write_bytes(f"offline-{index}".encode("utf-8"))
+            job_ids.append(
+                self.database.add_job(
+                    str(video),
+                    created_at=time.time() - 10 + index * 0.001,
+                )
+            )
+        eagle = CountingUnavailableEagle()
+        processor = JobProcessor(
+            self.database,
+            eagle=eagle,
+            minimum_file_age=0,
+            source_grace_period=0,
+        )
+
+        processor.process_once(limit=5)
+
+        self.assertEqual(eagle.calls, 1, "one timeout should suppress repeated Eagle calls in the same batch")
+        self.assertTrue(
+            all(self.database.get_job(job_id)["status"] == "waiting_eagle" for job_id in job_ids)
+        )
+
     def test_non_video_is_ignored(self) -> None:
         text_file = Path(self.temp_dir.name) / "notes.txt"
         text_file.write_text("not a video", encoding="utf-8")
@@ -371,6 +504,30 @@ class ProcessorTests(unittest.TestCase):
         processor.process_job(job_id)
 
         self.assertEqual(self.database.get_job(job_id)["status"], "ignored_non_video")
+
+    def test_program_owned_audio_plan_is_imported_instead_of_ignored(self) -> None:
+        audio = Path(self.temp_dir.name) / "owned-audio.mp3"
+        audio.write_bytes(b"owned-audio-content")
+        job_id = self.database.add_job(str(audio))
+        plan_id = self._link_download_plan(job_id, audio, delete_after_import=False)
+        eagle = FakeEagle()
+        processor = JobProcessor(
+            self.database,
+            eagle=eagle,
+            minimum_file_age=0,
+            source_grace_period=0,
+        )
+
+        processor.process_job(job_id)
+
+        self.assertEqual(self.database.get_job(job_id)["status"], "imported")
+        self.assertEqual(eagle.imports, [(str(audio), None)])
+        with self.database.session() as connection:
+            plan = connection.execute(
+                "SELECT status FROM download_plans WHERE id = ?",
+                (plan_id,),
+            ).fetchone()
+        self.assertEqual(plan["status"], "imported")
 
     def test_user_ignore_event_does_not_import(self) -> None:
         now = time.time()

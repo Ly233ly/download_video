@@ -23,7 +23,7 @@ from .paths import ensure_data_dir
 
 
 UPDATE_MANIFEST_URL = (
-    "https://github.com/Ly233ly/download-for-eagle/"
+    "https://github.com/Ly233ly/download_video/"
     "releases/latest/download/update.json"
 )
 UPDATE_CHECK_INTERVAL = 24 * 60 * 60
@@ -124,11 +124,15 @@ def parse_manifest(payload: bytes, current_version: str = APP_VERSION) -> Update
     if not isinstance(download_url, str):
         raise UpdateError("更新下载地址缺失")
     parsed_url = urlsplit(download_url)
-    expected_prefix = "/Ly233ly/download-for-eagle/releases/download/"
+    expected_prefixes = (
+        "/Ly233ly/download_video/releases/download/",
+        # 已用原 RSA 私钥签名的旧清单仍须可验证，迁移完成后可移除。
+        "/Ly233ly/download-for-eagle/releases/download/",
+    )
     if (
         parsed_url.scheme != "https"
         or parsed_url.hostname != "github.com"
-        or not parsed_url.path.startswith(expected_prefix)
+        or not parsed_url.path.startswith(expected_prefixes)
     ):
         raise UpdateError("更新下载地址不在受信任的 GitHub 仓库中")
     if not isinstance(checksum, str) or len(checksum) != 64:
@@ -150,7 +154,7 @@ def parse_manifest(payload: bytes, current_version: str = APP_VERSION) -> Update
 def check_for_update(current_version: str = APP_VERSION) -> UpdateInfo | None:
     request = Request(
         UPDATE_MANIFEST_URL,
-        headers={"User-Agent": f"DownloadTransferStation/{current_version}"},
+        headers={"User-Agent": f"LiudiDownloader/{current_version}"},
     )
     try:
         with urlopen(request, timeout=10) as response:
@@ -197,7 +201,7 @@ def prepare_update(
     downloaded = 0
     request = Request(
         update.download_url,
-        headers={"User-Agent": f"DownloadTransferStation/{APP_VERSION}"},
+        headers={"User-Agent": f"LiudiDownloader/{APP_VERSION}"},
     )
     try:
         with urlopen(request, timeout=30) as response, package.open("wb") as output:
@@ -223,7 +227,8 @@ def prepare_update(
                 _safe_extract(archive, extracted)
         except zipfile.BadZipFile as exc:
             raise UpdateError("更新包不是有效的 ZIP 文件") from exc
-        installers = list(extracted.rglob("一键安装.exe"))
+        installers = list(extracted.rglob("留底安装器.exe"))
+        installers.extend(extracted.rglob("一键安装.exe"))
         if len(installers) != 1:
             raise UpdateError("更新包中没有找到唯一的一键安装程序")
         return installers[0]

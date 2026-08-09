@@ -14,17 +14,17 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyTitle("下载中转站安装程序")]
-[assembly: AssemblyDescription("下载中转站一键安装程序")]
-[assembly: AssemblyProduct("下载中转站")]
-[assembly: AssemblyCompany("下载中转站")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyTitle("留底安装器")]
+[assembly: AssemblyDescription("留底下载器一键安装程序")]
+[assembly: AssemblyProduct("留底下载器")]
+[assembly: AssemblyCompany("阿毅i")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 
 internal static class SetupProgram
 {
-    internal const string Version = "1.5.0";
-    internal const string ProductName = "下载中转站";
+    internal const string Version = "1.6.0";
+    internal const string ProductName = "留底下载器";
     internal const string QuitEventName = @"Local\IdmEagleAutoImportQuit";
     internal const string DefaultIdmRegistry = @"Software\DownloadManager";
     internal const string DefaultStateRegistry = @"Software\IDMEagleAutoImport";
@@ -86,7 +86,7 @@ internal static class SetupProgram
         {
             MessageBox.Show(
                 exception.Message,
-                "下载中转站更新",
+                "留底下载器更新",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
             );
@@ -105,7 +105,7 @@ internal static class SetupProgram
         {
             MessageBox.Show(
                 "安装失败：" + exception.Message,
-                "下载中转站",
+                "留底下载器",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
             );
@@ -176,7 +176,7 @@ internal static class SetupProgram
     {
         if (MessageBox.Show(
             "将移除助手并恢复安装前的 IDM 设置。下载的视频和 Eagle 中已有项目不会删除。是否继续？",
-            "卸载下载中转站",
+            "卸载留底下载器",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Question
         ) != DialogResult.Yes)
@@ -208,7 +208,7 @@ internal static class SetupProgram
             InstallerEngine.Uninstall(installDirectory);
             MessageBox.Show(
                 "卸载完成。历史记录和网站规则已保留，重新安装后可以继续使用。",
-                "下载中转站",
+                "留底下载器",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information
             );
@@ -219,7 +219,7 @@ internal static class SetupProgram
         {
             MessageBox.Show(
                 "卸载未完成：" + exception.Message,
-                "下载中转站",
+                "留底下载器",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
             );
@@ -245,7 +245,7 @@ internal sealed class InstallerForm : Form
 
     internal InstallerForm()
     {
-        Text = SetupProgram.ProductName + " 一键安装";
+        Text = "留底安装器";
         ClientSize = new Size(620, 410);
         MinimumSize = new Size(620, 410);
         MaximizeBox = false;
@@ -255,7 +255,7 @@ internal sealed class InstallerForm : Form
 
         Label heading = new Label
         {
-            Text = "下载中转站",
+            Text = "留底下载器",
             Font = new Font("Microsoft YaHei UI", 18F, FontStyle.Bold),
             AutoSize = true,
             Location = new Point(28, 24)
@@ -376,7 +376,7 @@ internal sealed class InstallResult
 
 internal static class InstallerEngine
 {
-    private const string EmbeddedPayloadResource = "DownloadTransferStation.Payload.zip";
+    private const string EmbeddedPayloadResource = "LiudiDownloader.Payload.zip";
 
     internal static string GetInstallDirectory(bool testMode)
     {
@@ -403,8 +403,8 @@ internal static class InstallerEngine
     )
     {
         string payload = ExtractEmbeddedPayload();
-        if (!File.Exists(Path.Combine(payload, "下载中转站.exe"))
-            || !File.Exists(Path.Combine(payload, "runtime", "下载中转站后台", "下载中转站后台.exe"))
+        if (!File.Exists(Path.Combine(payload, "留底下载器.exe"))
+            || !File.Exists(Path.Combine(payload, "runtime", "留底桌面端后台", "留底桌面端后台.exe"))
             || !File.Exists(Path.Combine(payload, "media-tools", "ffmpeg.exe"))
             || !File.Exists(Path.Combine(payload, "media-tools", "ffprobe.exe"))
             || !File.Exists(Path.Combine(payload, "media-tools", "yt-dlp.exe"))
@@ -531,7 +531,7 @@ internal static class InstallerEngine
     {
         string temporaryRoot = Path.Combine(
             Path.GetTempPath(),
-            "DownloadTransferStation-Install-" + Guid.NewGuid().ToString("N")
+            "LiudiDownloader-Install-" + Guid.NewGuid().ToString("N")
         );
         Directory.CreateDirectory(temporaryRoot);
         try
@@ -584,7 +584,7 @@ internal static class InstallerEngine
     {
         Process.Start(new ProcessStartInfo
         {
-            FileName = Path.Combine(installDirectory, "下载中转站.exe"),
+            FileName = Path.Combine(installDirectory, "留底下载器.exe"),
             WorkingDirectory = installDirectory,
             UseShellExecute = true
         });
@@ -810,8 +810,8 @@ internal static class InstallerEngine
         string backend = Path.Combine(
             installDirectory,
             "runtime",
-            "下载中转站后台",
-            "下载中转站后台.exe"
+            "留底桌面端后台",
+            "留底桌面端后台.exe"
         );
         if (!File.Exists(backend))
         {
@@ -975,19 +975,19 @@ internal static class InstallerEngine
     private static void CreateShortcuts(string installDirectory)
     {
         DeleteLegacyShortcuts();
-        string target = Path.Combine(installDirectory, "下载中转站.exe");
+        string target = Path.Combine(installDirectory, "留底下载器.exe");
         string desktop = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-            "下载中转站.lnk"
+            "留底下载器.lnk"
         );
         string startFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
             "Programs",
-            "下载中转站"
+            "留底下载器"
         );
         Directory.CreateDirectory(startFolder);
         CreateShortcut(desktop, target, "", installDirectory);
-        CreateShortcut(Path.Combine(startFolder, "打开助手.lnk"), target, "", installDirectory);
+        CreateShortcut(Path.Combine(startFolder, "打开留底桌面端.lnk"), target, "", installDirectory);
         CreateShortcut(
             Path.Combine(startFolder, "卸载助手.lnk"),
             Path.Combine(installDirectory, "卸载助手.exe"),
@@ -998,17 +998,29 @@ internal static class InstallerEngine
 
     private static void DeleteLegacyShortcuts()
     {
-        string legacyDesktop = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-            "IDM → Eagle 自动导入助手.lnk"
-        );
-        if (File.Exists(legacyDesktop)) File.Delete(legacyDesktop);
-        string legacyStartFolder = Path.Combine(
+        string desktopDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        foreach (string legacyName in new[]
+        {
+            "IDM → Eagle 自动导入助手.lnk",
+            "下载中转站.lnk"
+        })
+        {
+            string legacyDesktop = Path.Combine(desktopDirectory, legacyName);
+            if (File.Exists(legacyDesktop)) File.Delete(legacyDesktop);
+        }
+        string programsDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
-            "Programs",
-            "IDM → Eagle 自动导入助手"
+            "Programs"
         );
-        if (Directory.Exists(legacyStartFolder)) Directory.Delete(legacyStartFolder, true);
+        foreach (string legacyName in new[]
+        {
+            "下载中转站",
+            "IDM → Eagle 自动导入助手"
+        })
+        {
+            string legacyStartFolder = Path.Combine(programsDirectory, legacyName);
+            if (Directory.Exists(legacyStartFolder)) Directory.Delete(legacyStartFolder, true);
+        }
     }
 
     private static void CreateShortcut(string path, string target, string arguments, string workingDirectory)
@@ -1029,7 +1041,7 @@ internal static class InstallerEngine
         {
             key.SetValue("DisplayName", SetupProgram.ProductName, RegistryValueKind.String);
             key.SetValue("DisplayVersion", SetupProgram.Version, RegistryValueKind.String);
-            key.SetValue("Publisher", "下载中转站", RegistryValueKind.String);
+            key.SetValue("Publisher", "阿毅i", RegistryValueKind.String);
             key.SetValue("InstallLocation", installDirectory, RegistryValueKind.String);
             key.SetValue(
                 "UninstallString",
@@ -1084,7 +1096,7 @@ internal static class InstallerEngine
                 "IDM-Eagle自动导入助手"
             )).TrimEnd(Path.DirectorySeparatorChar);
         if (!string.Equals(fullInstall, expected, StringComparison.OrdinalIgnoreCase)
-            || !File.Exists(Path.Combine(fullInstall, "下载中转站.exe")))
+            || !File.Exists(Path.Combine(fullInstall, "留底下载器.exe")))
         {
             throw new InvalidOperationException("安装目录校验失败，未删除任何文件。");
         }
@@ -1156,13 +1168,13 @@ internal static class InstallerEngine
         DeleteLegacyShortcuts();
         string desktop = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-            "下载中转站.lnk"
+            "留底下载器.lnk"
         );
         if (File.Exists(desktop)) File.Delete(desktop);
         string startFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
             "Programs",
-            "下载中转站"
+            "留底下载器"
         );
         if (Directory.Exists(startFolder)) Directory.Delete(startFolder, true);
     }

@@ -9,6 +9,7 @@
     const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "svg", "ico"]);
     const SUBTITLE_EXTENSIONS = new Set(["vtt", "srt", "ass", "ssa", "ttml"]);
     const TRANSPORT_SEGMENT_EXTENSIONS = new Set(["m4s", "ts"]);
+    const normalizedCandidateCache = new WeakMap();
     const ACTIVE_TASK_STATUSES = new Set([
         "selected", "creating", "queued", "downloading", "merging",
         "validating", "ready_to_import", "waiting_eagle", "importing"
@@ -111,13 +112,16 @@
     }
 
     function normalizeCandidate(item, index = 0) {
+        if (item && typeof item === "object" && normalizedCandidateCache.has(item)) {
+            return normalizedCandidateCache.get(item);
+        }
         const kind = kindCode(item);
         const title = titleCore(item?._title || item?.title || item?.pageTitle || item?.name);
         const url = safeUrl(item?.url);
         const pageUrl = safeUrl(item?.webUrl || item?.pageUrl || item?.initiator);
         const label = cleanText(item?.label, 120);
         const explicitRole = ["video", "audio", "subtitle"].includes(cleanText(item?.role, 20).toLowerCase());
-        return {
+        const normalized = {
             id: stableId(item, index),
             raw: item,
             tabId: Number.isInteger(Number(item?.tabId)) ? Number(item.tabId) : null,
@@ -160,6 +164,9 @@
             sourceDomain: domainOf(pageUrl || item?.initiator || url),
             scope: cleanText(item?.__scope, 20) || "current"
         };
+        if (item && typeof item === "object") normalizedCandidateCache.set(item, normalized);
+        normalizedCandidateCache.set(normalized, normalized);
+        return normalized;
     }
 
     function isSupportedPageResolverCandidate(candidate) {
@@ -433,7 +440,7 @@
                 if (seenNames.has(nameKey)) return;
                 seenNames.add(nameKey);
             }
-            output.push(raw);
+            output.push(candidate);
         });
         return output;
     }
@@ -792,6 +799,78 @@
         return (Array.isArray(plans) ? plans : []).some(plan => ACTIVE_TASK_STATUSES.has(cleanText(plan?.status, 60)));
     }
 
+    function deliveryCapabilities(value = {}) {
+        const paired = Boolean(value.paired);
+        const connectionKnown = typeof value.connection === "string" && value.connection.length > 0;
+        const desktopAvailable = paired && (!connectionKnown || value.connection === "paired");
+        const eagleKnown = typeof value.eagleAvailable === "boolean";
+        // Older desktop versions do not report Eagle capability. Preserve
+        // their original import behavior until an explicit false is known.
+        const eagleAvailable = !eagleKnown || value.eagleAvailable;
+        return {
+            canDownload: desktopAvailable,
+            canImport: desktopAvailable && eagleAvailable,
+            preferLocal: desktopAvailable && eagleKnown && !value.eagleAvailable,
+            desktopAvailable,
+            eagleKnown,
+            eagleAvailable
+        };
+    }
+
+    async function mapWithConcurrency(items, concurrency, worker) {
+        const values = Array.isArray(items) ? items : [];
+        if (!values.length) return [];
+        const limit = Math.min(values.length, Math.max(1, Math.floor(number(concurrency)) || 1));
+        const results = new Array(values.length);
+        let cursor = 0;
+        const consume = async () => {
+            while (cursor < values.length) {
+                const index = cursor;
+                cursor += 1;
+                results[index] = await worker(values[index], index);
+            }
+        };
+        await Promise.all(Array.from({ length: limit }, () => consume()));
+        return results;
+    }
+
+    function createKeyedActionGate() {
+        const active = new Set();
+        return {
+            begin(key) {
+                const normalized = cleanText(key, 500);
+                if (!normalized || active.has(normalized)) return false;
+                active.add(normalized);
+                return true;
+            },
+            end(key) {
+                active.delete(cleanText(key, 500));
+            },
+            isBusy(key) {
+                return active.has(cleanText(key, 500));
+            },
+            any() {
+                return active.size > 0;
+            }
+        };
+    }
+
+    function createLatestRequestGate() {
+        let generation = 0;
+        return {
+            begin() {
+                generation += 1;
+                return generation;
+            },
+            isCurrent(ticket) {
+                return ticket === generation;
+            },
+            invalidate() {
+                generation += 1;
+            }
+        };
+    }
+
     async function startValidatedTask(validation, createPlan) {
         if (!validation?.ok) {
             return {
@@ -817,11 +896,42 @@
         const previousScrollTop = preserve ? Math.max(0, number(element.scrollTop)) : 0;
         element.innerHTML = String(markup ?? "");
         if (!preserve) return;
+        restoreScrollPosition(element, previousScrollTop);
+    }
+
+    function restoreScrollPosition(element, requestedScrollTop) {
+        if (!element) return;
         const maximumScrollTop = Math.max(
             0,
             number(element.scrollHeight) - number(element.clientHeight)
         );
-        element.scrollTop = Math.min(previousScrollTop, maximumScrollTop);
+        element.scrollTop = Math.min(Math.max(0, number(requestedScrollTop)), maximumScrollTop);
+    }
+
+    function isNearScrollEnd(element, threshold = 32) {
+        if (!element) return true;
+        const remaining = Math.max(
+            0,
+            number(element.scrollHeight) - number(element.clientHeight) - number(element.scrollTop)
+        );
+        return remaining <= Math.max(0, number(threshold));
+    }
+
+    function patchSidebarSelection(element, activeGroupId, options = {}) {
+        if (!element) return;
+        const batchMode = Boolean(options.batchMode);
+        const selectedGroupIds = options.selectedGroupIds instanceof Set
+            ? options.selectedGroupIds
+            : new Set(options.selectedGroupIds || []);
+        for (const row of element.querySelectorAll("[data-group-id]")) {
+            const groupId = String(row.dataset?.groupId || "");
+            const active = groupId === String(activeGroupId || "");
+            const selected = batchMode ? selectedGroupIds.has(groupId) : active;
+            row.setAttribute("aria-current", String(active));
+            row.setAttribute("aria-selected", String(selected));
+            const checkbox = row.closest?.(".bridge-group-item")?.querySelector?.("[data-batch-group]");
+            if (checkbox) checkbox.checked = selected;
+        }
     }
 
     return {
@@ -855,7 +965,14 @@
         groupSummary,
         taskView,
         hasActiveTasks,
+        deliveryCapabilities,
+        mapWithConcurrency,
+        createKeyedActionGate,
+        createLatestRequestGate,
         startValidatedTask,
-        replaceScrollableContent
+        replaceScrollableContent,
+        restoreScrollPosition,
+        isNearScrollEnd,
+        patchSidebarSelection
     };
 });

@@ -6,7 +6,9 @@ import time
 import unittest
 import gc
 import ctypes
+import math
 import sys
+import idm_eagle_bridge.ui as ui_module
 from collections import OrderedDict
 from pathlib import Path
 from queue import Queue
@@ -14,7 +16,7 @@ from types import SimpleNamespace
 from tkinter import BOTH, StringVar, TclError, Tk
 from tkinter import ttk
 from tkinter import font as tkfont
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from idm_eagle_bridge.api_server import LocalApiServer
 from idm_eagle_bridge.database import Database
@@ -26,9 +28,11 @@ from idm_eagle_bridge.ui import (
     _DynamicWrapLabel,
     _PreviewImageCache,
     _RoundedPanel,
+    _RoundedBadge,
     _RoundedCombobox,
     _RoundedProgressBar,
     _RoundedScrollbar,
+    _StatusIndicator,
     _ResponsiveTreeColumns,
     _ScrollableCardList,
     _VerticalScrolledFrame,
@@ -36,6 +40,8 @@ from idm_eagle_bridge.ui import (
     _effective_ui_scale,
     _ellipsize,
     _apply_windows_dark_title_bar,
+    _antialiased_circle_pixels,
+    _antialiased_corner_pixels,
     _bind_responsive_header_layout,
     _layout_mode_for_width,
     _load_product_image,
@@ -44,6 +50,7 @@ from idm_eagle_bridge.ui import (
     _pixel_ellipsize,
     _relative_time_label,
     _resolution_scale,
+    _set_ui_theme,
     _scale_geometry,
     _sync_tree_rows,
     _ui_scale_from_dpi,
@@ -101,6 +108,430 @@ class _FakeSplit:
 
 
 class UiPerformanceHelpersTests(unittest.TestCase):
+    def test_corrupt_retention_setting_falls_back_to_safe_default(self) -> None:
+        self.assertEqual(ui_module._bounded_retention_days("broken"), 7)
+        self.assertEqual(ui_module._bounded_retention_days(None), 7)
+        self.assertEqual(ui_module._bounded_retention_days(-4), 0)
+        self.assertEqual(ui_module._bounded_retention_days(900), 365)
+
+    def test_storage_save_failure_is_shown_without_rewriting_form(self) -> None:
+        class Variable:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: object) -> None:
+                self.value = str(value)
+
+        window = object.__new__(ui_module.MainWindow)
+        window.storage_retention_days = Variable("7")
+        window.cache_retention_days = Variable("14")
+        window.storage_feedback_text = Variable("")
+        window.database = Mock()
+        window.database.set_settings.side_effect = OSError("database read-only")
+
+        window._save_storage_settings()
+
+        self.assertIn("保存失败", window.storage_feedback_text.get())
+        self.assertEqual(window.storage_retention_days.get(), "7")
+        self.assertEqual(window.cache_retention_days.get(), "14")
+
+    def test_eagle_probe_falls_back_for_legacy_or_fixture_api(self) -> None:
+        fallback = Mock()
+        self.assertIs(
+            ui_module._resolve_eagle_probe(SimpleNamespace(), fallback),
+            fallback,
+        )
+        shared = Mock()
+        self.assertIs(
+            ui_module._resolve_eagle_probe(
+                SimpleNamespace(eagle_available=shared),
+                fallback,
+            ),
+            shared,
+        )
+    def test_periodic_network_refresh_preserves_unsaved_form_edits(self) -> None:
+        class Variable:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def get(self) -> str:
+                return self.value
+
+            def set(self, value: object) -> None:
+                self.value = str(value)
+
+        window = object.__new__(ui_module.MainWindow)
+        window.current_settings_tab = "network"
+        window.settings_proxy_mode = Variable("manual")
+        window.settings_proxy_manual = Variable("http://127.0.0.1:7890")
+        window.settings_proxy_status_text = Variable("")
+        window.settings_proxy_entry = Mock()
+        window.media = Mock()
+        window.media.network_proxy.configuration.return_value = {
+            "mode": "auto",
+            "manualUrl": "",
+        }
+        window.media.network_proxy.status.return_value = {
+            "source": "manual",
+            "endpoint": "127.0.0.1:7890",
+            "summary": "手动代理",
+        }
+
+        window._refresh_settings()
+
+        self.assertEqual(window.settings_proxy_mode.get(), "manual")
+        self.assertEqual(
+            window.settings_proxy_manual.get(),
+            "http://127.0.0.1:7890",
+        )
+
+    def test_media_and_wechat_cards_support_space_activation(self) -> None:
+        class Widget:
+            def __init__(self) -> None:
+                self.events: list[str] = []
+
+            def bind(self, event: str, _callback, add: str = "") -> None:
+                self.events.append(event)
+
+        window = object.__new__(ui_module.MainWindow)
+        media_widget = Widget()
+        wechat_widget = Widget()
+
+        window._bind_plan_card(media_widget, "plan-1")
+        window._bind_wechat_card(wechat_widget, "object-1")
+
+        self.assertIn("<space>", media_widget.events)
+        self.assertIn("<space>", wechat_widget.events)
+
+    def test_imported_idm_source_update_does_not_prompt_while_eagle_is_offline(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.maintenance_busy = False
+        window.eagle_connected = False
+        window.root = Mock()
+        window.selected_job = lambda: {
+            "id": "job-1",
+            "status": "imported",
+            "eagle_item_id": "eagle-1",
+        }
+
+        with (
+            patch.object(ui_module.simpledialog, "askstring") as askstring,
+            patch.object(ui_module.messagebox, "showinfo") as showinfo,
+        ):
+            window.assign_source()
+
+        askstring.assert_not_called()
+        showinfo.assert_called_once()
+        self.assertEqual(showinfo.call_args.args[0], "Eagle 未连接")
+
+    def test_imported_idm_source_button_is_disabled_while_eagle_is_offline(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.eagle_connected = False
+        window.maintenance_busy = False
+        window.idm_action_buttons = {
+            name: Mock() for name in ("retry", "open", "source", "assign", "remove")
+        }
+
+        window._update_idm_actions(
+            {
+                "id": "job-1",
+                "status": "imported",
+                "file_path": str(Path(__file__)),
+                "source_url": "https://example.com/video",
+                "eagle_item_id": "eagle-1",
+            }
+        )
+
+        window.idm_action_buttons["assign"].configure.assert_any_call(state="disabled")
+
+    def test_idm_offline_button_matrix_keeps_local_actions_available(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.eagle_connected = False
+        window.maintenance_busy = False
+        window.idm_action_buttons = {
+            name: Mock() for name in ("retry", "open", "source", "assign", "remove")
+        }
+
+        window._update_idm_actions(
+            {
+                "id": "job-1",
+                "status": "waiting_eagle",
+                "file_path": str(Path(__file__)),
+                "source_url": "https://example.com/video",
+            }
+        )
+
+        expected = {
+            "retry": "disabled",
+            "open": "normal",
+            "source": "normal",
+            "assign": "normal",
+            "remove": "normal",
+        }
+        for name, state in expected.items():
+            window.idm_action_buttons[name].configure.assert_any_call(state=state)
+
+    def test_idm_retry_is_disabled_when_original_file_is_missing(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.eagle_connected = True
+        window.maintenance_busy = False
+        window.idm_action_buttons = {
+            name: Mock() for name in ("retry", "open", "source", "assign", "remove")
+        }
+
+        window._update_idm_actions(
+            {
+                "id": "job-1",
+                "status": "retry",
+                "file_path": str(Path(__file__).with_name("missing-video.mp4")),
+                "source_url": "",
+            }
+        )
+
+        window.idm_action_buttons["retry"].configure.assert_any_call(state="disabled")
+
+    def test_idm_missing_file_retry_does_not_mutate_queue(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.root = Mock()
+        window.eagle_connected = True
+        window.database = Mock()
+        window.processing = Mock()
+        window.selected_job = lambda: {
+            "id": "job-1",
+            "status": "retry",
+            "file_path": str(Path(__file__).with_name("missing-video.mp4")),
+        }
+
+        with patch.object(ui_module.messagebox, "showwarning") as showwarning:
+            window.retry_selected()
+
+        window.database.retry_job.assert_not_called()
+        window.processing.wake.assert_not_called()
+        showwarning.assert_called_once()
+
+    def test_media_task_offline_button_matrix_only_disables_eagle_import(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.eagle_connected = False
+        final_path = str(Path(__file__))
+        window.selected_plan = lambda: {"final_path": final_path}
+        window.plan_action_buttons = {
+            name: Mock() for name in ("stop", "retry", "import", "open", "source")
+        }
+
+        window._update_plan_actions(
+            {
+                "active": False,
+                "can_retry": False,
+                "can_import_existing": True,
+                "can_open_output": True,
+                "can_open_source": True,
+            }
+        )
+
+        expected = {
+            "stop": False,
+            "retry": False,
+            "import": False,
+            "open": True,
+            "source": True,
+        }
+        for name, enabled in expected.items():
+            window.plan_action_buttons[name].set_enabled.assert_called_once_with(enabled)
+
+    def test_wechat_local_delivery_does_not_require_eagle(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.root = Mock()
+        window.eagle_connected = False
+        window.wechat_import_to_eagle = Mock()
+        window.wechat_import_to_eagle.get.return_value = False
+        window.wechat_variant_box = Mock()
+        window.wechat_variant_box.current.return_value = 0
+        window.wechat_variant_ids = ["variant-1"]
+        window.wechat_channels = Mock()
+        window._selected_wechat_candidate = lambda: {"objectId": "object-1"}
+        window._show_page = Mock()
+        window.refresh = Mock()
+
+        window.submit_selected_wechat_candidate()
+
+        window.wechat_channels.submit.assert_called_once_with(
+            "object-1",
+            "variant-1",
+            import_to_eagle=False,
+            delete_after_import=False,
+        )
+        window._show_page.assert_called_once_with("media")
+
+    def test_wechat_eagle_delivery_is_blocked_before_task_creation_when_offline(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.root = Mock()
+        window.eagle_connected = False
+        window.wechat_import_to_eagle = Mock()
+        window.wechat_import_to_eagle.get.return_value = True
+        window.wechat_variant_box = Mock()
+        window.wechat_variant_box.current.return_value = 0
+        window.wechat_variant_ids = ["variant-1"]
+        window.wechat_channels = Mock()
+        window._selected_wechat_candidate = lambda: {"objectId": "object-1"}
+
+        with patch.object(ui_module.messagebox, "showinfo") as showinfo:
+            window.submit_selected_wechat_candidate()
+
+        window.wechat_channels.submit.assert_not_called()
+        showinfo.assert_called_once()
+
+    def test_idm_open_file_error_is_reported_instead_of_escaping(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.root = Mock()
+        window.selected_job = lambda: {"file_path": str(Path(__file__))}
+
+        with (
+            patch.object(ui_module.subprocess, "Popen", side_effect=OSError("shell unavailable")),
+            patch.object(ui_module.messagebox, "showerror") as showerror,
+        ):
+            window.open_file_location()
+
+        showerror.assert_called_once()
+        self.assertEqual(showerror.call_args.args[0], "无法打开文件位置")
+
+    def test_plan_source_open_failure_is_reported(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.root = Mock()
+        window.selected_plan = lambda: {"page_url": "https://example.com/video"}
+
+        with (
+            patch.object(ui_module.webbrowser, "open", return_value=False),
+            patch.object(ui_module.messagebox, "showerror") as showerror,
+        ):
+            window.open_plan_source()
+
+        showerror.assert_called_once()
+        self.assertEqual(showerror.call_args.args[0], "无法打开来源网页")
+
+    def test_idm_source_open_failure_is_reported(self) -> None:
+        window = object.__new__(ui_module.MainWindow)
+        window.root = Mock()
+        window.selected_job = lambda: {"source_url": "https://example.com/video"}
+
+        with (
+            patch.object(ui_module.webbrowser, "open", side_effect=OSError("browser unavailable")),
+            patch.object(ui_module.messagebox, "showerror") as showerror,
+        ):
+            window.open_source()
+
+        showerror.assert_called_once()
+        self.assertEqual(showerror.call_args.args[0], "无法打开来源网页")
+
+    def test_status_circle_has_symmetric_antialiased_edges(self) -> None:
+        pixels = _antialiased_circle_pixels(
+            9,
+            fill=(0, 255, 0),
+            outer_background=(0, 0, 0),
+        )
+        green = list(pixels[1::3])
+
+        self.assertEqual(green[0], 0)
+        self.assertEqual(green[4 * 9 + 4], 255)
+        self.assertTrue(any(0 < value < 255 for value in green))
+        for y in range(9):
+            for x in range(9):
+                self.assertEqual(green[y * 9 + x], green[y * 9 + (8 - x)])
+                self.assertEqual(green[y * 9 + x], green[(8 - y) * 9 + x])
+
+    def test_shared_rounded_geometry_contains_antialiased_edge_pixels(self) -> None:
+        pixels = _antialiased_corner_pixels(
+            12,
+            fill=(255, 0, 0),
+            border=(255, 0, 0),
+            outer_background=(0, 0, 0),
+            border_width=0,
+        )
+        red_values = pixels[0::3]
+
+        self.assertIn(0, red_values)
+        self.assertIn(255, red_values)
+        self.assertTrue(any(0 < value < 255 for value in red_values))
+
+    def test_antialias_geometry_is_reused_across_theme_colours(self) -> None:
+        ui_module._CIRCLE_COVERAGE_CACHE.clear()
+        ui_module._CORNER_COVERAGE_CACHE.clear()
+        first_corner = _antialiased_corner_pixels(
+            12,
+            fill=(255, 0, 0),
+            border=(128, 0, 0),
+            outer_background=(0, 0, 0),
+            border_width=1,
+        )
+        second_corner = _antialiased_corner_pixels(
+            12,
+            fill=(0, 255, 0),
+            border=(0, 128, 0),
+            outer_background=(255, 255, 255),
+            border_width=1,
+        )
+        _antialiased_circle_pixels(
+            9,
+            fill=(0, 255, 0),
+            outer_background=(0, 0, 0),
+        )
+        _antialiased_circle_pixels(
+            9,
+            fill=(255, 0, 0),
+            outer_background=(255, 255, 255),
+        )
+
+        self.assertNotEqual(first_corner, second_corner)
+        self.assertEqual(len(ui_module._CORNER_COVERAGE_CACHE), 1)
+        self.assertEqual(len(ui_module._CIRCLE_COVERAGE_CACHE), 1)
+
+    def test_media_task_list_scrolls_directly_without_pagination_controls(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "src" / "idm_eagle_bridge" / "ui.py").read_text(
+            encoding="utf-8"
+        )
+        build_start = source.index("    def _build_media_tab(self) -> None:")
+        build_end = source.index("    def _build_wechat_tab(self) -> None:", build_start)
+        media_builder = source[build_start:build_end]
+        refresh_start = source.index("    def _refresh_media_tasks(")
+        refresh_end = source.index("    def selected_plan_id(", refresh_start)
+        media_refresh = source[refresh_start:refresh_end]
+
+        self.assertNotIn("media_previous_button", media_builder)
+        self.assertNotIn("media_page_text", media_builder)
+        self.assertNotIn("media_next_button", media_builder)
+        self.assertNotIn("_page_slice", media_refresh)
+        self.assertIn("self._render_plan_cards(plans)", media_refresh)
+
+    def test_desktop_browser_connection_page_has_no_manual_pairing_code(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "src" / "idm_eagle_bridge" / "ui.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("    def _build_settings_pairing(self) -> None:")
+        end = source.index("    def _build_settings_sites(self) -> None:", start)
+        pairing_page = source[start:end]
+
+        self.assertIn("浏览器连接", pairing_page)
+        self.assertIn("无需输入配对码", pairing_page)
+        self.assertNotIn("六位配对码", pairing_page)
+        self.assertNotIn("copy_pairing_code", pairing_page)
+        self.assertNotIn("pairing_code_text", pairing_page)
+
+    def test_file_management_page_exposes_manual_and_automatic_cache_cleanup(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "src" / "idm_eagle_bridge" / "ui.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("    def _build_settings_storage(self) -> None:")
+        end = source.index("    def _build_settings_updates(self) -> None:", start)
+        storage_page = source[start:end]
+
+        self.assertIn("程序缓存", storage_page)
+        self.assertIn("临时下载、任务预览和旧版下载日志", storage_page)
+        self.assertIn("立即清理缓存", storage_page)
+        self.assertIn("cache_retention_days", storage_page)
+        self.assertIn("已完成目录不会清理", storage_page)
+
     def test_windows_caption_color_uses_native_bgr_order(self) -> None:
         self.assertEqual(_windows_color_ref("#112233"), 0x332211)
         self.assertEqual(_windows_color_ref("#0D0F16"), 0x160F0D)
@@ -210,6 +641,12 @@ class UiPerformanceHelpersTests(unittest.TestCase):
         self.assertEqual(completed["progress"], 100)
         self.assertTrue(completed["can_import_existing"])
 
+    def test_eagle_offline_is_presented_as_download_available(self) -> None:
+        state = ui_module._eagle_experience(False)
+        self.assertEqual(state["status"], "Eagle 未连接 · 下载可用")
+        self.assertFalse(state["can_import"])
+        self.assertIn("不影响浏览器和视频号仅下载", state["idm_hint"])
+
     def test_tree_sync_only_mutates_changed_rows(self) -> None:
         tree = _FakeTree()
         _sync_tree_rows(
@@ -288,7 +725,7 @@ class WindowsTitleBarIntegrationTests(unittest.TestCase):
             self.skipTest(f"Tk is unavailable: {exc}")
         root.withdraw()
         try:
-            root.title("下载中转站")
+            root.title("留底下载器")
             root.update_idletasks()
             self.assertTrue(_apply_windows_dark_title_bar(root))
 
@@ -440,6 +877,288 @@ class ResponsiveWidgetTests(unittest.TestCase):
         root = getattr(self, "root", None)
         if root is not None:
             root.destroy()
+
+    def test_status_indicator_uses_active_theme_and_antialiased_circle(self) -> None:
+        previous_palette = dict(UI)
+        try:
+            _set_ui_theme("light")
+            indicator = _StatusIndicator(self.root, size=9)
+            indicator.pack()
+            self.root.update_idletasks()
+
+            self.assertEqual(str(indicator.cget("background")), UI["bg"])
+            item_types = [indicator.type(item) for item in indicator.find_all()]
+            self.assertEqual(item_types.count("image"), 1)
+            self.assertNotIn("oval", item_types)
+
+            light_palette = dict(UI)
+            _set_ui_theme("dark")
+            window = object.__new__(MainWindow)
+            window._retheme_widget_tree(
+                indicator,
+                MainWindow._theme_color_map(light_palette, UI),
+            )
+            self.root.update_idletasks()
+
+            self.assertEqual(str(indicator.cget("background")), UI["bg"])
+            self.assertEqual(indicator._background, UI["bg"])
+            self.assertEqual(
+                [indicator.type(item) for item in indicator.find_all()].count("image"),
+                1,
+            )
+        finally:
+            UI.clear()
+            UI.update(previous_palette)
+
+    def test_focusable_rounded_panel_draws_a_visible_focus_border(self) -> None:
+        panel = _RoundedPanel(
+            self.root,
+            fill=UI["surface"],
+            outer_background=UI["bg"],
+            style="Surface.TFrame",
+            takefocus=True,
+            width=180,
+            height=64,
+        )
+        panel.pack()
+        self.root.update_idletasks()
+
+        with patch.object(panel, "focus_get", return_value=panel):
+            panel._last_draw_signature = None
+            panel._redraw()
+
+        self.assertTrue(panel._last_draw_signature[-1])
+        self.assertEqual(panel._last_focus_border, UI["accent"])
+
+    def test_rounded_panel_content_clears_the_antialiased_corner(self) -> None:
+        radius = 14
+        panel = _RoundedPanel(
+            self.root,
+            fill=UI["surface"],
+            outer_background=UI["bg"],
+            style="Surface.TFrame",
+            radius=radius,
+            inset=2,
+            takefocus=True,
+            width=180,
+            height=64,
+        )
+
+        # A rectangular child window must begin beyond the curved border.
+        # Otherwise it paints square pixels over the outer rounded surface.
+        required_inset = math.ceil(radius - (radius - 1) / math.sqrt(2)) + 1
+        self.assertGreaterEqual(panel._inset, required_inset)
+
+    def test_rounded_task_cards_leave_enough_height_for_their_inner_rows(self) -> None:
+        _configure_styles(self.root)
+
+        def card(
+            *,
+            height: int,
+            lines: tuple[tuple[str, str, tuple[int, int]], ...],
+            body_padding: tuple[int, int, int, int],
+            thumbnail: tuple[int, int],
+        ) -> tuple[_RoundedPanel, ttk.Frame]:
+            panel = _RoundedPanel(
+                self.root,
+                fill=UI["selected"],
+                outer_background=UI["surface"],
+                style="TaskCardSelected.TFrame",
+                radius=ui_module.RADII["card"],
+                height=height,
+                inset=4,
+                takefocus=True,
+            )
+            panel.place(x=0, y=0, width=360, height=height)
+            body = ttk.Frame(
+                panel.inner,
+                style="TaskCardSelected.TFrame",
+                padding=body_padding,
+            )
+            body.pack(fill=BOTH, expand=True)
+            body.columnconfigure(1, weight=1)
+            thumbnail_host = _RoundedPanel(
+                body,
+                fill=UI["surface_overlay"],
+                outer_background=UI["selected"],
+                style="Soft.TFrame",
+                width=thumbnail[0],
+                height=thumbnail[1],
+                radius=ui_module.RADII["thumbnail"],
+                inset=2,
+            )
+            thumbnail_host.grid(
+                row=0,
+                column=0,
+                rowspan=len(lines),
+                sticky="nw",
+                padx=(0, 8),
+            )
+            for index, (text, style, pady) in enumerate(lines):
+                ttk.Label(
+                    body,
+                    text=text,
+                    style=style,
+                    anchor="w",
+                ).grid(row=index, column=1, sticky="ew", pady=pady)
+            self.root.update_idletasks()
+            return panel, body
+
+        media, media_body = card(
+            height=ui_module.METRICS["task_row_height"] - 4,
+            lines=(
+                ("机器学习入门课程", "TaskCardTitleSelected.TLabel", (0, 0)),
+                ("coursera.org", "TaskCardMetaSelected.TLabel", (2, 0)),
+                ("下载失败", "TaskCardMetaSelected.TLabel", (4, 0)),
+            ),
+            body_padding=(8, 5, 8, 4),
+            thumbnail=(48, 32),
+        )
+        wechat, wechat_body = card(
+            height=ui_module.METRICS["wechat_row_height"] - 4,
+            lines=(
+                ("一座城市醒来的清晨", "TaskCardTitleSelected.TLabel", (0, 0)),
+                ("旅行手记", "TaskCardMetaSelected.TLabel", (2, 0)),
+                ("3:02  1080p  01:47", "TaskCardMetaSelected.TLabel", (3, 0)),
+            ),
+            body_padding=(12, 6, 10, 5),
+            thumbnail=(64, 40),
+        )
+
+        self.assertLessEqual(media_body.winfo_reqheight(), media.inner.winfo_height())
+        self.assertLessEqual(wechat_body.winfo_reqheight(), wechat.inner.winfo_height())
+
+    def test_rounded_widgets_schedule_their_first_paint_directly(self) -> None:
+        widgets = (
+            _StatusIndicator(self.root),
+            _RoundedPanel(
+                self.root,
+                fill=UI["surface"],
+                outer_background=UI["bg"],
+                style="Surface.TFrame",
+            ),
+            ui_module._RoundedButton(self.root, text="操作"),
+            _RoundedCombobox(self.root, values=("一", "二")),
+            ui_module._RoundedNavButton(
+                self.root,
+                text="设置",
+                image=None,
+                command=lambda: None,
+            ),
+            _RoundedScrollbar(
+                self.root,
+                command=lambda *_args: None,
+                background=UI["bg"],
+            ),
+            _RoundedProgressBar(
+                self.root,
+                background=UI["surface"],
+            ),
+        )
+
+        # One queued idle callback is enough. A second-level queue leaves a
+        # briefly blank/square Canvas until a click or focus event repaints it.
+        for widget in widgets:
+            self.assertIsNotNone(widget._draw_after_id)
+        for widget in widgets:
+            widget.destroy()
+            self.assertIsNone(widget._draw_after_id)
+
+    def test_rounded_badge_cancels_pending_theme_paint_when_destroyed(self) -> None:
+        badge = _RoundedBadge(
+            self.root,
+            text="本机完成",
+            foreground=UI["status_completed_local"][0],
+            fill=UI["status_completed_local"][1],
+            outer_background=UI["surface"],
+        )
+        badge.set_badge(
+            text="已导入",
+            foreground=UI["status_imported"][0],
+            fill=UI["status_imported"][1],
+            outer_background=UI["surface"],
+        )
+
+        self.assertIsNotNone(badge._draw_after_id)
+        badge.destroy()
+        self.assertIsNone(badge._draw_after_id)
+
+    def test_disabled_rounded_inputs_leave_keyboard_focus_traversal(self) -> None:
+        button = ui_module._RoundedButton(
+            self.root,
+            text="不可用",
+            state="disabled",
+        )
+        combo = _RoundedCombobox(
+            self.root,
+            state="disabled",
+            values=("一", "二"),
+        )
+
+        self.assertIn(str(button.cget("takefocus")), {"", "0"})
+        self.assertIn(str(combo.cget("takefocus")), {"", "0"})
+
+        button.configure(state="normal")
+        combo.configure(state="readonly")
+        self.assertEqual(str(button.cget("takefocus")), "1")
+        self.assertEqual(str(combo.cget("takefocus")), "1")
+
+    def test_rounded_button_mouse_activation_claims_keyboard_focus(self) -> None:
+        button = ui_module._RoundedButton(self.root, text="操作")
+        with patch.object(button, "focus_set") as focus_set:
+            button._activate(SimpleNamespace(num=1, keysym=""))
+
+        focus_set.assert_called_once()
+
+    def test_rounded_navigation_mouse_activation_claims_keyboard_focus(self) -> None:
+        button = ui_module._RoundedNavButton(
+            self.root,
+            text="设置",
+            image=None,
+            command=lambda: None,
+        )
+        with patch.object(button, "focus_set") as focus_set:
+            button._activate(SimpleNamespace(num=1, keysym=""))
+
+        focus_set.assert_called_once()
+
+    def test_combobox_escape_closes_popup_and_returns_focus(self) -> None:
+        combo = _RoundedCombobox(self.root, values=("一", "二"))
+        combo._popup = Mock()
+        combo._listbox = Mock()
+        with patch.object(combo, "focus_set") as focus_set:
+            combo._close_popup(SimpleNamespace(keysym="Escape"))
+
+        focus_set.assert_called_once()
+
+    def test_rounded_badge_rebuilds_antialiased_surface_after_one_theme_switch(self) -> None:
+        previous_palette = dict(UI)
+        try:
+            _set_ui_theme("light")
+            badge = _RoundedBadge(
+                self.root,
+                text="本机完成",
+                foreground=UI["status_completed_local"][0],
+                fill=UI["status_completed_local"][1],
+                outer_background=UI["surface"],
+            )
+            badge.pack()
+            self.root.update_idletasks()
+
+            light_palette = dict(UI)
+            _set_ui_theme("dark")
+            window = object.__new__(MainWindow)
+            window._retheme_widget_tree(
+                badge,
+                MainWindow._theme_color_map(light_palette, UI),
+            )
+            self.root.update_idletasks()
+
+            self.assertEqual(str(badge.cget("background")), UI["surface"])
+            self.assertEqual(badge._last_draw_signature, badge._state)
+        finally:
+            UI.clear()
+            UI.update(previous_palette)
 
     def test_dynamic_wrap_label_uses_the_rendered_width(self) -> None:
         label = _DynamicWrapLabel(
@@ -741,7 +1460,7 @@ class ResponsiveWidgetTests(unittest.TestCase):
             / "idm_eagle_bridge"
             / "assets"
         )
-        self.assertTrue((package_assets / "download-transfer-station.png").is_file())
+        self.assertTrue((package_assets / "liudi-downloader.png").is_file())
         self.assertTrue((package_assets / "ui-icons" / "downloads-active.png").is_file())
 
         self.assertIsNotNone(_load_product_image(16))
@@ -774,7 +1493,7 @@ class ResponsiveWidgetTests(unittest.TestCase):
         geometry = scrollbar._thumb_geometry()
         self.assertIsNotNone(geometry)
         self.assertGreater(geometry[3] - geometry[1], 30)
-        self.assertEqual(len(scrollbar.find_all()), 1)
+        self.assertEqual(len(scrollbar.find_all()), 6)
 
     def test_rounded_widgets_keep_a_stable_canvas_item_count_during_resize(self) -> None:
         panel = _RoundedPanel(
@@ -801,8 +1520,14 @@ class ResponsiveWidgetTests(unittest.TestCase):
             progress.configure(value=width % 101)
         self.root.update_idletasks()
 
-        self.assertEqual(len(panel.find_all()), 2)
-        self.assertLessEqual(len(progress.find_all()), 2)
+        self.assertEqual(panel.type(panel._surface), "rectangle")
+        self.assertEqual(len(panel.find_all()), 7)
+        self.assertEqual(
+            [panel.type(item) for item in panel.find_all()].count("image"),
+            4,
+        )
+        self.assertNotIn("polygon", [panel.type(item) for item in panel.find_all()])
+        self.assertLessEqual(len(progress.find_all()), 12)
         self.assertIsNone(panel._draw_after_id)
         self.assertIsNone(progress._draw_after_id)
 
@@ -917,7 +1642,7 @@ class ProductionUiIntegrationTests(unittest.TestCase):
             window.root.update_idletasks()
 
             self.assertEqual(window.ui_theme, "light")
-            self.assertEqual(window.root.title(), "下载中转站 v1.5.0")
+            self.assertEqual(window.root.title(), "留底下载器 v1.6.0 by阿毅i")
             self.assertEqual(window.theme_button_text.get(), "切换到深色主题")
             window._toggle_theme()
             window.root.update_idletasks()
@@ -1021,7 +1746,7 @@ class ProductionPackagingTests(unittest.TestCase):
         project_root = Path(__file__).resolve().parents[1]
         pyproject = (project_root / "pyproject.toml").read_text(encoding="utf-8")
         spec = (
-            project_root / "packaging" / "DownloadTransferStation.spec"
+            project_root / "packaging" / "LiudiDownloader.spec"
         ).read_text(encoding="utf-8")
 
         self.assertIn('"assets/*.png"', pyproject)

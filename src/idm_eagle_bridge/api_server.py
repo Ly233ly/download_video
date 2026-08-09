@@ -15,6 +15,7 @@ from .constants import (
     EXTENSION_PROTOCOL_VERSION,
 )
 from .database import Database
+from .eagle import EagleClient
 from .media import MediaCoordinator, MediaPlanError
 from .security import CHROME_EXTENSION_ORIGIN, PairingError, PairingManager
 from .url_utils import InvalidPageUrl, normalize_domain
@@ -37,10 +38,59 @@ class LocalApi:
     ) -> None:
         self.database = database
         self.pairing = PairingManager(database)
+        # Eagle is optional. Keep a short cached probe so popup and video-page
+        # actions can choose a safe local-download route without turning every
+        # UI refresh into a four-second connection wait.
+        self.eagle = EagleClient(timeout=0.5)
+        self._eagle_available = False
+        self._eagle_checked_at = 0.0
+        self._eagle_probe_lock = threading.Lock()
         self.media = MediaCoordinator(database, ready_callback=media_ready_callback)
         self.wechat_channels = WechatChannelsCaptureService(
-            self.media, root=database.path.parent / "wechat-channels"
+            self.media,
+            root=database.path.parent / "wechat-channels",
+            eagle_available=self.eagle_available,
         )
+
+    def eagle_available(self, *, force: bool = False) -> bool:
+        now = time.monotonic()
+        with self._eagle_probe_lock:
+            if not force and now - self._eagle_checked_at < 3.0:
+                return self._eagle_available
+            try:
+                self._eagle_available = bool(self.eagle.is_available())
+            except Exception:
+                # Eagle is an optional integration.  A broken or changing local
+                # API must degrade to local download rather than fail /health or
+                # an old extension's download request.
+                self._eagle_available = False
+            self._eagle_checked_at = time.monotonic()
+            return self._eagle_available
+
+    def media_health(self) -> dict[str, Any]:
+        health = dict(self.media.health())
+        health["eagleAvailable"] = self.eagle_available()
+        return health
+
+    def create_media_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = dict(payload)
+        fell_back_to_local = bool(request.get("importToEagle", True)) and not self.eagle_available()
+        if fell_back_to_local:
+            request["importToEagle"] = False
+            request["deleteAfterImport"] = False
+        plan = self.media.create_plan(request)
+        if fell_back_to_local:
+            plan = dict(plan)
+            plan["deliveryFallback"] = "local"
+        return plan
+
+    def import_media_plan(self, plan_id: str) -> dict[str, Any]:
+        if not self.eagle_available(force=True):
+            raise MediaPlanError(
+                "Eagle 未安装或未启动；本机下载文件仍会保留，启动 Eagle 后再导入",
+                "eagle_unavailable",
+            )
+        return self.media.import_completed_plan(plan_id)
 
     def pair(self, origin: str, payload: dict[str, Any]) -> dict[str, Any]:
         token = self.pairing.pair(origin, str(payload.get("code", "")))
@@ -54,6 +104,9 @@ class LocalApi:
             str(payload.get("secret", "")),
         )
         return {"token": token}
+
+    def recover_pairing(self, origin: str) -> dict[str, Any]:
+        return {"token": self.pairing.recover(origin)}
 
     def site_status(self, domain: str) -> dict[str, Any]:
         normalized = normalize_domain(domain)
@@ -155,32 +208,39 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             parsed = urlsplit(self.path)
             if parsed.path == "/health":
-                media_health = api.media.health()
-                wechat_health = api.wechat_channels.health()
-                self._json(
-                    HTTPStatus.OK,
-                    {
-                        "ok": True,
-                        "service": "idm-eagle",
-                        "version": APP_VERSION,
-                        "extensionProtocol": EXTENSION_PROTOCOL_VERSION,
-                        "databaseSchema": media_health.get("databaseSchema"),
-                        "downloadEngine": media_health.get("downloadEngine"),
-                        "mediaReady": bool(media_health.get("ok")),
-                        "youtubeResolverReady": bool(media_health.get("youtubeResolver")),
-                        "wechatChannels": {
-                            "state": wechat_health.get("state"),
-                            "running": bool(wechat_health.get("running")),
-                            "candidateCount": int(wechat_health.get("candidateCount", 0)),
-                            "rejectedCount": int(wechat_health.get("rejectedCount", 0)),
-                            "internalApiObserved": int(wechat_health.get("internalApiObserved", 0)),
-                            "proxyDiagnostics": dict(wechat_health.get("proxyDiagnostics") or {}),
-                            "bridgeHash": str(wechat_health.get("bridgeHash") or ""),
-                            "certificateId": str(wechat_health.get("certificateId") or ""),
-                            "errorCode": str(wechat_health.get("errorCode") or ""),
+                try:
+                    media_health = api.media_health()
+                    wechat_health = api.wechat_channels.health()
+                    self._json(
+                        HTTPStatus.OK,
+                        {
+                            "ok": True,
+                            "service": "idm-eagle",
+                            "version": APP_VERSION,
+                            "extensionProtocol": EXTENSION_PROTOCOL_VERSION,
+                            "databaseSchema": media_health.get("databaseSchema"),
+                            "downloadEngine": media_health.get("downloadEngine"),
+                            "mediaReady": bool(media_health.get("ok")),
+                            "eagleAvailable": bool(media_health.get("eagleAvailable")),
+                            "youtubeResolverReady": bool(media_health.get("youtubeResolver")),
+                            "wechatChannels": {
+                                "state": wechat_health.get("state"),
+                                "running": bool(wechat_health.get("running")),
+                                "candidateCount": int(wechat_health.get("candidateCount", 0)),
+                                "rejectedCount": int(wechat_health.get("rejectedCount", 0)),
+                                "internalApiObserved": int(wechat_health.get("internalApiObserved", 0)),
+                                "proxyDiagnostics": dict(wechat_health.get("proxyDiagnostics") or {}),
+                                "bridgeHash": str(wechat_health.get("bridgeHash") or ""),
+                                "certificateId": str(wechat_health.get("certificateId") or ""),
+                                "errorCode": str(wechat_health.get("errorCode") or ""),
+                            },
                         },
-                    },
-                )
+                    )
+                except Exception:
+                    self._json(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        {"ok": False, "error": "本机助手处理失败"},
+                    )
                 return
             if not self._authenticated():
                 self._json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "尚未配对或配对已失效"})
@@ -216,7 +276,7 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
                 elif parsed.path == "/api/media/health":
                     self._json(
                         HTTPStatus.OK,
-                        {"ok": True, "data": api.media.health()},
+                        {"ok": True, "data": api.media_health()},
                     )
                 else:
                     self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "接口不存在"})
@@ -226,6 +286,11 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
                 self._json(
                     HTTPStatus.BAD_REQUEST,
                     {"ok": False, "error": str(exc), "errorCode": exc.code},
+                )
+            except Exception:
+                self._json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": "本机助手处理失败"},
                 )
 
         def do_POST(self) -> None:
@@ -240,6 +305,10 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
                     data = api.pair_automatically(self._origin(), payload)
                     self._json(HTTPStatus.OK, {"ok": True, "data": data})
                     return
+                if parsed.path == "/api/pair/recover":
+                    data = api.recover_pairing(self._origin())
+                    self._json(HTTPStatus.OK, {"ok": True, "data": data})
+                    return
                 if not self._authenticated(payload):
                     self._json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "尚未配对或配对已失效"})
                     return
@@ -250,7 +319,7 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
                 elif parsed.path == "/api/source":
                     data = api.add_source(payload)
                 elif parsed.path == "/api/media/health":
-                    data = api.media.health()
+                    data = api.media_health()
                 elif parsed.path == "/api/media/plans":
                     limit = min(max(int(payload.get("limit", 50)), 1), 200)
                     data = api.media.list_plans(limit)
@@ -259,7 +328,7 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
                 elif parsed.path == "/api/media/preview":
                     data = api.media.get_plan_preview(str(payload.get("planId", "")))
                 elif parsed.path == "/api/media/plan":
-                    data = api.media.create_plan(payload)
+                    data = api.create_media_plan(payload)
                 elif parsed.path == "/api/media/retry":
                     data = api.media.retry_plan(str(payload.get("planId", "")))
                 elif parsed.path == "/api/media/stop":
@@ -267,7 +336,7 @@ def build_handler(api: LocalApi) -> type[BaseHTTPRequestHandler]:
                 elif parsed.path == "/api/media/open":
                     data = api.media.open_plan_output(str(payload.get("planId", "")))
                 elif parsed.path == "/api/media/import":
-                    data = api.media.import_completed_plan(str(payload.get("planId", "")))
+                    data = api.import_media_plan(str(payload.get("planId", "")))
                 elif parsed.path == "/api/media/remove":
                     data = api.media.remove_plan(str(payload.get("planId", "")))
                 elif parsed.path == "/api/media/clear":
@@ -313,19 +382,29 @@ class LocalApiServer:
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
             return
-        self.thread = threading.Thread(
+        thread = threading.Thread(
             target=self.server.serve_forever,
             name="local-api",
             daemon=True,
         )
-        self.thread.start()
+        self.thread = thread
+        try:
+            thread.start()
+        except Exception:
+            # Keep stop() on the non-started path; BaseServer.shutdown() cannot
+            # be called until serve_forever() has actually begun.
+            self.thread = None
+            raise
 
     def stop(self) -> None:
         # Restore the user's system proxy before waiting for HTTP/media workers.
         # The native launcher has a bounded shutdown timeout, so this ordering is
         # a safety property rather than merely a performance preference.
         self.api.wechat_channels.close()
-        self.server.shutdown()
+        # BaseServer.shutdown() waits for serve_forever() and deadlocks when a
+        # startup failure occurs before the worker thread is created.
+        if self.thread is not None:
+            self.server.shutdown()
         self.server.server_close()
         if self.thread:
             self.thread.join(timeout=3)

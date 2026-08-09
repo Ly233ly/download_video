@@ -9,10 +9,11 @@ from .database import Database
 from .processor import JobProcessor
 from .service import ProcessingService
 from .single_instance import SingleInstance
+from .constants import APP_DESCRIPTION, APP_NAME
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="下载中转站：IDM 视频自动导入 Eagle")
+    parser = argparse.ArgumentParser(description=f"{APP_NAME}：{APP_DESCRIPTION}")
     parser.add_argument("--once", action="store_true", help="只处理一轮任务后退出")
     parser.add_argument(
         "--cleanup-wechat-capture",
@@ -59,8 +60,8 @@ def main(argv: list[str] | None = None) -> int:
 
         ctypes.windll.user32.MessageBoxW(
             None,
-            "下载中转站已经在右下角运行。",
-            "下载中转站",
+            f"{APP_NAME}已经在右下角运行。",
+            APP_NAME,
             0x40,
         )
         return 0

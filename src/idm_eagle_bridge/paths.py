@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from .constants import DATA_DIR_NAME
+from .constants import DATA_DIR_NAME, DOWNLOAD_DIR_NAME, LEGACY_APP_NAME
 
 
 def data_dir() -> Path:
@@ -47,10 +47,15 @@ def download_station_root() -> Path:
     else:
         profile = Path(os.environ.get("USERPROFILE") or Path.home())
         root = profile.joinpath("Downloads").resolve()
-    station = (
-        root
-        if root.name.casefold() == "下载中转站".casefold()
-        else root / "下载中转站"
-    )
+    if root.name.casefold() in {
+        DOWNLOAD_DIR_NAME.casefold(),
+        LEGACY_APP_NAME.casefold(),
+    }:
+        station = root
+    else:
+        preferred = root / DOWNLOAD_DIR_NAME
+        legacy = root / LEGACY_APP_NAME
+        # Never move an existing user's downloads during a branding update.
+        station = legacy if legacy.exists() and not preferred.exists() else preferred
     station.mkdir(parents=True, exist_ok=True)
     return station

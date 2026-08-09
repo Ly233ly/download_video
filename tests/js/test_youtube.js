@@ -95,7 +95,7 @@ const directPosted = runFixture({
     }
 });
 
-if (!directPosted || directPosted.source !== "download-transfer-station-youtube") throw new Error("No YouTube format catalog was posted");
+if (!directPosted || directPosted.source !== "liudi-downloader-youtube") throw new Error("No YouTube format catalog was posted");
 if (directPosted.channel !== "test-channel") throw new Error("Channel mismatch");
 if (directPosted.streams.length !== 3) throw new Error(`Expected 3 direct streams, got ${directPosted.streams.length}`);
 const videos = directPosted.streams.filter(stream => stream.role === "video");

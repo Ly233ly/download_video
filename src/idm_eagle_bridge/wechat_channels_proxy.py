@@ -827,11 +827,23 @@ class WechatLoopbackProxy:
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
             return
-        self.thread = threading.Thread(target=self.server.serve_forever, name="wechat-capture-proxy", daemon=True)
-        self.thread.start()
+        thread = threading.Thread(
+            target=self.server.serve_forever,
+            name="wechat-capture-proxy",
+            daemon=True,
+        )
+        self.thread = thread
+        try:
+            thread.start()
+        except Exception:
+            self.thread = None
+            raise
 
     def stop(self) -> None:
-        self.server.shutdown()
+        # shutdown() is only valid after serve_forever() has started; calling it
+        # while handling a thread-start failure waits forever inside socketserver.
+        if self.thread is not None:
+            self.server.shutdown()
         self.server.server_close()
         if self.thread:
             self.thread.join(timeout=3)
@@ -916,6 +928,14 @@ class WechatLoopbackProxy:
     def _bypass_upstream(self, host: str) -> bool:
         lowered = host.lower().strip("[]").rstrip(".")
         for pattern in self.upstream_bypass:
+            # Some VPN clients leave a standalone catch-all in ProxyOverride
+            # while still exposing an active HTTP/Mixed proxy. Honouring it
+            # here would disable that upstream for every public request after
+            # WinINET is redirected to the capture proxy, which strands WeChat.
+            # Keep concrete host/local bypass rules, but never let a bare '*'
+            # disconnect the captured chain from its configured VPN upstream.
+            if pattern == "*":
+                continue
             if pattern == "<local>" and "." not in lowered:
                 return True
             if fnmatch.fnmatchcase(lowered, pattern):

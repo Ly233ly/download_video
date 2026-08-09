@@ -547,6 +547,28 @@ class _FakeMedia:
     def clear_terminal_history(self) -> int:
         return 1
 
+    def cache_status(self) -> dict[str, object]:
+        return {
+            "totalBytes": 754_974_720,
+            "fileCount": 38,
+            "categories": {
+                "temporary": {"bytes": 734_003_200, "files": 12},
+                "previews": {"bytes": 20_971_520, "files": 25},
+                "log": {"bytes": 24_000, "files": 1},
+            },
+        }
+
+    def clear_cache(self) -> dict[str, object]:
+        return {
+            "freedBytes": 754_974_720,
+            "remainingBytes": 0,
+            "removedFiles": 38,
+            "removedDirectories": 7,
+            "skippedActive": 2,
+            "skippedUnsafe": 0,
+            "errorCount": 0,
+        }
+
 
 class _FakeWechatChannels:
     certificate = SimpleNamespace(existing=lambda: None, is_trusted=lambda _value: False)
@@ -697,7 +719,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    with tempfile.TemporaryDirectory(prefix="download-transfer-station-visual-") as folder:
+    with tempfile.TemporaryDirectory(prefix="liudi-downloader-visual-") as folder:
         root = Path(folder)
         output_path = root / "产品发布会完整回放.mp4"
         output_path.write_bytes(b"visual fixture")
@@ -746,6 +768,7 @@ def main() -> None:
             api=SimpleNamespace(
                 media=media,
                 wechat_channels=_FakeWechatChannels(args.scenario),
+                eagle_available=lambda: False,
             ),
         )
         build_timings: dict[str, list[float]] = {}

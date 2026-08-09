@@ -19,10 +19,10 @@
       "48": "icons/icon-48.png",
       "128": "icons/icon-128.png"
     },
-    "default_title": "下载中转站",
+    "default_title": "留底浏览器扩展",
     "default_popup": "popup.html"
   },
-  "description": "发现网页媒体并提交给本机软件下载、合并和导入 Eagle。",
+  "description": "免费开源的 Windows 本机媒体下载与归档工具",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -30,8 +30,8 @@
     "128": "icons/icon-128.png"
   },
   "manifest_version": 3,
-  "name": "下载中转站",
-  "homepage_url": "https://github.com/Ly233ly/download-for-eagle",
+  "name": "留底浏览器扩展",
+  "homepage_url": "https://github.com/Ly233ly/download_video",
   "permissions": [
     "tabs",
     "webRequest",
@@ -109,5 +109,5 @@
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   },
-  "version": "1.5.0"
+  "version": "1.6.0"
 }

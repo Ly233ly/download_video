@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from http.client import RemoteDisconnected
+from io import BytesIO
 import unittest
+from urllib.error import HTTPError
+from unittest.mock import MagicMock, patch
 
-from idm_eagle_bridge.eagle import EagleClient, EagleEndpointUnavailable
+from idm_eagle_bridge.eagle import (
+    EagleClient,
+    EagleEndpointUnavailable,
+    EagleImportError,
+    EagleUnavailable,
+)
 
 
 class RecordingEagle(EagleClient):
@@ -43,6 +52,43 @@ class EagleFourBeforeV2WebApi(EagleClient):
 
 
 class EagleClientTests(unittest.TestCase):
+    def test_remote_disconnect_is_reported_as_eagle_unavailable(self) -> None:
+        eagle = EagleClient(timeout=0.01)
+        with patch(
+            "idm_eagle_bridge.eagle.urlopen",
+            side_effect=RemoteDisconnected("Eagle closed the connection"),
+        ):
+            with self.assertRaises(EagleUnavailable):
+                eagle.app_info()
+            self.assertFalse(eagle.is_available())
+
+    def test_invalid_response_encoding_is_reported_as_import_error(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"\xff\xfe"
+        eagle = EagleClient(timeout=0.01)
+        with patch("idm_eagle_bridge.eagle.urlopen", return_value=response):
+            with self.assertRaises(EagleImportError):
+                eagle.app_info()
+            self.assertFalse(eagle.is_available())
+
+    def test_http_error_response_is_closed_before_endpoint_fallback(self) -> None:
+        error = HTTPError(
+            "http://127.0.0.1:41595/api/v2/app/info",
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=BytesIO(b"not found"),
+        )
+        eagle = EagleClient(timeout=0.01)
+        with (
+            patch("idm_eagle_bridge.eagle.urlopen", side_effect=error),
+            patch.object(error, "close", wraps=error.close) as close,
+            self.assertRaises(EagleEndpointUnavailable),
+        ):
+            eagle._request("GET", "/api/v2/app/info")
+        close.assert_called_once_with()
+
     def test_health_falls_back_to_eagle_four_legacy_application_endpoint(self) -> None:
         eagle = EagleFourBeforeV2WebApi()
         self.assertEqual(eagle.app_info()["version"], "4.0.0")

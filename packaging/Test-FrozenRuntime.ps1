@@ -13,10 +13,10 @@ $versionMatch = [regex]::Match($versionSource, 'APP_VERSION\s*=\s*"([^"]+)"')
 if (-not $versionMatch.Success) { throw "无法从 constants.py 读取当前版本号。" }
 $expectedVersion = $versionMatch.Groups[1].Value
 if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
-    $PackageRoot = Join-Path $projectRoot "release\下载中转站-$expectedVersion-Windows-x64\下载中转站-$expectedVersion"
+    $PackageRoot = Join-Path $projectRoot "release\留底下载器-$expectedVersion-Windows-x64\留底下载器-$expectedVersion"
 }
 $PackageRoot = [IO.Path]::GetFullPath($PackageRoot)
-$backend = Join-Path $PackageRoot "app\runtime\下载中转站后台\下载中转站后台.exe"
+$backend = Join-Path $PackageRoot "app\runtime\留底桌面端后台\留底桌面端后台.exe"
 if (-not (Test-Path -LiteralPath $backend -PathType Leaf)) { throw "找不到冻结后端：$backend" }
 
 $runId = [Guid]::NewGuid().ToString("N")
@@ -79,7 +79,7 @@ try {
     $evidence = [ordered]@{
         version = $expectedVersion
         testedAtUtc = [DateTime]::UtcNow.ToString("o")
-        backend = "app/runtime/下载中转站后台/下载中转站后台.exe"
+        backend = "app/runtime/留底桌面端后台/留底桌面端后台.exe"
         processName = $process.ProcessName
         healthVersion = [string]$health.version
         extensionProtocol = [int]$health.extensionProtocol

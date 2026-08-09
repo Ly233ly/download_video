@@ -127,4 +127,17 @@ const selectedVariant = api.selectDefaultVariant({
 }, "https://finder.video.qq.com/video.mp4?X-snsvideoflag=hd");
 assert.strictEqual(selectedVariant.id, "hd");
 
+assert.strictEqual(
+  api.downloadStartedMessage({ delivery: "local" }, "本机视频"),
+  "Eagle 未连接，已改为下载到电脑并保留文件：本机视频",
+);
+assert.strictEqual(
+  api.downloadStartedMessage({ delivery: "eagle" }, "归档视频"),
+  "已开始下载并导入 Eagle：归档视频",
+);
+assert.strictEqual(
+  api.downloadStartedMessage({}, "兼容旧版"),
+  "已开始下载：兼容旧版",
+);
+
 console.log("wechat channels bridge tests passed");

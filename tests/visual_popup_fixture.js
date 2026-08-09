@@ -2,6 +2,9 @@
 
 (() => {
   const now = Date.now() / 1000;
+  const fixtureParams = new URLSearchParams(location.search);
+  const eagleAvailable = fixtureParams.get("eagle") !== "0";
+  const desktopAvailable = fixtureParams.get("desktop") !== "0";
   const candidates = [
     {
       requestId: "video-1080",
@@ -72,7 +75,7 @@
     }
   ];
 
-  if (new URLSearchParams(location.search).get("many") === "1") {
+  if (fixtureParams.get("many") === "1") {
     for (let index = 3; index <= 18; index += 1) {
       candidates.push({
         requestId: `visual-video-${index}`,
@@ -138,11 +141,18 @@
     if (payload?.Message === "getAllData") return { "77": candidates };
     if (payload?.Message === "getMediaPreviews") return {};
     if (payload?.Message === "getButtonState") return {};
-    if (payload?.eagleBridge === "authState" || payload?.eagleBridge === "autoPair") {
+    if (payload?.eagleBridge === "authState") {
       return { ok: true, data: { paired: true } };
     }
-    if (payload?.eagleBridge === "health") return { ok: true, data: { eagle: true } };
-    if (payload?.eagleBridge === "plans") return { ok: true, data: plans };
+    if (payload?.eagleBridge === "autoPair") {
+      return { ok: true, data: { paired: true, serviceReachable: desktopAvailable } };
+    }
+    if (payload?.eagleBridge === "health") return desktopAvailable
+      ? { ok: true, data: { eagleAvailable } }
+      : { ok: false, error: "fixture desktop offline" };
+    if (payload?.eagleBridge === "plans") return desktopAvailable
+      ? { ok: true, data: plans }
+      : { ok: false, error: "fixture desktop offline" };
     if (payload?.eagleBridge === "siteStatus") return { ok: true, data: { enabled: true } };
     if (payload?.eagleBridge === "ensureDiscovery") return { ok: true };
     if (payload?.eagleBridge === "planPreview") return { ok: true, data: { dataUrl: "" } };

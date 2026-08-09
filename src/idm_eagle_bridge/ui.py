@@ -5,6 +5,7 @@ import sys
 import time
 import webbrowser
 import json
+import math
 import re
 import threading
 import ctypes
@@ -36,7 +37,7 @@ from tkinter import font as tkfont
 from urllib.parse import urlsplit
 
 from .api_server import LocalApiServer
-from .constants import APP_NAME, APP_VERSION
+from .constants import APP_AUTHOR, APP_NAME, APP_VERSION
 from .control_signal import ControlSignals
 from .database import Database
 from .eagle import EagleClient
@@ -206,7 +207,7 @@ THEMES = {
     "dark": DARK_UI,
 }
 DEFAULT_UI_THEME = "light"
-UI = dict(DARK_UI)
+UI = dict(THEMES[DEFAULT_UI_THEME])
 
 
 def _set_ui_theme(theme: object) -> str:
@@ -230,8 +231,8 @@ METRICS = {
     "master_compact_width": 300,
     "preview_max_width": 448,
     "button_height": 38,
-    "task_row_height": 100,
-    "wechat_row_height": 88,
+    "task_row_height": 106,
+    "wechat_row_height": 106,
     "table_row_height": 46,
 }
 
@@ -486,6 +487,31 @@ def _scale_photo_image(image: PhotoImage, scale: float) -> PhotoImage:
     )
 
 
+def _eagle_experience(connected: bool) -> dict[str, object]:
+    if connected:
+        return {
+            "status": "Eagle 已连接",
+            "summary": "Eagle 已连接",
+            "can_import": True,
+            "import_button": "导入 Eagle",
+            "idm_hint": "IDM 原文件始终保留；没有可靠来源时仍会导入，Eagle 网站字段保持为空。",
+        }
+    return {
+        "status": "Eagle 未连接 · 下载可用",
+        "summary": "Eagle 未连接（下载可用）",
+        "can_import": False,
+        "import_button": "Eagle 未连接",
+        "idm_hint": "Eagle 未安装或未启动：IDM 原文件已经下载完成并会保留；启动 Eagle 后可重试导入，不影响浏览器和视频号仅下载。",
+    }
+
+
+def _bounded_retention_days(value: object, default: int = 7) -> int:
+    try:
+        return max(0, min(365, int(value)))
+    except (TypeError, ValueError):
+        return max(0, min(365, int(default)))
+
+
 def _media_plan_view(plan: dict) -> dict:
     status = str(plan.get("status") or "")
     job_status = str(plan.get("job_status") or "")
@@ -719,12 +745,6 @@ def _configure_styles(root: Tk, scale: float | None = None) -> None:
         background=UI["surface_raised"],
         foreground=UI["text"],
         font="Ui12Bold",
-    )
-    style.configure(
-        "PairingCode.TLabel",
-        background=UI["surface_raised"],
-        foreground=UI["accent_text"],
-        font="Mono24Bold",
     )
     style.configure(
         "Success.TLabel",
@@ -1070,6 +1090,13 @@ class _AsyncProbe:
                 return available, latest
 
 
+def _resolve_eagle_probe(api: object, fallback) -> object:
+    """Use the shared capability when present, with old/fake API compatibility."""
+
+    probe = getattr(api, "eagle_available", None)
+    return probe if callable(probe) else fallback
+
+
 class _PreviewImageCache:
     """Decode a preview only when its path or file identity changes."""
 
@@ -1385,69 +1412,418 @@ class _Tooltip:
 
 
 class _StatusIndicator(Canvas):
-    """A compact status dot with no text-glyph or emoji dependency."""
+    """A compact antialiased status circle with live theme colours."""
 
     def __init__(
         self,
         parent: object,
         *,
-        color: str = UI["text_muted"],
-        background: str = UI["bg"],
+        color: str | None = None,
+        background: str | None = None,
         size: int = 8,
     ) -> None:
+        resolved_color = color or UI["text_muted"]
+        resolved_background = background or UI["bg"]
         super().__init__(
             parent,
             width=size,
             height=size,
-            background=background,
+            background=resolved_background,
             highlightthickness=0,
             borderwidth=0,
         )
         self._size = size
-        self._color = color
-        self._dot = self.create_oval(1, 1, size - 1, size - 1, fill=color, outline="")
+        self._color = resolved_color
+        self._background = resolved_background
+        self._dot = 0
+        self._dot_image: PhotoImage | None = None
+        self._draw_after_id: str | None = None
+        self._last_draw_signature: tuple[object, ...] | None = None
+        self.bind("<Destroy>", self._destroy, add="+")
+        self._queue_draw()
 
     def set_color(self, color: str) -> None:
         if color == self._color:
             return
         self._color = color
-        self.itemconfigure(self._dot, fill=color)
+        self._last_draw_signature = None
+        self._queue_draw()
+
+    def _queue_draw(self, _event: object | None = None) -> None:
+        if self._draw_after_id is None:
+            self._draw_after_id = self.after_idle(self._draw)
+
+    def _draw(self) -> None:
+        self._draw_after_id = None
+        signature = (self._size, self._color, self._background)
+        if signature == self._last_draw_signature:
+            return
+        self._last_draw_signature = signature
+        self.delete("all")
+        self._dot_image = _circle_photo_image(
+            self,
+            diameter=self._size,
+            fill=self._color,
+            outer_background=self._background,
+        )
+        self._dot = self.create_image(0, 0, image=self._dot_image, anchor="nw")
+
+    def _destroy(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self:
+            return
+        if self._draw_after_id is not None:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except Exception:
+                pass
+            self._draw_after_id = None
 
 
-def _rounded_polygon_points(
+def _rgb8(widget: object, color: str) -> tuple[int, int, int]:
+    red, green, blue = widget.winfo_rgb(color)
+    return red // 257, green // 257, blue // 257
+
+
+_CIRCLE_COVERAGE_CACHE: dict[tuple[int, int], tuple[int, ...]] = {}
+_CORNER_COVERAGE_CACHE: dict[
+    tuple[int, int, int],
+    tuple[tuple[int, int, int], ...],
+] = {}
+
+
+def _circle_coverage(diameter: int, samples: int) -> tuple[int, ...]:
+    key = (diameter, samples)
+    cached = _CIRCLE_COVERAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    radius = diameter / 2
+    limit = radius * radius
+    coverage: list[int] = []
+    for y in range(diameter):
+        for x in range(diameter):
+            fill_samples = 0
+            for sample_y in range(samples):
+                delta_y = y + (sample_y + 0.5) / samples - radius
+                for sample_x in range(samples):
+                    delta_x = x + (sample_x + 0.5) / samples - radius
+                    if delta_x * delta_x + delta_y * delta_y <= limit:
+                        fill_samples += 1
+            coverage.append(fill_samples)
+    result = tuple(coverage)
+    _CIRCLE_COVERAGE_CACHE[key] = result
+    return result
+
+
+def _antialiased_circle_pixels(
+    diameter: int,
+    *,
+    fill: tuple[int, int, int],
+    outer_background: tuple[int, int, int],
+    samples: int = 8,
+) -> bytes:
+    """Render one exact circle with sub-pixel edge coverage."""
+
+    diameter = max(1, int(diameter))
+    samples = max(2, int(samples))
+    sample_count = samples * samples
+    pixels = bytearray()
+    for fill_samples in _circle_coverage(diameter, samples):
+        for fill_channel, background_channel in zip(fill, outer_background):
+            blended = (
+                fill_channel * fill_samples
+                + background_channel * (sample_count - fill_samples)
+            ) / sample_count
+            pixels.append(round(blended))
+    return bytes(pixels)
+
+
+def _circle_photo_image(
+    canvas: Canvas,
+    *,
+    diameter: int,
+    fill: str,
+    outer_background: str,
+) -> PhotoImage:
+    """Return one cached antialiased circle for the active Tk interpreter."""
+
+    fill_rgb = _rgb8(canvas, fill)
+    background_rgb = _rgb8(canvas, outer_background)
+    key = (int(diameter), fill_rgb, background_rgb)
+    owner = canvas.winfo_toplevel()
+    cache = getattr(owner, "_antialiased_circle_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(owner, "_antialiased_circle_cache", cache)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    payload = _antialiased_circle_pixels(
+        diameter,
+        fill=fill_rgb,
+        outer_background=background_rgb,
+    )
+    header = f"P6\n{diameter} {diameter}\n255\n".encode("ascii")
+    image = PhotoImage(
+        master=canvas,
+        data=header + payload,
+        format="PPM",
+    )
+    cache[key] = image
+    return image
+
+
+def _antialiased_corner_pixels(
+    radius: int,
+    *,
+    fill: tuple[int, int, int],
+    border: tuple[int, int, int],
+    outer_background: tuple[int, int, int],
+    border_width: int,
+    samples: int = 8,
+) -> bytes:
+    """Render one top-left rounded corner with real sub-pixel coverage.
+
+    Tk 8.6 Canvas curves are flattened to non-antialiased line segments on
+    Windows.  Sampling each output pixel on a fine grid and averaging the
+    colours gives the edge coverage Tk's legacy renderer does not provide.
+    """
+
+    radius = max(1, int(radius))
+    samples = max(2, int(samples))
+    border_width = max(0, min(int(border_width), radius))
+    sample_count = samples * samples
+    pixels = bytearray()
+    coverage_key = (radius, border_width, samples)
+    coverage = _CORNER_COVERAGE_CACHE.get(coverage_key)
+    if coverage is None:
+        inner_radius = max(0, radius - border_width)
+        outer_limit = radius * radius
+        inner_limit = inner_radius * inner_radius
+        coverage_rows: list[tuple[int, int, int]] = []
+        for y in range(radius):
+            for x in range(radius):
+                fill_samples = 0
+                border_samples = 0
+                outer_samples = 0
+                for sample_y in range(samples):
+                    point_y = y + (sample_y + 0.5) / samples
+                    delta_y = radius - point_y
+                    for sample_x in range(samples):
+                        point_x = x + (sample_x + 0.5) / samples
+                        delta_x = radius - point_x
+                        distance_squared = delta_x * delta_x + delta_y * delta_y
+                        if distance_squared > outer_limit:
+                            outer_samples += 1
+                        elif border_width and distance_squared > inner_limit:
+                            border_samples += 1
+                        else:
+                            fill_samples += 1
+                coverage_rows.append(
+                    (fill_samples, border_samples, outer_samples)
+                )
+        coverage = tuple(coverage_rows)
+        _CORNER_COVERAGE_CACHE[coverage_key] = coverage
+    for fill_samples, border_samples, outer_samples in coverage:
+        for fill_channel, border_channel, outer_channel in zip(
+            fill,
+            border,
+            outer_background,
+        ):
+            total = (
+                fill_channel * fill_samples
+                + border_channel * border_samples
+                + outer_channel * outer_samples
+            )
+            pixels.append(round(total / sample_count))
+    return bytes(pixels)
+
+
+def _corner_photo_images(
+    canvas: Canvas,
+    *,
+    radius: int,
+    fill: str,
+    border: str,
+    border_width: int,
+    outer_background: str,
+) -> tuple[PhotoImage, PhotoImage, PhotoImage, PhotoImage]:
+    """Return cached antialiased corner images for one Tk interpreter."""
+
+    fill_rgb = _rgb8(canvas, fill)
+    background_rgb = _rgb8(canvas, outer_background)
+    effective_border_width = border_width if border else 0
+    border_rgb = _rgb8(canvas, border) if border else fill_rgb
+    key = (
+        int(radius),
+        fill_rgb,
+        border_rgb,
+        int(effective_border_width),
+        background_rgb,
+    )
+    owner = canvas.winfo_toplevel()
+    cache = getattr(owner, "_antialiased_corner_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(owner, "_antialiased_corner_cache", cache)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    top_left = _antialiased_corner_pixels(
+        radius,
+        fill=fill_rgb,
+        border=border_rgb,
+        outer_background=background_rgb,
+        border_width=effective_border_width,
+    )
+    row_stride = radius * 3
+    rows = tuple(
+        top_left[offset : offset + row_stride]
+        for offset in range(0, len(top_left), row_stride)
+    )
+
+    def reverse_row(row: bytes) -> bytes:
+        return b"".join(
+            row[offset : offset + 3]
+            for offset in range(row_stride - 3, -1, -3)
+        )
+
+    horizontal_rows = tuple(reverse_row(row) for row in rows)
+    payloads = (
+        b"".join(rows),
+        b"".join(horizontal_rows),
+        b"".join(reversed(horizontal_rows)),
+        b"".join(reversed(rows)),
+    )
+    header = f"P6\n{radius} {radius}\n255\n".encode("ascii")
+    images: list[PhotoImage] = []
+    for payload in payloads:
+        images.append(
+            PhotoImage(
+                master=canvas,
+                data=header + payload,
+                format="PPM",
+            )
+        )
+    result = tuple(images)
+    cache[key] = result
+    return result
+
+
+def _draw_antialiased_rounded_rect(
+    canvas: Canvas,
     left: int,
     top: int,
     right: int,
     bottom: int,
     radius: int,
-) -> list[int]:
-    radius = max(1, min(radius, (right - left) // 2, (bottom - top) // 2))
-    return [
-        left + radius,
-        top,
-        right - radius,
-        top,
-        right,
-        top,
-        right,
-        top + radius,
-        right,
-        bottom - radius,
-        right,
-        bottom,
-        right - radius,
-        bottom,
-        left + radius,
-        bottom,
-        left,
-        bottom,
-        left,
-        bottom - radius,
-        left,
-        top + radius,
-        left,
-        top,
-    ]
+    *,
+    fill: str,
+    border: str = "",
+    border_width: int = 0,
+    outer_background: str,
+    tags: tuple[str, ...] | str = (),
+) -> tuple[int, ...]:
+    """Draw a rounded rectangle whose four curved edges are antialiased."""
+
+    width = right - left
+    height = bottom - top
+    if width < 2 or height < 2:
+        return (
+            canvas.create_rectangle(
+                left,
+                top,
+                max(left, right - 1),
+                max(top, bottom - 1),
+                fill=fill,
+                outline=border,
+                width=border_width if border else 0,
+                tags=tags,
+            ),
+        )
+    radius = max(1, min(int(radius), width // 2, height // 2))
+    effective_border_width = max(0, min(border_width if border else 0, radius))
+    items: list[int] = []
+    items.append(
+        canvas.create_rectangle(
+            left + radius,
+            top,
+            right - radius,
+            bottom - 1,
+            fill=fill,
+            outline="",
+            tags=tags,
+        )
+    )
+    items.append(
+        canvas.create_rectangle(
+            left,
+            top + radius,
+            right - 1,
+            bottom - radius,
+            fill=fill,
+            outline="",
+            tags=tags,
+        )
+    )
+    if effective_border_width:
+        edge_rectangles = (
+            (left + radius, top, right - radius, top + effective_border_width - 1),
+            (
+                left + radius,
+                bottom - effective_border_width,
+                right - radius,
+                bottom - 1,
+            ),
+            (left, top + radius, left + effective_border_width - 1, bottom - radius),
+            (
+                right - effective_border_width,
+                top + radius,
+                right - 1,
+                bottom - radius,
+            ),
+        )
+        for x1, y1, x2, y2 in edge_rectangles:
+            items.append(
+                canvas.create_rectangle(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    fill=border,
+                    outline="",
+                    tags=tags,
+                )
+            )
+    corner_images = _corner_photo_images(
+        canvas,
+        radius=radius,
+        fill=fill,
+        border=border,
+        border_width=effective_border_width,
+        outer_background=outer_background,
+    )
+    positions = (
+        (left, top),
+        (right - radius, top),
+        (right - radius, bottom - radius),
+        (left, bottom - radius),
+    )
+    for image, (x, y) in zip(corner_images, positions):
+        items.append(
+            canvas.create_image(x, y, image=image, anchor="nw", tags=tags)
+        )
+    return tuple(items)
+
+
+def _rounded_content_inset(radius: int, requested: int, border_width: int) -> int:
+    """Keep a rectangular child window clear of an antialiased round corner."""
+
+    radius = max(1, int(radius))
+    edge_width = max(1, int(border_width))
+    inner_radius = max(0, radius - edge_width)
+    geometric_inset = math.ceil(radius - inner_radius / math.sqrt(2)) + 1
+    return max(2, int(requested), geometric_inset)
 
 
 class _RoundedPanel(Canvas):
@@ -1480,8 +1856,10 @@ class _RoundedPanel(Canvas):
         self._fill = fill
         self._border = border
         self._border_width = border_width
+        self._focusable = bool(takefocus)
+        self._last_focus_border = ""
         self._radius = radius
-        self._inset = max(2, inset)
+        self._inset = _rounded_content_inset(radius, inset, border_width)
         self._draw_after_id: str | None = None
         self._last_draw_signature: tuple[object, ...] | None = None
         self.inner = ttk.Frame(self, style=style)
@@ -1490,18 +1868,13 @@ class _RoundedPanel(Canvas):
             window=self.inner,
             anchor="nw",
         )
-        self._surface = self.create_polygon(
-            (0, 0, 0, 0),
-            smooth=True,
-            splinesteps=10,
-            fill=self._fill,
-            outline=self._border,
-            width=self._border_width,
-            tags=("surface",),
-        )
-        self.tag_lower(self._surface)
+        self._surface = 0
         self.bind("<Configure>", self._queue_redraw, add="+")
-        self.after_idle(self._queue_redraw)
+        if self._focusable:
+            self.bind("<FocusIn>", self._queue_redraw, add="+")
+            self.bind("<FocusOut>", self._queue_redraw, add="+")
+        self.bind("<Destroy>", self._destroy, add="+")
+        self._queue_redraw()
 
     def set_surface(
         self,
@@ -1533,6 +1906,10 @@ class _RoundedPanel(Canvas):
         self._draw_after_id = None
         width = max(1, self.winfo_width())
         height = max(1, self.winfo_height())
+        focused = self._focusable and self.focus_get() is self
+        focus_border = UI["accent"] if focused else self._border
+        focus_border_width = max(1, self._border_width) if focused else self._border_width
+        self._last_focus_border = focus_border
         signature = (
             width,
             height,
@@ -1541,24 +1918,43 @@ class _RoundedPanel(Canvas):
             self._border_width,
             self._radius,
             self._inset,
+            focused,
         )
         if signature == self._last_draw_signature:
             return
         self._last_draw_signature = signature
-        points = _rounded_polygon_points(1, 1, width - 1, height - 1, self._radius)
-        self.coords(self._surface, *points)
-        self.itemconfigure(
-            self._surface,
+        self.delete("surface")
+        surface_items = _draw_antialiased_rounded_rect(
+            self,
+            1,
+            1,
+            width - 1,
+            height - 1,
+            self._radius,
             fill=self._fill,
-            outline=self._border,
-            width=self._border_width,
+            border=focus_border,
+            border_width=focus_border_width,
+            outer_background=str(self.cget("background")),
+            tags=("surface",),
         )
+        self._surface = surface_items[0]
+        self.tag_lower("surface")
         self.coords(self._inner_window, self._inset, self._inset)
         self.itemconfigure(
             self._inner_window,
             width=max(1, width - self._inset * 2),
             height=max(1, height - self._inset * 2),
         )
+
+    def _destroy(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self:
+            return
+        if self._draw_after_id is not None:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except Exception:
+                pass
+            self._draw_after_id = None
 
 
 class _RoundedButton(Canvas):
@@ -1605,7 +2001,7 @@ class _RoundedButton(Canvas):
             background=self._parent_background(parent),
             borderwidth=0,
             highlightthickness=0,
-            takefocus=True,
+            takefocus=str(state) != "disabled",
             cursor="hand2" if str(state) != "disabled" else "arrow",
         )
         self._text = resolved_text
@@ -1637,7 +2033,7 @@ class _RoundedButton(Canvas):
         self.bind("<FocusIn>", self._queue_draw, add="+")
         self.bind("<FocusOut>", self._queue_draw, add="+")
         self.bind("<Destroy>", self._destroy, add="+")
-        self.after_idle(self._queue_draw)
+        self._queue_draw()
 
     @staticmethod
     def _kind_from_style(style: object) -> str:
@@ -1696,7 +2092,10 @@ class _RoundedButton(Canvas):
         if enabled == self._enabled:
             return
         self._enabled = enabled
-        self.configure(cursor="hand2" if self._enabled else "arrow")
+        super().configure(
+            cursor="hand2" if self._enabled else "arrow",
+            takefocus=self._enabled,
+        )
         self._last_draw_signature = None
         self._queue_draw()
 
@@ -1825,19 +2224,17 @@ class _RoundedButton(Canvas):
             return
         self._last_draw_signature = signature
         self.delete("all")
-        self.create_polygon(
-            _rounded_polygon_points(
-                1,
-                1,
-                width - 1,
-                height - 1,
-                RADII["control"],
-            ),
-            smooth=True,
-            splinesteps=10,
+        _draw_antialiased_rounded_rect(
+            self,
+            1,
+            1,
+            width - 1,
+            height - 1,
+            RADII["control"],
             fill=fill,
-            outline=UI["accent"] if self.focus_get() is self else border,
-            width=1,
+            border=UI["accent"] if self.focus_get() is self else border,
+            border_width=1,
+            outer_background=str(self.cget("background")),
         )
         image_width = self._image.width() if self._image is not None else 0
         text_width = self._font.measure(self._text)
@@ -1872,6 +2269,8 @@ class _RoundedButton(Canvas):
         self._queue_draw()
 
     def _activate(self, _event: object | None = None) -> str:
+        if getattr(_event, "num", None) == 1:
+            self.focus_set()
         if self._enabled:
             self._command()
         return "break"
@@ -1911,7 +2310,7 @@ class _RoundedCombobox(Canvas):
             background=_RoundedButton._parent_background(parent),
             borderwidth=0,
             highlightthickness=0,
-            takefocus=True,
+            takefocus=state != "disabled",
             cursor="hand2" if state != "disabled" else "arrow",
         )
         self._font = tkfont.Font(
@@ -1946,7 +2345,7 @@ class _RoundedCombobox(Canvas):
         self.bind("<FocusIn>", self._queue_draw, add="+")
         self.bind("<FocusOut>", self._queue_draw, add="+")
         self.bind("<Destroy>", self._destroy, add="+")
-        self.after_idle(self._queue_draw)
+        self._queue_draw()
 
     def _display_text(self) -> str:
         try:
@@ -1983,13 +2382,17 @@ class _RoundedCombobox(Canvas):
         self.delete("all")
         fill = UI["surface_overlay"] if self._hovered and enabled else UI["surface_raised"]
         border = UI["accent"] if self.focus_get() is self else UI["border"]
-        self.create_polygon(
-            _rounded_polygon_points(1, 1, width - 1, height - 1, RADII["control"]),
-            smooth=True,
-            splinesteps=10,
+        _draw_antialiased_rounded_rect(
+            self,
+            1,
+            1,
+            width - 1,
+            height - 1,
+            RADII["control"],
             fill=fill,
-            outline=border,
-            width=1,
+            border=border,
+            border_width=1,
+            outer_background=str(self.cget("background")),
         )
         self.create_text(
             14,
@@ -2001,18 +2404,15 @@ class _RoundedCombobox(Canvas):
             width=max(60, width - 94),
         )
         pill_width = max(52, self._font.measure("选择") + 22)
-        self.create_polygon(
-            _rounded_polygon_points(
-                width - pill_width - 7,
-                7,
-                width - 7,
-                height - 7,
-                RADII["badge"],
-            ),
-            smooth=True,
-            splinesteps=8,
+        _draw_antialiased_rounded_rect(
+            self,
+            width - pill_width - 7,
+            7,
+            width - 7,
+            height - 7,
+            RADII["badge"],
             fill=UI["accent_subtle"] if enabled else UI["surface_overlay"],
-            outline="",
+            outer_background=fill,
         )
         self.create_text(
             width - pill_width // 2 - 7,
@@ -2127,6 +2527,8 @@ class _RoundedCombobox(Canvas):
                 popup.destroy()
             except Exception:
                 pass
+        if str(getattr(_event, "keysym", "")) == "Escape":
+            self.focus_set()
         return "break"
 
     def current(self, index: int | None = None) -> int:
@@ -2156,7 +2558,11 @@ class _RoundedCombobox(Canvas):
             self._values = tuple(str(value) for value in kwargs.pop("values"))
         if "state" in kwargs:
             self._state = str(kwargs.pop("state"))
-            super().configure(cursor="hand2" if self._state != "disabled" else "arrow")
+            enabled = self._state != "disabled"
+            super().configure(
+                cursor="hand2" if enabled else "arrow",
+                takefocus=enabled,
+            )
         if kwargs:
             result = super().configure(**kwargs)
         else:
@@ -2226,13 +2632,10 @@ class _RoundedBadge(Canvas):
             borderwidth=0,
             highlightthickness=0,
         )
-        self._surface = self.create_polygon(
-            _rounded_polygon_points(0, 1, width, self._height - 1, RADII["badge"]),
-            smooth=True,
-            splinesteps=8,
-            fill=fill,
-            outline="",
-        )
+        self._state = (text, foreground, fill, outer_background)
+        self._draw_after_id: str | None = None
+        self._last_draw_signature: tuple[object, ...] | None = None
+        self._surface = 0
         self._label = self.create_text(
             width // 2,
             self._height // 2,
@@ -2240,7 +2643,8 @@ class _RoundedBadge(Canvas):
             fill=foreground,
             font=self._font,
         )
-        self._state = (text, foreground, fill, outer_background)
+        self.bind("<Destroy>", self._destroy, add="+")
+        self._draw()
 
     def set_badge(
         self,
@@ -2254,21 +2658,47 @@ class _RoundedBadge(Canvas):
         if state == self._state:
             return
         self._state = state
+        self._last_draw_signature = None
+        self._queue_draw()
+
+    def _queue_draw(self, _event: object | None = None) -> None:
+        if self._draw_after_id is None:
+            self._draw_after_id = self.after_idle(self._draw)
+
+    def _draw(self) -> None:
+        self._draw_after_id = None
+        if self._state == self._last_draw_signature:
+            return
+        self._last_draw_signature = self._state
+        text, foreground, fill, outer_background = self._state
         width = self._font.measure(text) + round(14 * self._ui_scale)
         self.configure(width=width, background=outer_background)
-        self.coords(
-            self._surface,
-            *_rounded_polygon_points(
-                0,
-                1,
-                width,
-                self._height - 1,
-                RADII["badge"],
-            ),
+        self.delete("surface")
+        surface_items = _draw_antialiased_rounded_rect(
+            self,
+            0,
+            1,
+            width,
+            self._height - 1,
+            RADII["badge"],
+            fill=fill,
+            outer_background=outer_background,
+            tags=("surface",),
         )
-        self.itemconfigure(self._surface, fill=fill)
+        self._surface = surface_items[0]
+        self.tag_lower("surface")
         self.coords(self._label, width // 2, self._height // 2)
         self.itemconfigure(self._label, text=text, fill=foreground)
+
+    def _destroy(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self:
+            return
+        if self._draw_after_id is not None:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except Exception:
+                pass
+            self._draw_after_id = None
 
 
 class _RoundedNavButton(Canvas):
@@ -2316,7 +2746,8 @@ class _RoundedNavButton(Canvas):
         self.bind("<space>", self._activate, add="+")
         self.bind("<FocusIn>", self._queue_draw, add="+")
         self.bind("<FocusOut>", self._queue_draw, add="+")
-        self.after_idle(self._queue_draw)
+        self.bind("<Destroy>", self._destroy, add="+")
+        self._queue_draw()
 
     def set_selected(
         self,
@@ -2365,19 +2796,17 @@ class _RoundedNavButton(Canvas):
         self.delete("all")
         if self._selected or self._hovered:
             fill = UI["selected"] if self._selected else UI["surface_overlay"]
-            self.create_polygon(
-                _rounded_polygon_points(
-                    1,
-                    2,
-                    width - 1,
-                    height - 2,
-                    RADII["control"],
-                ),
-                smooth=True,
-                splinesteps=10,
+            _draw_antialiased_rounded_rect(
+                self,
+                1,
+                2,
+                width - 1,
+                height - 2,
+                RADII["control"],
                 fill=fill,
-                outline=UI["accent"] if self.focus_get() is self else "",
-                width=1,
+                border=UI["accent"] if self.focus_get() is self else "",
+                border_width=1,
+                outer_background=str(self.cget("background")),
             )
         x = 12
         if self._image is not None:
@@ -2405,8 +2834,20 @@ class _RoundedNavButton(Canvas):
         self._queue_draw()
 
     def _activate(self, _event: object | None = None) -> str:
+        if getattr(_event, "num", None) == 1:
+            self.focus_set()
         self._command()
         return "break"
+
+    def _destroy(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self:
+            return
+        if self._draw_after_id is not None:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except Exception:
+                pass
+            self._draw_after_id = None
 
 
 class _RoundedScrollbar(Canvas):
@@ -2442,6 +2883,8 @@ class _RoundedScrollbar(Canvas):
         self.bind("<Button-1>", self._press, add="+")
         self.bind("<B1-Motion>", self._drag, add="+")
         self.bind("<ButtonRelease-1>", self._release, add="+")
+        self.bind("<Destroy>", self._destroy, add="+")
+        self._queue_draw()
 
     def set(self, first: object, last: object) -> None:
         previous = (self._first, self._last)
@@ -2493,18 +2936,15 @@ class _RoundedScrollbar(Canvas):
             return
         left, top, right, bottom = geometry
         fill = UI["text_secondary"] if self._hovered else UI["text_muted"]
-        self.create_polygon(
-            _rounded_polygon_points(
-                left,
-                top,
-                right,
-                bottom,
-                max(2, (right - left) // 2),
-            ),
-            smooth=True,
-            splinesteps=8,
+        _draw_antialiased_rounded_rect(
+            self,
+            left,
+            top,
+            right,
+            bottom,
+            max(2, (right - left) // 2),
             fill=fill,
-            outline="",
+            outer_background=str(self.cget("background")),
             tags=("thumb",),
         )
 
@@ -2549,6 +2989,16 @@ class _RoundedScrollbar(Canvas):
         self._drag_origin_y = None
         return "break"
 
+    def _destroy(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self:
+            return
+        if self._draw_after_id is not None:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except Exception:
+                pass
+            self._draw_after_id = None
+
 
 class _RoundedProgressBar(Canvas):
     def __init__(
@@ -2572,6 +3022,8 @@ class _RoundedProgressBar(Canvas):
         self._draw_after_id: str | None = None
         self._last_draw_signature: tuple[object, ...] | None = None
         self.bind("<Configure>", self._queue_draw, add="+")
+        self.bind("<Destroy>", self._destroy, add="+")
+        self._queue_draw()
 
     def configure(self, cnf: object | None = None, **kwargs: object) -> object:
         changed = False
@@ -2619,29 +3071,39 @@ class _RoundedProgressBar(Canvas):
         self._last_draw_signature = signature
         self.delete("all")
         radius = max(2, height // 2)
-        self.create_polygon(
-            _rounded_polygon_points(0, 0, width, height, radius),
-            smooth=True,
-            splinesteps=8,
+        _draw_antialiased_rounded_rect(
+            self,
+            0,
+            0,
+            width,
+            height,
+            radius,
             fill=UI["progress_track"],
-            outline="",
+            outer_background=str(self.cget("background")),
         )
         fill_width = int(width * self._value / self._maximum)
         if fill_width <= 0:
             return
-        self.create_polygon(
-            _rounded_polygon_points(
-                0,
-                0,
-                max(height, fill_width),
-                height,
-                min(radius, max(2, fill_width // 2)),
-            ),
-            smooth=True,
-            splinesteps=8,
+        _draw_antialiased_rounded_rect(
+            self,
+            0,
+            0,
+            max(height, fill_width),
+            height,
+            min(radius, max(2, fill_width // 2)),
             fill=self._color,
-            outline="",
+            outer_background=UI["progress_track"],
         )
+
+    def _destroy(self, event: object) -> None:
+        if getattr(event, "widget", None) is not self:
+            return
+        if self._draw_after_id is not None:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except Exception:
+                pass
+            self._draw_after_id = None
 
 
 class _MouseWheelRouter:
@@ -2697,9 +3159,10 @@ class _ScrollableCardList(ttk.Frame):
         self,
         parent: object,
         *,
-        background: str = UI["bg"],
+        background: str | None = None,
         initial_width: int | None = None,
     ) -> None:
+        background = background or UI["bg"]
         super().__init__(parent, style="App.TFrame")
         self.canvas = Canvas(
             self,
@@ -2781,11 +3244,11 @@ def _set_window_icon(window: Tk | Toplevel) -> None:
     candidates: list[Path] = []
     bundle_root = getattr(sys, "_MEIPASS", "")
     if bundle_root:
-        candidates.append(Path(bundle_root) / "assets" / "download-transfer-station.ico")
+        candidates.append(Path(bundle_root) / "assets" / "liudi-downloader.ico")
     candidates.append(
         Path(__file__).resolve().parents[2]
         / "assets"
-        / "download-transfer-station.ico"
+        / "liudi-downloader.ico"
     )
     for candidate in candidates:
         if not candidate.is_file():
@@ -2904,20 +3367,20 @@ def _load_product_image(maximum_size: int = 30) -> PhotoImage | None:
             Path(bundle_root)
             / "idm_eagle_bridge"
             / "assets"
-            / "download-transfer-station.png"
+            / "liudi-downloader.png"
         )
         candidates.append(
-            Path(bundle_root) / "assets" / "download-transfer-station.png"
+            Path(bundle_root) / "assets" / "liudi-downloader.png"
         )
     candidates.append(
         Path(__file__).resolve().parent
         / "assets"
-        / "download-transfer-station.png"
+        / "liudi-downloader.png"
     )
     candidates.append(
         Path(__file__).resolve().parents[2]
         / "assets"
-        / "download-transfer-station.png"
+        / "liudi-downloader.png"
     )
     for candidate in candidates:
         if not candidate.is_file():
@@ -3002,9 +3465,10 @@ class _VerticalScrolledFrame(ttk.Frame):
         *,
         padding: object = 0,
         style: str = "Surface.TFrame",
-        background: str = UI["surface"],
+        background: str | None = None,
         initial_width: int | None = None,
     ) -> None:
+        background = background or UI["surface"]
         super().__init__(parent, style=style)
         self.canvas = Canvas(
             self,
@@ -3262,7 +3726,7 @@ class MainWindow:
         self.root.configure(background=UI["bg"])
         if self.start_hidden:
             self.root.withdraw()
-        self.root.title(f"{APP_NAME} v{APP_VERSION}")
+        self.root.title(f"{APP_NAME} v{APP_VERSION} by{APP_AUTHOR}")
         initial_geometry = visual_capture_geometry or _scale_geometry(
             "1120x720",
             self.ui_scale,
@@ -3285,7 +3749,7 @@ class MainWindow:
         )
         self.status_text = StringVar()
         self.page_title_text = StringVar(value="下载任务")
-        self.eagle_status_text = StringVar(value="Eagle 正在检查")
+        self.eagle_status_text = StringVar(value="Eagle 正在检查 · 下载可用")
         self.service_status_text = StringVar(value="本机服务正常")
         self.chrome_status_text = StringVar(value="Chrome 未配对")
         self.pairing_text = StringVar()
@@ -3306,7 +3770,6 @@ class MainWindow:
         self.prewarm_after_id: str | None = None
         self.update_poll_after_id: str | None = None
         self.auto_update_after_id: str | None = None
-        self.copy_feedback_after_id: str | None = None
         self.media_change_after_id: str | None = None
         self.maintenance_after_id: str | None = None
         self.wechat_operation_after_id: str | None = None
@@ -3356,8 +3819,6 @@ class MainWindow:
             tuple[str, int, int],
             PhotoImage,
         ] = OrderedDict()
-        self.media_page = 0
-        self.media_page_count = 1
         self.preview_image: PhotoImage | None = None
         self.preview_cache = _PreviewImageCache()
         self.wechat_rows: dict[str, dict] = {}
@@ -3391,7 +3852,10 @@ class MainWindow:
         self.last_eagle_check = 0.0
         self.eagle_connected = False
         self.eagle_probe = _AsyncProbe(
-            self.eagle.is_available,
+            _resolve_eagle_probe(
+                self.api_server.api,
+                self.eagle.is_available,
+            ),
             name="eagle-health-probe",
         )
         self._build()
@@ -3582,7 +4046,7 @@ class MainWindow:
             except Exception:
                 pass
 
-        for attribute in ("_fill", "_border", "_color", "_state"):
+        for attribute in ("_fill", "_border", "_color", "_background", "_state"):
             if not hasattr(widget, attribute):
                 continue
             current = getattr(widget, attribute)
@@ -3897,28 +4361,6 @@ class MainWindow:
             command=self.clear_media_history,
         )
         self.media_clear_button.pack(side=RIGHT)
-        self.media_next_button = _RoundedButton(
-            toolbar,
-            text="›",
-            width=2,
-            style="MediaToolbar.TButton",
-            command=lambda: self._change_media_page(1),
-        )
-        self.media_next_button.pack(side=RIGHT)
-        self.media_page_text = StringVar(value="1/1")
-        ttk.Label(
-            toolbar,
-            textvariable=self.media_page_text,
-            style="MediaToolbarTitle.TLabel",
-        ).pack(side=RIGHT, padx=3)
-        self.media_previous_button = _RoundedButton(
-            toolbar,
-            text="‹",
-            width=2,
-            style="MediaToolbar.TButton",
-            command=lambda: self._change_media_page(-1),
-        )
-        self.media_previous_button.pack(side=RIGHT)
 
         self.plan_card_list = _ScrollableCardList(
             master,
@@ -4194,9 +4636,12 @@ class MainWindow:
             style="SectionOnSurface.TLabel",
         ).pack(side=LEFT)
 
+        self.idm_eagle_hint_text = StringVar(
+            value=str(_eagle_experience(False)["idm_hint"])
+        )
         _DynamicWrapLabel(
             tab,
-            text="IDM 与用户原文件始终保留；没有可靠来源时仍会导入，Eagle 网站字段保持为空。",
+            textvariable=self.idm_eagle_hint_text,
             style="Muted.TLabel",
             justify=LEFT,
             maximum=900,
@@ -4608,7 +5053,7 @@ class MainWindow:
             "updates": self._build_settings_updates,
         }
         for key, label in (
-            ("pairing", "浏览器配对"),
+            ("pairing", "浏览器连接"),
             ("sites", "网站规则"),
             ("network", "网络代理"),
             ("storage", "文件管理"),
@@ -4660,12 +5105,12 @@ class MainWindow:
         content = scroller.content
         ttk.Label(
             content,
-            text="浏览器配对",
+            text="浏览器连接",
             style="Title.TLabel",
         ).pack(anchor="w")
         _DynamicWrapLabel(
             content,
-            text="在 Chrome 扩展中输入下面的六位码。配对只允许本机回环服务和已验证来源。",
+            text="留底浏览器扩展会在本机自动连接留底桌面端，无需输入配对码。",
             style="Muted.TLabel",
             justify=LEFT,
             maximum=760,
@@ -4677,68 +5122,18 @@ class MainWindow:
             padding=(20, 18),
         )
         code_surface.pack(fill=X)
-        pairing_code = self.pairing.pairing_code
-        self.pairing_code_text = StringVar(
-            value=f"{pairing_code[:3]}  {pairing_code[3:]}"
-        )
-        self.pairing_code_font = tkfont.Font(
-            root=self.root,
-            family=FONT_FAMILIES["mono"],
-            size=24,
-            weight="bold",
-        )
         ttk.Label(
             code_surface,
-            text="六位配对码",
+            text="连接状态",
             style="RaisedMuted.TLabel",
         ).pack(anchor="w")
-        ttk.Label(
-            code_surface,
-            textvariable=self.pairing_code_text,
-            style="PairingCode.TLabel",
-            font=self.pairing_code_font,
-        ).pack(anchor="w", pady=(6, 0))
-        self.pairing_feedback_text = StringVar(value="")
-        ttk.Label(
-            code_surface,
-            textvariable=self.pairing_feedback_text,
-            style="RaisedMuted.TLabel",
-        ).pack(anchor="w", pady=(5, 0))
-
         _DynamicWrapLabel(
-            content,
+            code_surface,
             textvariable=self.pairing_text,
-            style="Muted.TLabel",
+            style="Raised.TLabel",
             justify=LEFT,
             maximum=760,
-        ).pack(fill=X, pady=(12, 0))
-        actions = _ResponsiveActionGroup(
-            content,
-            compact_breakpoint=620,
-            vertical_breakpoint=300,
-            style="Surface.TFrame",
-        )
-        actions.pack(fill=X, pady=(14, 0))
-        actions.add(
-            _RoundedButton(
-                actions,
-                text="复制六位码",
-                image=self.ui_icons.get("copy-white"),
-                compound=LEFT,
-                style="Accent.TButton",
-                command=self.copy_pairing_code,
-            )
-        )
-        actions.add(
-            _RoundedButton(
-                actions,
-                text="解除配对",
-                image=self.ui_icons.get("trash-danger"),
-                compound=LEFT,
-                style="Danger.TButton",
-                command=self.unpair,
-            )
-        )
+        ).pack(fill=X, pady=(8, 0))
 
     def _build_settings_sites(self) -> None:
         scroller = _VerticalScrolledFrame(
@@ -4918,7 +5313,7 @@ class MainWindow:
         ttk.Label(content, text="文件管理", style="Title.TLabel").pack(anchor="w")
         _DynamicWrapLabel(
             content,
-            text="设置导入 Eagle 后，本机下载副本的保留时间。",
+            text="管理本机下载副本，以及留底桌面端创建的临时文件、预览和旧版日志。",
             style="Muted.TLabel",
             justify=LEFT,
             maximum=820,
@@ -4937,7 +5332,7 @@ class MainWindow:
         ).pack(anchor="w")
         _DynamicWrapLabel(
             retention_card,
-            text="仅管理下载中转站创建的文件；IDM 原文件不会移动或删除。",
+            text="仅管理留底桌面端创建的文件；IDM 原文件不会移动或删除。",
             style="RaisedMuted.TLabel",
             justify=LEFT,
             maximum=760,
@@ -4966,6 +5361,65 @@ class MainWindow:
             style="RaisedMuted.TLabel",
         ).pack(anchor="w", pady=(8, 0))
 
+        cache_card = ttk.Frame(
+            content,
+            style="Soft.TFrame",
+            padding=(14, 12),
+        )
+        cache_card.pack(fill=X, pady=(0, 12))
+        ttk.Label(
+            cache_card,
+            text="程序缓存",
+            style="Section.TLabel",
+        ).pack(anchor="w")
+        _DynamicWrapLabel(
+            cache_card,
+            text="清理临时下载、任务预览和旧版下载日志；已完成目录不会清理，活动任务、IDM 原文件和用户文件始终保留。",
+            style="RaisedMuted.TLabel",
+            justify=LEFT,
+            maximum=760,
+        ).pack(fill=X, pady=(4, 10))
+
+        self.cache_summary_text = StringVar(value="正在统计缓存占用…")
+        _DynamicWrapLabel(
+            cache_card,
+            textvariable=self.cache_summary_text,
+            style="RaisedMuted.TLabel",
+            justify=LEFT,
+            maximum=760,
+        ).pack(fill=X, pady=(0, 10))
+
+        cache_row = ttk.Frame(cache_card, style="Soft.TFrame")
+        cache_row.pack(fill=X)
+        ttk.Label(cache_row, text="自动清理", style="RaisedMuted.TLabel").pack(side=LEFT)
+        self.cache_retention_days = StringVar()
+        cache_spinbox = ttk.Spinbox(
+            cache_row,
+            from_=0,
+            to=365,
+            increment=1,
+            width=6,
+            textvariable=self.cache_retention_days,
+            validate="key",
+            validatecommand=(self.root.register(self._validate_digits), "%P"),
+            style="Settings.TSpinbox",
+        )
+        cache_spinbox.pack(side=LEFT, padx=(12, 7))
+        ttk.Label(cache_row, text="天后", style="RaisedMuted.TLabel").pack(side=LEFT)
+        ttk.Label(
+            cache_card,
+            text="设为 0 表示关闭自动缓存清理；手动清理仍然可用。",
+            style="RaisedMuted.TLabel",
+        ).pack(anchor="w", pady=(8, 0))
+
+        self.cache_clear_button = _RoundedButton(
+            cache_card,
+            text="立即清理缓存",
+            style="Secondary.TButton",
+            command=self.clear_program_cache,
+        )
+        self.cache_clear_button.pack(anchor="w", pady=(12, 0))
+
         self.storage_feedback_text = StringVar(value="")
         _DynamicWrapLabel(
             content,
@@ -4989,29 +5443,96 @@ class MainWindow:
         return value == "" or value.isdigit()
 
     def _load_storage_settings(self) -> None:
-        days = self.database.get_setting("file_retention_days", 7)
-        days = max(0, min(365, int(days)))
-        self.storage_retention_days.set(str(days))
-        self.storage_feedback_text.set(
-            "当前设置：本机副本始终保留"
-            if days == 0
-            else f"当前设置：导入 Eagle {days} 天后自动清理本机副本"
+        days = _bounded_retention_days(
+            self.database.get_setting("file_retention_days", 7)
         )
+        cache_days = _bounded_retention_days(
+            self.database.get_setting("cache_retention_days", 7)
+        )
+        self.storage_retention_days.set(str(days))
+        self.cache_retention_days.set(str(cache_days))
+        self.storage_feedback_text.set(
+            (
+                "当前设置：本机副本始终保留"
+                if days == 0
+                else f"当前设置：导入 Eagle {days} 天后自动清理本机副本"
+            )
+            + "；"
+            + (
+                "缓存不自动清理"
+                if cache_days == 0
+                else f"缓存保留 {cache_days} 天"
+            )
+        )
+        self.root.after_idle(self._refresh_cache_status)
 
     def _save_storage_settings(self) -> None:
         raw = self.storage_retention_days.get()
+        cache_raw = self.cache_retention_days.get()
         try:
             days = max(0, min(365, int(raw)))
+            cache_days = max(0, min(365, int(cache_raw)))
         except ValueError:
             self.storage_feedback_text.set("请输入 0-365 之间的数字")
             return
-        self.database.set_setting("file_retention_days", days)
+        try:
+            self.database.set_settings(
+                {
+                    "file_retention_days": days,
+                    "cache_retention_days": cache_days,
+                }
+            )
+        except Exception as exc:
+            self.storage_feedback_text.set(f"保存失败：{exc}")
+            return
         self.storage_retention_days.set(str(days))
+        self.cache_retention_days.set(str(cache_days))
         self.storage_feedback_text.set(
-            "已保存：本机副本始终保留"
-            if days == 0
-            else f"已保存：导入 Eagle {days} 天后自动清理本机副本"
+            (
+                "已保存：本机副本始终保留"
+                if days == 0
+                else f"已保存：导入 Eagle {days} 天后自动清理本机副本"
+            )
+            + "；"
+            + (
+                "缓存不自动清理"
+                if cache_days == 0
+                else f"缓存保留 {cache_days} 天"
+            )
         )
+
+    @staticmethod
+    def _cache_status_summary(payload: dict[str, object]) -> str:
+        categories = dict(payload.get("categories") or {})
+        temporary = dict(categories.get("temporary") or {})
+        previews = dict(categories.get("previews") or {})
+        log = dict(categories.get("log") or {})
+        return (
+            f"当前缓存 {_display_bytes(payload.get('totalBytes'))}，"
+            f"共 {int(payload.get('fileCount') or 0)} 个文件 · "
+            f"临时 {_display_bytes(temporary.get('bytes'))} · "
+            f"预览 {_display_bytes(previews.get('bytes'))} · "
+            f"日志 {_display_bytes(log.get('bytes'))}"
+        )
+
+    def _refresh_cache_status(self) -> None:
+        if self.maintenance_busy or not hasattr(self, "cache_summary_text"):
+            return
+        self.cache_summary_text.set("正在统计缓存占用…")
+        self._start_maintenance("cache-scan", self.media.cache_status)
+
+    def clear_program_cache(self) -> None:
+        if self.maintenance_busy:
+            return
+        if not messagebox.askyesno(
+            "清理程序缓存",
+            "将删除未被活动任务使用的临时下载、任务预览和旧版下载日志。"
+            "“已完成”目录、IDM 原文件和用户文件不会删除。是否继续？",
+            parent=self.root,
+        ):
+            return
+        self.cache_summary_text.set("正在清理缓存…")
+        self._start_maintenance("clear-cache", self.media.clear_cache)
 
     def _build_settings_updates(self) -> None:
         scroller = _VerticalScrolledFrame(
@@ -5215,7 +5736,7 @@ class MainWindow:
             return
         if not messagebox.askyesno(
             "删除网站规则",
-            f"删除 {rule['domain']} 后，该网站恢复默认不自动导入。是否继续？",
+            f"删除 {rule['domain']} 后，该网站恢复默认不记录 IDM 来源。是否继续？",
             parent=self.root,
         ):
             return
@@ -5230,7 +5751,7 @@ class MainWindow:
             return
         if not messagebox.askyesno(
             "清空网站规则",
-            "所有网站将恢复默认不自动导入；文件、任务和 Eagle 内容不会受到影响。是否继续？",
+            "所有网站将恢复默认不记录 IDM 来源；浏览器和视频号下载、文件、任务及 Eagle 内容都不会受到影响。是否继续？",
             parent=self.root,
         ):
             return
@@ -5246,24 +5767,31 @@ class MainWindow:
 
     def _settings_save_proxy(self) -> None:
         try:
-            self.media.network_proxy.configure(
+            configuration = self.media.network_proxy.configure(
                 self.settings_proxy_mode.get(),
                 self.settings_proxy_manual.get(),
             )
         except ProxyConfigurationError as exc:
             messagebox.showerror("代理地址无效", str(exc), parent=self.root)
             return
+        except Exception as exc:
+            messagebox.showerror("保存代理设置失败", str(exc), parent=self.root)
+            return
+        _set_var_if_changed(self.settings_proxy_mode, configuration["mode"])
+        _set_var_if_changed(
+            self.settings_proxy_manual,
+            configuration["manualUrl"],
+        )
         self.media._health_cache = None
         self._refresh_settings()
         self.refresh(force=True)
 
     def _refresh_settings(self, select_domain: str | None = None) -> None:
         active_tab = getattr(self, "current_settings_tab", "pairing")
-        if active_tab == "pairing" and hasattr(self, "pairing_code_text"):
-            code = self.pairing.pairing_code
+        if active_tab == "pairing":
             _set_var_if_changed(
-                self.pairing_code_text,
-                f"{code[:3]}  {code[3:]}",
+                self.pairing_text,
+                "Chrome 已自动连接" if self.pairing.paired_origin else "等待 Chrome 扩展自动连接",
             )
             return
         if active_tab == "sites" and hasattr(self, "settings_site_tree"):
@@ -5295,20 +5823,13 @@ class MainWindow:
             enabled = sum(1 for rule in rules if rule["enabled"])
             _set_var_if_changed(
                 self.settings_site_summary_text,
-                f"共 {len(rules)} 条规则 · 已启用 {enabled} 条 · 未列出的网站默认不自动导入",
+                f"共 {len(rules)} 条规则 · 已启用 {enabled} 条 · 仅用于给 IDM 下载匹配来源，不影响浏览器和视频号下载",
             )
             return
         if active_tab != "network" or not hasattr(self, "settings_proxy_mode"):
             return
-        configuration = self.media.network_proxy.configuration()
-        _set_var_if_changed(
-            self.settings_proxy_mode,
-            configuration["mode"],
-        )
-        _set_var_if_changed(
-            self.settings_proxy_manual,
-            configuration["manualUrl"],
-        )
+        # Do not overwrite an unsaved radio/entry edit during the periodic UI
+        # refresh. The form is initialized when built and normalized on save.
         self._settings_proxy_mode_changed()
         status = self.media.network_proxy.status()
         _set_var_if_changed(
@@ -5325,8 +5846,8 @@ class MainWindow:
         self.diagnostics_summary_text.set(
             f"应用 v{APP_VERSION} · 数据库 schema 6\n"
             f"本机服务 {host}:{port} · "
-            f"Eagle {'已连接' if self.eagle_connected else '未连接'} · "
-            f"Chrome {'已配对' if self.pairing.paired_origin else '待配对'}\n"
+            f"{_eagle_experience(self.eagle_connected)['summary']} · "
+            f"Chrome {'已连接' if self.pairing.paired_origin else '等待连接'}\n"
             f"媒体任务 {int(self.last_media_summary.get('total') or 0)} 条 · "
             f"视频号 {health.get('state') or 'off'} · "
             f"网络 {network.get('summary') or network.get('mode') or '未知'}"
@@ -5479,7 +6000,6 @@ class MainWindow:
             except Empty:
                 break
         if changed:
-            self.media_page = 0
             self.refresh(force=True)
         if callable(getattr(self.media, "add_change_listener", None)):
             self.media_change_after_id = self.root.after(
@@ -5676,11 +6196,19 @@ class MainWindow:
         now = time.monotonic()
         eagle_result_available, eagle_result = self.eagle_probe.poll()
         if eagle_result_available:
+            previous_eagle_connected = self.eagle_connected
             self.eagle_connected = bool(eagle_result)
+            if self.eagle_connected != previous_eagle_connected:
+                # Eagle availability changes which actions are safe. Invalidate
+                # cached detail revisions so every visible button is redrawn.
+                self.last_wechat_detail_revision = None
+                self.last_plan_detail_revision = None
+                self.last_idm_detail_revision = None
         if force or now - self.last_eagle_check >= 10:
             if self.eagle_probe.request():
                 self.last_eagle_check = now
-        eagle_text = "Eagle 已连接" if self.eagle_connected else "正在等待 Eagle"
+        eagle_experience = _eagle_experience(self.eagle_connected)
+        eagle_text = str(eagle_experience["summary"])
         host, port = self.api_server.address
         dashboard = self.database.ui_snapshot()
         counts = dashboard["status_counts"]
@@ -5726,12 +6254,17 @@ class MainWindow:
         _set_var_if_changed(self.status_text, " · ".join(status_parts))
         _set_var_if_changed(
             self.eagle_status_text,
-            "Eagle 已连接" if self.eagle_connected else "Eagle 未连接"
+            str(eagle_experience["status"]),
         )
+        if hasattr(self, "idm_eagle_hint_text"):
+            _set_var_if_changed(
+                self.idm_eagle_hint_text,
+                str(eagle_experience["idm_hint"]),
+            )
         _set_var_if_changed(self.service_status_text, "服务正常")
         if hasattr(self, "status_dots"):
             self.status_dots["eagle"].set_color(
-                UI["success"] if self.eagle_connected else UI["text_muted"]
+                UI["success"] if self.eagle_connected else UI["warning"]
             )
             self.status_dots["service"].set_color(UI["success"])
         enabled_sites = dashboard["enabled_site_count"]
@@ -5745,16 +6278,16 @@ class MainWindow:
             f"网络：{proxy_status['summary']}",
         )
         if self.pairing.paired_origin:
-            _set_var_if_changed(self.pairing_text, "Chrome 已安全配对")
-            _set_var_if_changed(self.chrome_status_text, "Chrome 已配对")
+            _set_var_if_changed(self.pairing_text, "Chrome 已自动连接")
+            _set_var_if_changed(self.chrome_status_text, "Chrome 已连接")
             if hasattr(self, "status_dots"):
                 self.status_dots["chrome"].set_color(UI["success"])
         else:
             _set_var_if_changed(
                 self.pairing_text,
-                f"Chrome 配对码：{self.pairing.pairing_code}",
+                "等待 Chrome 扩展自动连接",
             )
-            _set_var_if_changed(self.chrome_status_text, "Chrome 待配对")
+            _set_var_if_changed(self.chrome_status_text, "Chrome 等待连接")
             if hasattr(self, "status_dots"):
                 self.status_dots["chrome"].set_color(UI["text_muted"])
 
@@ -5858,13 +6391,6 @@ class MainWindow:
         previous.state(["!disabled"] if page > 0 else ["disabled"])
         following.state(["!disabled"] if page + 1 < total_pages else ["disabled"])
 
-    def _change_media_page(self, delta: int) -> None:
-        target = max(0, min(self.media_page + delta, self.media_page_count - 1))
-        if target == self.media_page:
-            return
-        self.media_page = target
-        self.refresh(force=True)
-
     def _change_wechat_page(self, delta: int) -> None:
         target = max(0, min(self.wechat_page + delta, self.wechat_page_count - 1))
         if target == self.wechat_page:
@@ -5894,14 +6420,26 @@ class MainWindow:
     def _bind_wechat_card(self, widget: object, object_id: str) -> None:
         widget.bind(
             "<Button-1>",
-            lambda _event, value=object_id: self._select_wechat_card(value),
+            lambda _event, value=object_id: self._activate_wechat_card(value),
             add="+",
         )
         widget.bind(
             "<Return>",
-            lambda _event, value=object_id: self._select_wechat_card(value),
+            lambda _event, value=object_id: self._activate_wechat_card(value),
             add="+",
         )
+        widget.bind(
+            "<space>",
+            lambda _event, value=object_id: self._activate_wechat_card(value),
+            add="+",
+        )
+
+    def _activate_wechat_card(self, object_id: str) -> str:
+        self._select_wechat_card(object_id)
+        row = self.wechat_card_widgets.get(object_id, {}).get("row")
+        if row is not None:
+            row.focus_set()
+        return "break"
 
     def _render_wechat_cards(self, candidates: list[dict]) -> None:
         self.wechat_card_list.clear()
@@ -6265,6 +6803,7 @@ class MainWindow:
                 )
                 for variant in variants
             ),
+            self.eagle_connected,
         )
         if revision == self.last_wechat_detail_revision:
             return
@@ -6311,8 +6850,22 @@ class MainWindow:
             self.wechat_variant_text,
             values[selected_index] if values else "自动质量",
         )
-        for button in self.wechat_delivery_buttons.values():
-            _configure_if_changed(button, state="normal")
+        experience = _eagle_experience(self.eagle_connected)
+        eagle_button = self.wechat_delivery_buttons["eagle"]
+        local_button = self.wechat_delivery_buttons["local"]
+        eagle_button.configure(
+            text=(
+                "导入 Eagle（完成后删除本机副本）"
+                if self.eagle_connected
+                else str(experience["import_button"])
+            ),
+            style="Accent.TButton" if self.eagle_connected else "Quiet.TButton",
+        )
+        eagle_button.set_enabled(bool(experience["can_import"]))
+        local_button.configure(
+            style="Quiet.TButton" if self.eagle_connected else "Accent.TButton"
+        )
+        local_button.set_enabled(True)
 
     def _request_wechat_preview(self, generation: int, object_id: str) -> None:
         with self.wechat_preview_lock:
@@ -6582,8 +7135,8 @@ class MainWindow:
         if event == "preflight":
             if bool(payload) and not messagebox.askokcancel(
                 "首次启用视频号捕获",
-                "下载中转站将为当前 Windows 用户生成并信任一张仅用于微信视频号本机捕获的根证书。\n\n"
-                "Windows 随后会显示“安全警告”，请核对证书名称为“下载中转站 微信视频号本机捕获根证书”后亲自确认。停止捕获会恢复系统代理；卸载会按精确指纹移除此证书。\n\n"
+                "留底桌面端将为当前 Windows 用户生成并信任一张仅用于微信视频号本机捕获的根证书。\n\n"
+                "Windows 随后会显示“安全警告”，请核对证书名称为“留底下载器 微信视频号本机捕获根证书”后亲自确认。停止捕获会恢复系统代理；卸载会按精确指纹移除此证书。\n\n"
                 "是否继续？",
                 parent=self.root,
             ):
@@ -6638,6 +7191,13 @@ class MainWindow:
         variant_id = self.wechat_variant_ids[index] if 0 <= index < len(self.wechat_variant_ids) else ""
         try:
             import_to_eagle = bool(self.wechat_import_to_eagle.get())
+            if import_to_eagle and not self.eagle_connected:
+                messagebox.showinfo(
+                    "Eagle 未连接",
+                    "Eagle 未安装或未启动，但不影响下载。请使用“仅下载并保留本机文件”；启动 Eagle 后可从下载任务补导。",
+                    parent=self.root,
+                )
+                return
             self.wechat_channels.submit(
                 str(candidate["objectId"]),
                 variant_id,
@@ -6688,12 +7248,17 @@ class MainWindow:
     def _bind_plan_card(self, widget: object, plan_id: str) -> None:
         widget.bind(
             "<Button-1>",
-            lambda _event, value=plan_id: self._select_plan_card(value),
+            lambda _event, value=plan_id: self._activate_plan_card(value),
             add="+",
         )
         widget.bind(
             "<Return>",
-            lambda _event, value=plan_id: self._select_plan_card(value),
+            lambda _event, value=plan_id: self._activate_plan_card(value),
+            add="+",
+        )
+        widget.bind(
+            "<space>",
+            lambda _event, value=plan_id: self._activate_plan_card(value),
             add="+",
         )
         widget.bind(
@@ -6706,6 +7271,13 @@ class MainWindow:
             lambda event, value=plan_id: self._show_plan_context_menu(event, value),
             add="+",
         )
+
+    def _activate_plan_card(self, plan_id: str) -> str:
+        self._select_plan_card(plan_id)
+        row = self.plan_card_widgets.get(plan_id, {}).get("row")
+        if row is not None:
+            row.focus_set()
+        return "break"
 
     def _show_plan_context_menu(self, event: object, plan_id: str) -> str:
         self._select_plan_card(plan_id)
@@ -7029,31 +7601,15 @@ class MainWindow:
         if revision != self.last_plans_revision:
             previous_count = self.last_plans_revision[0] if self.last_plans_revision else 0
             if len(plans) > previous_count:
-                self.media_page = 0
                 selected = str(plans[0]["id"]) if plans else ""
-            visible_plans, self.media_page, self.media_page_count = _page_slice(
-                plans,
-                self.media_page,
-                CARD_PAGE_SIZE,
-            )
-            self._update_pager(
-                self.media_previous_button,
-                self.media_next_button,
-                self.media_page_text,
-                self.media_page,
-                self.media_page_count,
-            )
             if selected not in self.plan_rows:
                 selected = str(plans[0]["id"]) if plans else ""
-            visible_ids = {str(plan["id"]) for plan in visible_plans}
-            if selected not in visible_ids:
-                selected = str(visible_plans[0]["id"]) if visible_plans else ""
             self.selected_plan_card_id = selected or ""
-            visible_order = [str(plan["id"]) for plan in visible_plans]
-            if visible_order != list(self.plan_card_widgets):
-                self._render_plan_cards(visible_plans)
+            plan_order = [str(plan["id"]) for plan in plans]
+            if plan_order != list(self.plan_card_widgets):
+                self._render_plan_cards(plans)
             else:
-                for plan in visible_plans:
+                for plan in plans:
                     self._update_plan_card_widget(str(plan["id"]), plan)
             self.last_plans_revision = revision
         self._update_plan_detail()
@@ -7125,6 +7681,7 @@ class MainWindow:
             error,
             preview_revision,
             bool(output and Path(output).is_file()),
+            self.eagle_connected,
         )
         if detail_revision == self.last_plan_detail_revision:
             return
@@ -7201,12 +7758,21 @@ class MainWindow:
         permissions = {
             "stop": bool(view and view["active"]),
             "retry": bool(view and view["can_retry"]),
-            "import": bool(view and view["can_import_existing"] and final_exists),
+            "import": bool(
+                self.eagle_connected
+                and view
+                and view["can_import_existing"]
+                and final_exists
+            ),
             "open": bool(view and view["can_open_output"] and final_exists),
             "source": bool(view and view["can_open_source"]),
         }
         for name, button in self.plan_action_buttons.items():
             button.set_enabled(permissions[name])
+        self.plan_action_buttons["import"].configure(
+            text="补导 Eagle" if self.eagle_connected else "Eagle 未连接",
+            style="Accent.TButton" if self.eagle_connected else "Quiet.TButton",
+        )
 
     def stop_selected_plan(self) -> None:
         plan = self.selected_plan()
@@ -7245,6 +7811,13 @@ class MainWindow:
         plan = self.selected_plan()
         if not plan:
             messagebox.showinfo("提示", "请先选择一项媒体任务")
+            return
+        if not self.eagle_connected:
+            messagebox.showinfo(
+                "Eagle 未连接",
+                "本机文件已安全保留。安装或启动 Eagle 后，此按钮会自动恢复，可直接补导而无需重新下载。",
+                parent=self.root,
+            )
             return
         try:
             self.media.import_completed_plan(str(plan["id"]))
@@ -7295,7 +7868,17 @@ class MainWindow:
         if not plan or not plan.get("page_url"):
             messagebox.showinfo("没有来源", "这项任务没有记录来源网页")
             return
-        webbrowser.open(str(plan["page_url"]))
+        try:
+            opened = webbrowser.open(str(plan["page_url"]))
+        except Exception as exc:
+            messagebox.showerror("无法打开来源网页", str(exc), parent=self.root)
+            return
+        if not opened:
+            messagebox.showerror(
+                "无法打开来源网页",
+                "系统没有可用的默认浏览器，请复制来源地址后手动打开。",
+                parent=self.root,
+            )
 
     def selected_job_id(self) -> str | None:
         selected = self.job_tree.selection()
@@ -7332,7 +7915,7 @@ class MainWindow:
             relief="flat",
         )
         file_path = str(job.get("file_path") or "")
-        if file_path and Path(file_path).exists():
+        if file_path and Path(file_path).is_file():
             menu.add_command(label="打开原文件位置", command=self.open_file_location)
         if job.get("source_url"):
             menu.add_command(label="打开来源网页", command=self.open_source)
@@ -7380,8 +7963,9 @@ class MainWindow:
             str(job.get("error_message") or ""),
             bool(
                 job.get("file_path")
-                and Path(str(job.get("file_path"))).exists()
+                and Path(str(job.get("file_path"))).is_file()
             ),
+            self.eagle_connected,
         )
         if revision == self.last_idm_detail_revision:
             return
@@ -7428,11 +8012,22 @@ class MainWindow:
             "failed_permanent",
         }
         file_path = str(job.get("file_path") or "") if job else ""
+        file_exists = bool(file_path and Path(file_path).is_file())
         permissions = {
-            "retry": retryable,
-            "open": bool(file_path and Path(file_path).exists()),
+            "retry": retryable and self.eagle_connected and file_exists,
+            "open": file_exists,
             "source": bool(job and job.get("source_url")),
-            "assign": bool(job and status != "skipped_duplicate"),
+            "assign": bool(
+                job
+                and status != "skipped_duplicate"
+                and (
+                    status != "imported"
+                    or (
+                        self.eagle_connected
+                        and bool(job.get("eagle_item_id"))
+                    )
+                )
+            ),
             "remove": bool(job),
         }
         if self.maintenance_busy:
@@ -7441,11 +8036,31 @@ class MainWindow:
             permissions["remove"] = False
         for name, button in self.idm_action_buttons.items():
             button.configure(state="normal" if permissions[name] else "disabled")
+        self.idm_action_buttons["retry"].configure(
+            text="重试导入" if self.eagle_connected else "Eagle 未连接",
+            style="Accent.TButton" if self.eagle_connected else "Quiet.TButton",
+        )
 
     def retry_selected(self) -> None:
-        job_id = self.selected_job_id()
-        if not job_id:
+        job = self.selected_job()
+        if not job:
             messagebox.showinfo("提示", "请先选择一条记录")
+            return
+        job_id = str(job["id"])
+        if not self.eagle_connected:
+            messagebox.showinfo(
+                "Eagle 未连接",
+                "IDM 原文件已保留。安装或启动 Eagle 后再重试导入；浏览器和视频号仅下载不受影响。",
+                parent=self.root,
+            )
+            return
+        file_path = Path(str(job.get("file_path") or ""))
+        if not file_path.is_file():
+            messagebox.showwarning(
+                "无法重试导入",
+                "IDM 原文件已经不在记录的位置，无法导入 Eagle。记录仍会保留，可选择清理记录。",
+                parent=self.root,
+            )
             return
         if not self.database.retry_job(job_id):
             self.refresh(force=True)
@@ -7493,17 +8108,34 @@ class MainWindow:
             messagebox.showinfo("提示", "请先选择一条记录")
             return
         path = Path(job["file_path"])
-        if not path.exists():
+        if not path.is_file():
             messagebox.showwarning("文件不存在", "下载文件已经不在原位置")
             return
-        subprocess.Popen(["explorer.exe", "/select,", str(path)])
+        try:
+            subprocess.Popen(["explorer.exe", "/select,", str(path)])
+        except OSError as exc:
+            messagebox.showerror(
+                "无法打开文件位置",
+                str(exc),
+                parent=self.root,
+            )
 
     def open_source(self) -> None:
         job = self.selected_job()
         if not job or not job.get("source_url"):
             messagebox.showinfo("没有来源", "这条记录还没有匹配到来源网页")
             return
-        webbrowser.open(job["source_url"])
+        try:
+            opened = webbrowser.open(str(job["source_url"]))
+        except Exception as exc:
+            messagebox.showerror("无法打开来源网页", str(exc), parent=self.root)
+            return
+        if not opened:
+            messagebox.showerror(
+                "无法打开来源网页",
+                "系统没有可用的默认浏览器，请复制来源地址后手动打开。",
+                parent=self.root,
+            )
 
     def assign_source(self) -> None:
         if self.maintenance_busy:
@@ -7512,6 +8144,21 @@ class MainWindow:
         if not job:
             messagebox.showinfo("提示", "请先选择一条记录")
             return
+        if job["status"] == "imported":
+            if not self.eagle_connected:
+                messagebox.showinfo(
+                    "Eagle 未连接",
+                    "这条记录已经在 Eagle 中；启动 Eagle 后才能同步修改来源。本机记录和文件不会受影响。",
+                    parent=self.root,
+                )
+                return
+            if not job.get("eagle_item_id"):
+                messagebox.showwarning(
+                    "无法更新",
+                    "这条旧记录没有 Eagle 项目编号，无法自动补写来源。",
+                    parent=self.root,
+                )
+                return
         value = simpledialog.askstring(
             "补充来源网页",
             "请输入视频所在网页地址：",
@@ -7526,9 +8173,6 @@ class MainWindow:
             return
 
         if job["status"] == "imported":
-            if not job.get("eagle_item_id"):
-                messagebox.showwarning("无法更新", "这条旧记录没有 Eagle 项目编号，无法自动补写来源。")
-                return
             self._start_maintenance(
                 "update-eagle-source",
                 self._update_eagle_source_worker,
@@ -7646,6 +8290,7 @@ class MainWindow:
             "media_clear_button",
             "idm_clear_button",
             "diagnostics_export_button",
+            "cache_clear_button",
         ):
             button = getattr(self, name, None)
             if button is not None:
@@ -7789,6 +8434,38 @@ class MainWindow:
                     str(payload),
                     parent=self.root,
                 )
+        elif kind == "cache-scan":
+            if succeeded and hasattr(self, "cache_summary_text"):
+                self.cache_summary_text.set(self._cache_status_summary(dict(payload)))
+            elif hasattr(self, "cache_summary_text"):
+                self.cache_summary_text.set("缓存统计失败，可稍后重试")
+        elif kind == "clear-cache":
+            if succeeded:
+                result = dict(payload)
+                self.preview_cache.clear()
+                self.last_plan_preview_revision = None
+                if hasattr(self, "cache_summary_text"):
+                    self.cache_summary_text.set(
+                        f"清理完成：释放 {_display_bytes(result.get('freedBytes'))}，"
+                        f"剩余 {_display_bytes(result.get('remainingBytes'))}"
+                    )
+                self.refresh(force=True)
+                messagebox.showinfo(
+                    "缓存清理完成",
+                    f"已释放 {_display_bytes(result.get('freedBytes'))}，"
+                    f"删除 {int(result.get('removedFiles') or 0)} 个缓存文件。"
+                    f"活动任务跳过 {int(result.get('skippedActive') or 0)} 项；"
+                    "已完成文件、IDM 原文件和用户文件均已保留。",
+                    parent=self.root,
+                )
+            else:
+                if hasattr(self, "cache_summary_text"):
+                    self.cache_summary_text.set("缓存清理失败，可稍后重试")
+                messagebox.showerror(
+                    "缓存清理失败",
+                    str(payload),
+                    parent=self.root,
+                )
         elif kind == "update-eagle-source":
             if succeeded:
                 self.last_jobs_revision = None
@@ -7835,29 +8512,6 @@ class MainWindow:
             self.media.clear_terminal_history,
         )
 
-    def copy_pairing_code(self) -> None:
-        code = self.pairing.pairing_code
-        self.root.clipboard_clear()
-        self.root.clipboard_append(code)
-        self.root.update_idletasks()
-        if hasattr(self, "pairing_feedback_text"):
-            self.pairing_feedback_text.set("已复制到剪贴板")
-            if self.copy_feedback_after_id:
-                self.root.after_cancel(self.copy_feedback_after_id)
-            self.copy_feedback_after_id = self.root.after(
-                1500,
-                lambda: self.pairing_feedback_text.set(""),
-            )
-
-    def unpair(self) -> None:
-        if not self.pairing.paired_origin:
-            messagebox.showinfo("未配对", "当前没有已配对的 Chrome 扩展")
-            return
-        if not messagebox.askyesno("解除配对", "解除后需要重新输入配对码，是否继续？"):
-            return
-        self.pairing.unpair()
-        self.refresh(force=True)
-
     def quit(self) -> None:
         if self.closing:
             return
@@ -7891,9 +8545,6 @@ class MainWindow:
         if self.auto_update_after_id:
             self.root.after_cancel(self.auto_update_after_id)
             self.auto_update_after_id = None
-        if self.copy_feedback_after_id:
-            self.root.after_cancel(self.copy_feedback_after_id)
-            self.copy_feedback_after_id = None
         if self.media_change_after_id:
             self.root.after_cancel(self.media_change_after_id)
             self.media_change_after_id = None

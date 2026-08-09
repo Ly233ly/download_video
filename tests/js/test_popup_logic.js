@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("assert");
+const { performance } = require("perf_hooks");
 const logic = require("../../chrome-extension/js/eagle-bridge-ui-logic.js");
 
 function candidate(overrides = {}) {
@@ -638,8 +639,8 @@ async function testValidatedTaskStart() {
         output_name: "finished.mp4",
         status: "completed_local",
         progress: 0,
-        final_path: "C:\\Users\\Tester\\Downloads\\下载中转站\\已完成\\finished.mp4",
-        preview_path: "C:\\Users\\Tester\\Downloads\\下载中转站\\预览\\p2.png"
+        final_path: "C:\\Users\\Tester\\Downloads\\留底下载器\\已完成\\finished.mp4",
+        preview_path: "C:\\Users\\Tester\\Downloads\\留底下载器\\预览\\p2.png"
     });
     assert.strictEqual(completed.progress, 100, "a completed desktop task must never remain at 0% in the popup");
     assert.strictEqual(completed.canOpenOutput, true);
@@ -692,6 +693,160 @@ async function testValidatedTaskStart() {
     list.scrollTop = 200;
     logic.replaceScrollableContent(list, "<button>latest item</button>", { preserve: false });
     assert.strictEqual(list.scrollTop, 0, "follow-latest rendering must remain free to choose a new position");
+
+    const rerenderedTasks = { scrollTop: 0, scrollHeight: 1600, clientHeight: 500 };
+    logic.restoreScrollPosition(rerenderedTasks, 840);
+    assert.strictEqual(rerenderedTasks.scrollTop, 840, "task polling must preserve the user's position in a long task list");
+    logic.restoreScrollPosition(rerenderedTasks, 2000);
+    assert.strictEqual(rerenderedTasks.scrollTop, 1100, "task scroll restoration must clamp to the refreshed list height");
+
+    assert.strictEqual(logic.isNearScrollEnd({ scrollTop: 600, scrollHeight: 1000, clientHeight: 400 }), true);
+    assert.strictEqual(
+        logic.isNearScrollEnd({ scrollTop: 400, scrollHeight: 1000, clientHeight: 400 }),
+        false,
+        "new candidates must not drag a user who manually scrolled upward back to the bottom"
+    );
+}
+
+{
+    const offline = logic.deliveryCapabilities({ paired: true, eagleAvailable: false });
+    assert.strictEqual(offline.canDownload, true, "Eagle-less users must still be able to download");
+    assert.strictEqual(offline.canImport, false, "Eagle import must be disabled while Eagle is unavailable");
+    assert.strictEqual(offline.preferLocal, true, "download-only must become the primary action without Eagle");
+
+    const online = logic.deliveryCapabilities({ paired: true, eagleAvailable: true });
+    assert.strictEqual(online.canDownload, true);
+    assert.strictEqual(online.canImport, true);
+    assert.strictEqual(online.preferLocal, false);
+
+    const legacyDesktop = logic.deliveryCapabilities({ paired: true, connection: "paired" });
+    assert.strictEqual(legacyDesktop.canDownload, true);
+    assert.strictEqual(legacyDesktop.canImport, true, "desktop versions that predate eagleAvailable must keep their original import behavior");
+
+    const desktopOffline = logic.deliveryCapabilities({
+        paired: true,
+        connection: "offline",
+        eagleAvailable: true
+    });
+    assert.strictEqual(desktopOffline.canDownload, false, "a saved pairing token must not enable downloads while the desktop is unreachable");
+    assert.strictEqual(desktopOffline.canImport, false, "desktop disconnect must disable imports even if the last Eagle probe succeeded");
+    assert.strictEqual(desktopOffline.preferLocal, false, "desktop disconnect is not the same condition as Eagle being unavailable");
+
+    const unpaired = logic.deliveryCapabilities({ paired: false, connection: "needs_pairing", eagleAvailable: false });
+    assert.strictEqual(unpaired.canDownload, false);
+    assert.strictEqual(unpaired.canImport, false);
+    assert.strictEqual(unpaired.preferLocal, false);
+}
+
+{
+    const gate = logic.createLatestRequestGate();
+    const first = gate.begin();
+    const second = gate.begin();
+    assert.strictEqual(gate.isCurrent(first), false, "an older asynchronous response must not overwrite newer connection/task state");
+    assert.strictEqual(gate.isCurrent(second), true);
+    gate.invalidate();
+    assert.strictEqual(gate.isCurrent(second), false, "popup teardown must invalidate in-flight work");
+}
+
+{
+    const gate = logic.createKeyedActionGate();
+    assert.strictEqual(gate.begin("plan-1"), true);
+    assert.strictEqual(gate.begin("plan-1"), false, "rapid double clicks must not submit one task action twice");
+    assert.strictEqual(gate.begin("plan-2"), true, "independent task rows may still operate concurrently");
+    assert.strictEqual(gate.isBusy("plan-1"), true);
+    gate.end("plan-1");
+    assert.strictEqual(gate.begin("plan-1"), true, "the task action must become available after completion");
+    gate.end("plan-1");
+    gate.end("plan-2");
+    assert.strictEqual(gate.any(), false);
+}
+
+async function testOutOfOrderLatestResponse() {
+    const gate = logic.createLatestRequestGate();
+    let resolveOld;
+    let resolveNew;
+    const oldResponse = new Promise(resolve => { resolveOld = resolve; });
+    const newResponse = new Promise(resolve => { resolveNew = resolve; });
+    let committed = "";
+    const issue = promise => {
+        const ticket = gate.begin();
+        return promise.then(value => {
+            if (gate.isCurrent(ticket)) committed = value;
+        });
+    };
+    const oldWork = issue(oldResponse);
+    const newWork = issue(newResponse);
+    resolveNew("new page");
+    await newWork;
+    resolveOld("old page");
+    await oldWork;
+    assert.strictEqual(committed, "new page", "a delayed response from the previous page must not overwrite the latest page state");
+}
+
+async function testBoundedAsyncMapping() {
+    let active = 0;
+    let peak = 0;
+    const completed = await logic.mapWithConcurrency(
+        Array.from({ length: 17 }, (_, index) => index),
+        4,
+        async value => {
+            active += 1;
+            peak = Math.max(peak, active);
+            await new Promise(resolve => setTimeout(resolve, 2));
+            active -= 1;
+            return value * 2;
+        }
+    );
+    assert.ok(peak <= 4, `preview loading exceeded its concurrency budget: ${peak}`);
+    assert.deepStrictEqual(completed, Array.from({ length: 17 }, (_, index) => index * 2));
+}
+
+{
+    let urlReads = 0;
+    const raw = Array.from({ length: 20 }, (_, index) => ({
+        requestId: `normalization-${index}`,
+        tabId: 9,
+        get url() {
+            urlReads += 1;
+            return `https://media.example/${index}.mp4`;
+        },
+        webUrl: "https://example.com/watch",
+        title: `Video ${index}`,
+        ext: "mp4",
+        type: "video/mp4",
+        role: "video",
+        groupKey: `normalization-${index}`
+    }));
+    const filtered = logic.filterCandidates(raw, { mediaType: "video" });
+    const readsAfterFiltering = urlReads;
+    logic.groupCandidates(filtered);
+    assert.strictEqual(
+        urlReads,
+        readsAfterFiltering,
+        "grouping filtered candidates must reuse their validated normalization instead of reparsing every URL"
+    );
+}
+
+{
+    const raw = Array.from({ length: 1000 }, (_, index) => ({
+        requestId: `stress-${index}`,
+        tabId: 10,
+        url: `https://media.example/${index}.mp4`,
+        webUrl: "https://example.com/watch",
+        title: `Stress video ${index}`,
+        ext: "mp4",
+        type: "video/mp4",
+        role: "video",
+        height: 720,
+        duration: 60,
+        groupKey: `stress-${index}`
+    }));
+    const started = performance.now();
+    const filtered = logic.filterCandidates(raw, { mediaType: "video", query: "stress" });
+    const groups = logic.partitionGroups(logic.groupCandidates(filtered), { showSegments: false }).visible;
+    const elapsed = performance.now() - started;
+    assert.strictEqual(groups.length, 1000);
+    assert.ok(elapsed < 500, `1000-candidate pipeline took ${elapsed.toFixed(1)} ms`);
 }
 
 {
@@ -710,7 +865,7 @@ async function testValidatedTaskStart() {
     assert.strictEqual(logic.isSafeFilterRegex("video|audio"), true);
 }
 
-testValidatedTaskStart().then(
+Promise.all([testValidatedTaskStart(), testOutOfOrderLatestResponse(), testBoundedAsyncMapping()]).then(
     () => console.log("Popup grouping and task logic OK"),
     error => {
         console.error(error);

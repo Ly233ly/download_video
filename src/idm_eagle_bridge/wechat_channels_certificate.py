@@ -66,7 +66,7 @@ def _algorithm(oid: str) -> bytes:
 
 def _name(common_name: str) -> bytes:
     return _sequence(
-        _set(_sequence(_oid("2.5.4.10"), _tlv(0x0C, "下载中转站".encode("utf-8")))),
+        _set(_sequence(_oid("2.5.4.10"), _tlv(0x0C, "留底".encode("utf-8")))),
         _set(_sequence(_oid("2.5.4.3"), _tlv(0x0C, common_name.encode("utf-8")))),
     )
 
@@ -262,7 +262,8 @@ class CertificateFiles:
 
 
 class WechatCertificateAuthority:
-    ROOT_NAME = "下载中转站 微信视频号本机捕获根证书"
+    ROOT_NAME = "留底下载器 微信视频号本机捕获根证书"
+    LEGACY_ROOT_NAME = "下载中转站 微信视频号本机捕获根证书"
     LEAF_NAME = "channels.weixin.qq.com"
     DNS_NAMES = (
         "channels.weixin.qq.com",
@@ -327,11 +328,15 @@ class WechatCertificateAuthority:
         ):
             return
         root_key = RsaPrivateKey.from_private_pem(files.root_key.read_bytes())
+        # 已信任的旧根证书不能只改显示名称；否则叶证书的 issuer
+        # 将与证书库中的根证书 subject 不匹配。新安装使用新品牌，
+        # 升级安装继续安全复用原证书，直至用户主动卸载。
+        root_subject = str(metadata.get("subject") or self.ROOT_NAME)
         leaf_key = RsaPrivateKey.generate()
         leaf_der = _certificate(
             self.LEAF_NAME,
             leaf_key,
-            self.ROOT_NAME,
+            root_subject,
             root_key,
             is_ca=False,
             dns_names=self.DNS_NAMES,
@@ -345,7 +350,7 @@ class WechatCertificateAuthority:
             json.dumps(
                 {
                     "fingerprint": files.fingerprint,
-                    "subject": self.ROOT_NAME,
+                    "subject": root_subject,
                     "leafProfile": self.LEAF_PROFILE,
                     "dnsNames": list(self.DNS_NAMES),
                 },

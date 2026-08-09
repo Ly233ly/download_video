@@ -26,7 +26,7 @@ if ([IO.Path]::GetFileName($AssetName) -ne $AssetName) {
     throw "发布资产名称不能包含目录：$AssetName"
 }
 $encodedAssetName = [Uri]::EscapeDataString($AssetName).Replace("%2F", "/")
-$downloadUrl = "https://github.com/Ly233ly/download-for-eagle/releases/download/v$Version/$encodedAssetName"
+$downloadUrl = "https://github.com/Ly233ly/download_video/releases/download/v$Version/$encodedAssetName"
 
 # Keep this property order aligned with the client's sort_keys=True canonical form.
 $unsigned = [ordered]@{

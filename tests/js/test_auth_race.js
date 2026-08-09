@@ -20,6 +20,38 @@ if (auth.unauthorizedAction("", "") !== "recover") {
 }
 
 (async () => {
+    let aborted = false;
+    const neverReturns = (_url, options) => new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(new Error("aborted"));
+        }, { once: true });
+    });
+    const timeoutStarted = Date.now();
+    await auth.fetchWithTimeout(neverReturns, "http://127.0.0.1/health", {}, 25)
+        .then(() => { throw new Error("a hung desktop request must time out"); })
+        .catch(error => {
+            if (!/aborted/i.test(String(error?.message || error))) throw error;
+        });
+    if (!aborted || Date.now() - timeoutStarted > 500) {
+        throw new Error("desktop fetch timeout did not abort deterministically");
+    }
+
+    const stalledBody = async (_url, options) => ({
+        ok: true,
+        status: 200,
+        json() {
+            return new Promise((_resolve, reject) => {
+                options.signal.addEventListener("abort", () => reject(new Error("body aborted")), { once: true });
+            });
+        }
+    });
+    await auth.fetchJsonWithTimeout(stalledBody, "http://127.0.0.1/api/plans", {}, 25)
+        .then(() => { throw new Error("a stalled response body must time out"); })
+        .catch(error => {
+            if (!/body aborted/i.test(String(error?.message || error))) throw error;
+        });
+
     let stored = { token: "", pendingEvents: [], lastPlanId: "plan", lastPlanStatus: "queued" };
     const update = auth.createStateUpdateQueue(
         async () => {

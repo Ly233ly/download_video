@@ -6,20 +6,21 @@
     if (!root || !logic) return;
     const popupParams = new URL(location.href).searchParams;
     const isStandaloneWindow = popupParams.get("standalone") === "1";
+    const POPUP_REQUEST_TIMEOUT_MS = 12000;
 
     const zhHans = {
-        product: "下载中转站", media: "媒体", tasks: "任务", refresh: "刷新", settings: "设置",
-        checking: "正在连接", connected: "已连接", offline: "助手离线", needsPairing: "需要配对",
+        product: "留底下载器", media: "媒体", tasks: "任务", refresh: "刷新", settings: "设置",
+        checking: "正在连接", connected: "已连接", offline: "软件未启动", needsPairing: "等待自动连接",
         captured: "已捕获媒体（{count}）", filter: "筛选", searchPlaceholder: "搜索标题、格式或清晰度",
         currentPage: "当前页", otherPages: "其他页", allPages: "全部", noMedia: "暂未发现媒体",
         noMediaBody: "播放视频后刷新，或启动深度搜索来发现隐藏媒体。",
         deepSearch: "深度搜索", video: "视频", audio: "音频", manifest: "清单",
         filename: "文件名", advanced: "高级选项", subtitles: "字幕（将单独下载）", noAudio: "不选择音频",
-        directInfo: "所选文件将下载并导入 Eagle；成功后删除本机下载文件。", mergeInfo: "视频与音频将在本机无损合并并导入 Eagle；成功后删除本机下载文件。",
-        manifestInfo: "HLS/DASH 清单将在本机下载、合并、校验并导入 Eagle；成功后删除本机下载文件。",
-        downloadImport: "导入 Eagle（成功后删本机文件）", downloadOnly: "仅下载", legal: "请只下载你有权保存的内容。",
-        pairBody: "输入桌面助手显示的六位配对码，连接后才能自动合并并导入 Eagle。", pairPlaceholder: "六位配对码", pair: "配对",
-        siteRule: "记录来源并自动导入 Eagle", recordPage: "记录当前页", ignoreNext: "忽略下一次导入",
+        directInfo: "所选文件将下载并导入 Eagle；本机下载文件会保留。", mergeInfo: "视频与音频将在本机无损合并并导入 Eagle；本机下载文件会保留。",
+        manifestInfo: "HLS/DASH 清单将在本机下载、合并、校验并导入 Eagle；本机下载文件会保留。",
+        downloadImport: "导入 Eagle", downloadOnly: "仅下载", downloadLocalPrimary: "下载到电脑", eagleUnavailable: "Eagle 未连接", desktopUnavailable: "桌面端未连接", desktopUnavailableHint: "请先启动留底桌面端；连接恢复后即可继续下载和管理任务。", eagleOptionalHint: "Eagle 未安装或未启动，不影响下载；文件会保留在电脑中，启动 Eagle 后可从任务列表补导。", localDownloadInfo: "所选内容将在本机下载、合并并保留，不需要 Eagle。", importUnavailableToast: "Eagle 未安装或未启动；请先下载到电脑，启动 Eagle 后再从任务列表补导。", legal: "请只下载你有权保存的内容。",
+        autoConnectBody: "未连接到留底桌面端。请先启动软件，然后自动连接。", autoConnect: "自动连接留底桌面端", connectionDone: "已自动连接留底桌面端", desktopNotFound: "未检测到留底桌面端，请先启动软件后重试。", autoConnectFailed: "无法自动连接。请确认已安装并启动最新版留底桌面端。",
+        siteRule: "记录网站来源（供 IDM/Eagle 使用）", recordPage: "记录当前页", ignoreNext: "忽略下一次导入",
         pauseCapture: "暂停/继续捕获", openWindow: "独立窗口", clearMedia: "清空当前页媒体",
         copyLink: "复制链接",
         taskTitle: "下载任务", taskSubtitle: "浏览器与视频号任务统一显示在这里。", refreshTasks: "刷新任务", clearTasks: "清除完成",
@@ -28,61 +29,87 @@
         noTasks: "还没有下载任务。", stop: "停止", backToMedia: "返回媒体重新创建",
         discoverBody: "按当前标签页启动增强发现，状态会在这里保持同步。",
         on: "已开启", off: "已关闭", unavailable: "不可用",
-        taskStarted: "任务已开始", stopped: "任务已停止", copied: "链接已复制", siteUpdated: "网站规则已更新",
-        pageRecorded: "当前页来源已记录", nextIgnored: "下一次导入将被忽略", pairingDone: "配对完成", clearConfirm: "清空当前页面捕获到的全部媒体？",
+        taskStarted: "任务已开始", deliveryFallbackLocal: "Eagle 当前不可用，已安全改为下载到电脑；文件会保留在本机。", stopped: "任务已停止", copied: "链接已复制", siteUpdated: "网站规则已更新",
+        pageRecorded: "当前页来源已记录", nextIgnored: "下一次导入将被忽略", clearConfirm: "清空当前页面捕获到的全部媒体？",
         selectVersion: "视频质量", qualityCountLabel: "视频质量（本视频 {count} 档）", qualitySourceHint: "档位来自当前视频；其他视频会按源站实际提供的质量变化。", currentQuality: "当前播放 {quality}", recommendedQuality: "推荐",
-        downloadStarted: "下载已开始", toolUpdated: "工具状态已更新", connectionError: "无法连接本机助手",
+        downloadStarted: "下载已开始", toolUpdated: "工具状态已更新", connectionError: "无法连接本机助手", requestTimeout: "本机操作等待超时，请确认留底桌面端正在运行后重试。",
         notGrouped: "未归组资源", selectedCount: "{count} 个可下载内容", retry: "重试", activeTaskCount: "{active} 个进行中，共 {count} 个任务", taskCount: "共 {count} 个任务",
         batch: "批量", exitBatch: "退出批量", batchTitle: "批量操作", batchBody: "每个内容会创建独立任务，不会把不同视频的音轨混在一起。",
-        batchSelected: "已选择 {count} 个内容", selectAll: "全选", invert: "反选", copySelected: "复制链接", batchImport: "批量导入（成功后删本机文件）", batchDownload: "批量仅下载",
+        batchSelected: "已选择 {count} 个内容", selectAll: "全选", invert: "反选", copySelected: "复制链接", batchImport: "批量导入 Eagle", batchDownload: "批量仅下载",
         mediaType: "媒体类型", allTypes: "全部类型", otherType: "其他资源", extensionFilter: "扩展名（可用逗号分隔）", minimumSize: "最小大小（MB）",
         urlRegex: "网址正则", unsafeRegex: "正则表达式无效或可能造成卡顿，已停止应用。", hideDuplicateNames: "隐藏同名重复资源", showSegments: "显示未关联资源与播放分片", hiddenSegments: "已隐藏 {count} 个未关联播放资源",
         batchPartial: "已启动 {count} 个任务，另有任务失败。", actualFrame: "当前视频画面",
-        outputLocation: "保存位置：{path}", openFolder: "打开所在文件夹", folderOpened: "已打开下载文件夹", openSource: "打开来源网页", importExisting: "导入 Eagle，成功后删除本机文件", importQueued: "已加入 Eagle 导入队列；成功后将删除本机文件", segmentOnlyTitle: "无法确认归属的播放资源", syncInterrupted: "任务状态同步中断；本机下载仍可能继续，正在自动重连。",
-        technicalInfo: "技术信息", processed: "已处理 {current} / {total}", invalidOutputName: "请输入有效的 Windows 文件名"
+        outputLocation: "保存位置：{path}", openFolder: "打开所在文件夹", folderOpened: "已打开下载文件夹", openSource: "打开来源网页", importExisting: "导入 Eagle", importQueued: "已加入 Eagle 导入队列；本机文件会保留", segmentOnlyTitle: "无法确认归属的播放资源", syncInterrupted: "任务状态同步中断；本机下载仍可能继续，正在自动重连。",
+        technicalInfo: "技术信息", technicalResource: "技术", resolverYoutubeInfo: "所选画质将由本机软件解析、下载并合并音轨。", resolverInfo: "本机软件将从当前内容页面识别最佳可用媒体并完成下载、合并。", processed: "已处理 {current} / {total}", invalidOutputName: "请输入有效的 Windows 文件名"
     };
     const zhHant = {
-        product: "下載中轉站", media: "媒體", tasks: "任務", refresh: "重新整理", settings: "設定",
-        checking: "正在連線", connected: "已連線", offline: "助手離線", needsPairing: "需要配對",
+        product: "留底下載器", media: "媒體", tasks: "任務", refresh: "重新整理", settings: "設定",
+        checking: "正在連線", connected: "已連線", offline: "軟體未啟動", needsPairing: "等待自動連線",
         captured: "已擷取媒體（{count}）", filter: "篩選", currentPage: "目前頁", otherPages: "其他頁", allPages: "全部",
         noMedia: "暫未發現媒體", noMediaBody: "播放影片後重新整理，或啟動深度搜尋。",
-        filename: "檔案名稱", advanced: "進階選項", downloadImport: "匯入 Eagle（成功後刪除本機檔案）", downloadOnly: "僅下載",
-        pair: "配對", taskTitle: "下載任務", noTasks: "還沒有下載任務。", stop: "停止",
+        filename: "檔案名稱", advanced: "進階選項", directInfo: "所選檔案將下載並匯入 Eagle；本機下載檔案會保留。", mergeInfo: "影片與音訊將在本機無損合併並匯入 Eagle；本機下載檔案會保留。", manifestInfo: "HLS/DASH 清單將在本機下載、合併、檢查並匯入 Eagle；本機下載檔案會保留。", downloadImport: "匯入 Eagle", downloadOnly: "僅下載", downloadLocalPrimary: "下載到電腦", eagleUnavailable: "Eagle 未連線", desktopUnavailable: "桌面端未連線", desktopUnavailableHint: "請先啟動留底桌面端；連線恢復後即可繼續下載和管理任務。", eagleOptionalHint: "Eagle 未安裝或未啟動，不影響下載；檔案會保留在電腦中，啟動 Eagle 後可從任務清單補匯入。", localDownloadInfo: "所選內容將在本機下載、合併並保留，不需要 Eagle。", importUnavailableToast: "Eagle 未安裝或未啟動；請先下載到電腦，啟動 Eagle 後再從任務清單補匯入。",
+        autoConnectBody: "尚未連線到留底桌面端。請先啟動軟體，再自動連線。", autoConnect: "自動連線留底桌面端", connectionDone: "已自動連線留底桌面端", desktopNotFound: "找不到留底桌面端，請先啟動軟體後重試。", autoConnectFailed: "無法自動連線。請確認已安裝並啟動最新版留底桌面端。", taskTitle: "下載任務", noTasks: "還沒有下載任務。", stop: "停止", deliveryFallbackLocal: "Eagle 目前不可用，已安全改為下載到電腦；檔案會保留在本機。",
         batch: "批次", exitBatch: "退出批次", batchTitle: "批次操作", batchSelected: "已選擇 {count} 個內容", selectAll: "全選", invert: "反選",
-        batchImport: "批次匯入（成功後刪除本機檔案）", batchDownload: "批次僅下載", mediaType: "媒體類型", allTypes: "全部類型", otherType: "其他資源",
+        batchImport: "批次匯入 Eagle", batchDownload: "批次僅下載", mediaType: "媒體類型", allTypes: "全部類型", otherType: "其他資源",
         activeTaskCount: "{active} 個進行中，共 {count} 個任務", taskCount: "共 {count} 個任務",
-        qualityCountLabel: "影片品質（本影片 {count} 檔）", qualitySourceHint: "檔位來自目前影片；其他影片會依來源網站實際提供的品質變化。", showSegments: "顯示未關聯資源與播放分片", hiddenSegments: "已隱藏 {count} 個未關聯播放資源", importExisting: "匯入 Eagle，成功後刪除本機檔案", importQueued: "已加入 Eagle 匯入佇列；成功後將刪除本機檔案", segmentOnlyTitle: "無法確認歸屬的播放資源", openSource: "開啟來源網頁", technicalInfo: "技術資訊", processed: "已處理 {current} / {total}", invalidOutputName: "請輸入有效的 Windows 檔案名稱"
+        qualityCountLabel: "影片品質（本影片 {count} 檔）", qualitySourceHint: "檔位來自目前影片；其他影片會依來源網站實際提供的品質變化。", showSegments: "顯示未關聯資源與播放分片", hiddenSegments: "已隱藏 {count} 個未關聯播放資源", importExisting: "匯入 Eagle", importQueued: "已加入 Eagle 匯入佇列；本機檔案會保留", segmentOnlyTitle: "無法確認歸屬的播放資源", openSource: "開啟來源網頁", technicalInfo: "技術資訊", technicalResource: "技術", resolverYoutubeInfo: "所選畫質將由本機軟體解析、下載並合併音軌。", resolverInfo: "本機軟體將從目前內容頁面識別最佳可用媒體並完成下載、合併。", processed: "已處理 {current} / {total}", invalidOutputName: "請輸入有效的 Windows 檔案名稱", requestTimeout: "本機操作等待逾時，請確認留底桌面端正在執行後重試。",
+        actualFrame: "目前影片畫面", audio: "音訊", backToMedia: "返回媒體重新建立", batchBody: "每個內容會建立獨立任務，不會把不同影片的音軌混在一起。", batchPartial: "已啟動 {count} 個任務，另有任務失敗。", clearConfirm: "清除目前頁面擷取到的全部媒體？", clearMedia: "清除目前頁面媒體", clearTasks: "清除已完成", clearTasksConfirm: "只清除已完成、失敗和已停止的任務紀錄；進行中的任務與下載檔案都會保留。是否繼續？", connectionError: "無法連線本機助手", copied: "已複製連結", copyLink: "複製連結", copySelected: "複製連結", currentQuality: "目前播放 {quality}", deepSearch: "深度搜尋", discoverBody: "依目前分頁啟動增強探索，狀態會在這裡保持同步。", downloadStarted: "下載已開始", extensionFilter: "副檔名（可用逗號分隔）", folderOpened: "已開啟下載資料夾", hideDuplicateNames: "隱藏同名重複資源",
+        ignoreNext: "忽略下一次匯入", legal: "請只下載你有權儲存的內容。", manifest: "清單", minimumSize: "最小大小（MB）", nextIgnored: "下一次匯入將被忽略", noAudio: "不選擇音訊", notGrouped: "未分組資源", off: "已關閉", on: "已開啟", openFolder: "開啟所在資料夾", openWindow: "獨立視窗", outputLocation: "儲存位置：{path}", pageRecorded: "已記錄目前頁面來源", pauseCapture: "暫停/繼續擷取", recommendedQuality: "建議", recordPage: "記錄目前頁面", refreshTasks: "重新整理任務", removeTask: "清理紀錄", removeTaskConfirm: "將停止並清理這筆任務紀錄；已下載的本機檔案和 Eagle 內容會保留。是否繼續？", retry: "重試", searchPlaceholder: "搜尋標題、格式或畫質", selectVersion: "影片畫質", selectedCount: "{count} 個可下載內容", siteRule: "記錄網站來源（供 IDM/Eagle 使用）", siteUpdated: "網站規則已更新", stopped: "已停止", subtitles: "字幕（將個別下載）", syncInterrupted: "任務狀態同步中斷；本機下載仍可能繼續，正在自動重新連線。", taskRemoved: "任務紀錄已清理", taskStarted: "任務已開始", taskSubtitle: "瀏覽器與影片號任務統一顯示在這裡。", tasksCleared: "已清除 {count} 筆任務紀錄", toolUpdated: "工具狀態已更新", unavailable: "無法使用", unsafeRegex: "正規表示式無效或可能造成卡頓，已停止套用。", urlRegex: "網址正規表示式", video: "影片"
     };
     const en = {
-        product: "Download Transfer Station", media: "Media", tasks: "Tasks", refresh: "Refresh", settings: "Settings",
-        checking: "Connecting", connected: "Connected", offline: "Helper offline", needsPairing: "Pairing required",
+        product: "留底下载器", media: "Media", tasks: "Tasks", refresh: "Refresh", settings: "Settings",
+        checking: "Connecting", connected: "Connected", offline: "Desktop app is not running", needsPairing: "Waiting for automatic connection",
         captured: "Captured media ({count})", filter: "Filter", searchPlaceholder: "Search title, format, or quality",
         currentPage: "Current", otherPages: "Other pages", allPages: "All", noMedia: "No media found yet",
         noMediaBody: "Play the video and refresh, or start Deep Search.", deepSearch: "Deep Search",
         video: "Video", audio: "Audio", manifest: "Manifest", filename: "Filename", advanced: "Advanced options",
-        subtitles: "Subtitles (downloaded separately)", noAudio: "No audio", directInfo: "The selected file will be imported into Eagle, then the local download will be deleted after success.",
-        mergeInfo: "Video and audio will be merged and imported into Eagle, then the local download will be deleted after success.",
-        manifestInfo: "The HLS/DASH media will be downloaded, verified, and imported into Eagle, then the local download will be deleted.",
-        downloadImport: "Import to Eagle (delete local file after success)", downloadOnly: "Download only", legal: "Only download content you have the right to save.",
-        pairBody: "Enter the six-digit code shown by the desktop helper to enable local merging and Eagle import.", pairPlaceholder: "Six-digit code", pair: "Pair",
-        siteRule: "Save source and auto-import", recordPage: "Record page", ignoreNext: "Ignore next import", pauseCapture: "Pause/resume capture",
+        subtitles: "Subtitles (downloaded separately)", noAudio: "No audio", directInfo: "The selected file will be downloaded and imported into Eagle; the local download will be kept.",
+        mergeInfo: "Video and audio will be merged and imported into Eagle; the local download will be kept.",
+        manifestInfo: "The HLS/DASH media will be downloaded, verified, and imported into Eagle; the local download will be kept.",
+        downloadImport: "Import to Eagle", downloadOnly: "Download only", downloadLocalPrimary: "Download to computer", eagleUnavailable: "Eagle unavailable", desktopUnavailable: "Desktop app disconnected", desktopUnavailableHint: "Start 留底桌面端 first. Downloads and task controls will resume automatically after it reconnects.", eagleOptionalHint: "Eagle is optional. Downloads remain available and stay on this computer; start Eagle later to import them from Tasks.", localDownloadInfo: "The selected content will be downloaded, merged, and kept locally without Eagle.", importUnavailableToast: "Eagle is not running. Download locally now, then import it from Tasks after Eagle starts.", legal: "Only download content you have the right to save.",
+        autoConnectBody: "留底桌面端 is not connected. Start it, then connect automatically.", autoConnect: "Connect 留底桌面端", connectionDone: "留底桌面端 connected", desktopNotFound: "留底桌面端 was not found. Start it and try again.", autoConnectFailed: "Automatic connection failed. Make sure the latest 留底桌面端 is installed and running.",
+        siteRule: "Record source website (for IDM/Eagle)", recordPage: "Record page", ignoreNext: "Ignore next import", pauseCapture: "Pause/resume capture",
         openWindow: "Open window", clearMedia: "Clear current media", copyLink: "Copy link",
         taskTitle: "Download tasks", taskSubtitle: "Browser and WeChat Channels tasks appear here together.", refreshTasks: "Refresh tasks", clearTasks: "Clear finished",
         clearTasksConfirm: "Clear completed, failed, and stopped task records? Active tasks and downloaded files will be kept.", tasksCleared: "Cleared {count} task records", noTasks: "No download tasks yet.",
         removeTask: "Remove record", removeTaskConfirm: "Stop and remove this task record? Downloaded files and Eagle content will be kept.", taskRemoved: "Task record removed",
         stop: "Stop", backToMedia: "Return to media", discoverBody: "Enable enhanced discovery for the current tab.",
-        on: "On", off: "Off", unavailable: "Unavailable", taskStarted: "Task started", stopped: "Task stopped", copied: "Link copied", siteUpdated: "Site rule updated",
-        pageRecorded: "Page source recorded", nextIgnored: "Next import will be ignored", pairingDone: "Paired", clearConfirm: "Clear all captured media on this page?",
+        on: "On", off: "Off", unavailable: "Unavailable", taskStarted: "Task started", deliveryFallbackLocal: "Eagle became unavailable, so this task was safely changed to a local download. The file will be kept on this computer.", stopped: "Task stopped", copied: "Link copied", siteUpdated: "Site rule updated",
+        pageRecorded: "Page source recorded", nextIgnored: "Next import will be ignored", clearConfirm: "Clear all captured media on this page?",
         selectVersion: "Video quality", qualityCountLabel: "Video quality ({count} levels for this video)", qualitySourceHint: "Levels come from this video; other videos follow the qualities actually advertised by their source.", currentQuality: "Playing at {quality}", recommendedQuality: "Recommended",
-        downloadStarted: "Download started", toolUpdated: "Tool state updated", connectionError: "Cannot reach the desktop helper", notGrouped: "Ungrouped resource",
+        downloadStarted: "Download started", toolUpdated: "Tool state updated", connectionError: "Cannot reach the desktop helper", requestTimeout: "The desktop request timed out. Make sure 留底桌面端 is running and try again.", notGrouped: "Ungrouped resource",
         selectedCount: "{count} downloadable items", retry: "Retry", activeTaskCount: "{active} active, {count} total", taskCount: "{count} tasks total",
         batch: "Batch", exitBatch: "Exit batch", batchTitle: "Batch actions", batchBody: "Each content item creates its own task; tracks from different videos are never mixed.",
-        batchSelected: "{count} items selected", selectAll: "Select all", invert: "Invert", copySelected: "Copy links", batchImport: "Import all and delete local files", batchDownload: "Download all only",
+        batchSelected: "{count} items selected", selectAll: "Select all", invert: "Invert", copySelected: "Copy links", batchImport: "Import all to Eagle", batchDownload: "Download all only",
         mediaType: "Media type", allTypes: "All types", otherType: "Other", extensionFilter: "Extensions (comma-separated)", minimumSize: "Minimum size (MB)",
         urlRegex: "URL regular expression", unsafeRegex: "This expression is invalid or potentially unsafe and was not applied.", hideDuplicateNames: "Hide duplicate filenames", showSegments: "Show unbound resources and playback fragments", hiddenSegments: "{count} unbound playback resources hidden",
         batchPartial: "Started {count} tasks; one or more failed.",
-        outputLocation: "Saved to: {path}", openFolder: "Open folder", folderOpened: "Download folder opened", openSource: "Open source page", importExisting: "Import to Eagle, then delete local file", importQueued: "Queued for Eagle import; the local file will be deleted after success", segmentOnlyTitle: "Playback resource with unknown ownership", syncInterrupted: "Task sync was interrupted. The desktop download may still continue; reconnecting automatically.",
-        technicalInfo: "Technical information", processed: "Processed {current} / {total}", invalidOutputName: "Enter a valid Windows filename"
+        outputLocation: "Saved to: {path}", openFolder: "Open folder", folderOpened: "Download folder opened", openSource: "Open source page", importExisting: "Import to Eagle", importQueued: "Queued for Eagle import; the local file will be kept", segmentOnlyTitle: "Playback resource with unknown ownership", syncInterrupted: "Task sync was interrupted. The desktop download may still continue; reconnecting automatically.",
+        technicalInfo: "Technical information", technicalResource: "Technical", resolverYoutubeInfo: "The desktop app will resolve the selected quality, download it, and merge its audio track.", resolverInfo: "The desktop app will identify the best available media on this page, then download and merge it.", processed: "Processed {current} / {total}", invalidOutputName: "Enter a valid Windows filename", actualFrame: "Current video frame"
+    };
+
+    const taskStatusLabels = {
+        zhHans: {
+            selected: "准备任务", creating: "正在创建", queued: "等待本机下载", downloading: "本机正在下载",
+            merging: "本机正在合并", validating: "正在校验媒体", ready_to_import: "等待导入 Eagle",
+            waiting_eagle: "正在等待 Eagle", importing: "正在导入 Eagle", imported: "已导入 Eagle",
+            completed_local: "已下载到本机", retry: "下载失败", import_failed: "Eagle 导入失败",
+            failed_permanent: "无法继续", canceled: "已停止", blocked_drm: "DRM 已阻断", needs_rebuild: "需要回到来源重建"
+        },
+        zhHant: {
+            selected: "準備任務", creating: "正在建立", queued: "等待本機下載", downloading: "本機正在下載",
+            merging: "本機正在合併", validating: "正在檢查媒體", ready_to_import: "等待匯入 Eagle",
+            waiting_eagle: "正在等待 Eagle", importing: "正在匯入 Eagle", imported: "已匯入 Eagle",
+            completed_local: "已下載到本機", retry: "下載失敗", import_failed: "Eagle 匯入失敗",
+            failed_permanent: "無法繼續", canceled: "已停止", blocked_drm: "DRM 已封鎖", needs_rebuild: "需要回到來源重建"
+        },
+        en: {
+            selected: "Preparing task", creating: "Creating", queued: "Waiting for desktop download", downloading: "Downloading locally",
+            merging: "Merging locally", validating: "Validating media", ready_to_import: "Waiting to import into Eagle",
+            waiting_eagle: "Waiting for Eagle", importing: "Importing into Eagle", imported: "Imported into Eagle",
+            completed_local: "Downloaded to this computer", retry: "Download failed", import_failed: "Eagle import failed",
+            failed_permanent: "Cannot continue", canceled: "Stopped", blocked_drm: "Blocked by DRM", needs_rebuild: "Rebuild from source page"
+        }
     };
 
     const uiLanguage = String(chrome.i18n?.getUILanguage?.() || "zh-CN").toLowerCase();
@@ -100,6 +127,7 @@
         tab: null,
         connection: "checking",
         paired: false,
+        eagleAvailable: null,
         siteEnabled: false,
         siteLoading: false,
         candidates: { current: [], other: [] },
@@ -127,9 +155,21 @@
         candidateTimer: null,
         snapshotTimer: null,
         locationTimer: null,
+        lastCapabilityCheck: 0,
+        disposed: false,
     };
+    const taskStatusLabel = task => taskStatusLabels[locale]?.[task?.status] || task?.statusLabel || "";
 
     let toastTimer = null;
+    const connectionRequestGate = logic.createLatestRequestGate();
+    const planRequestGate = logic.createLatestRequestGate();
+    const candidateRequestGate = logic.createLatestRequestGate();
+    const tabRequestGate = logic.createLatestRequestGate();
+    const toolStateRequestGate = logic.createLatestRequestGate();
+    const siteRequestGate = logic.createLatestRequestGate();
+    const refreshAllRequestGate = logic.createLatestRequestGate();
+    const taskActionGate = logic.createKeyedActionGate();
+    const popupActionGate = logic.createKeyedActionGate();
 
     function escapeHtml(value) {
         return String(value ?? "")
@@ -139,13 +179,27 @@
 
     function send(payload) {
         return new Promise((resolve, reject) => {
-            chrome.runtime.sendMessage(payload, response => {
-                if (chrome.runtime.lastError) {
-                    reject(new Error(chrome.runtime.lastError.message));
-                    return;
-                }
-                resolve(response);
-            });
+            let settled = false;
+            const finish = (callback, value) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                callback(value);
+            };
+            const timer = setTimeout(() => finish(reject, new Error(t("requestTimeout"))), POPUP_REQUEST_TIMEOUT_MS);
+            try {
+                chrome.runtime.sendMessage(payload, response => {
+                    const runtimeError = chrome.runtime.lastError;
+                    if (settled) return;
+                    if (runtimeError) {
+                        finish(reject, new Error(runtimeError.message));
+                        return;
+                    }
+                    finish(resolve, response);
+                });
+            } catch (error) {
+                finish(reject, error);
+            }
         });
     }
 
@@ -219,6 +273,7 @@
     }
 
     function showToast(message, kind = "info", timeout = 2400) {
+        if (state.disposed) return;
         const element = root.querySelector("#bridgeToast");
         if (!element) return;
         clearTimeout(toastTimer);
@@ -347,7 +402,8 @@
     function rebuildGroups(options = {}) {
         const previousId = state.activeGroupId;
         const previousLatestId = state.groups.at(-1)?.id || "";
-        const followLatest = !previousId || previousId === previousLatestId;
+        const followLatest = (!previousId || previousId === previousLatestId)
+            && logic.isNearScrollEnd(root.querySelector("#bridgeGroupList"));
         const partition = logic.partitionGroups(logic.groupCandidates(sourceCandidates()), {
             showSegments: state.filters.showSegments
         });
@@ -402,7 +458,7 @@
                 ${state.batchMode ? `<label class="bridge-batch-check" title="${escapeHtml(t("batchSelected", { count: state.selectedGroupIds.size }))}"><input type="checkbox" data-batch-group="${escapeHtml(group.id)}" ${selected ? "checked" : ""} ${technical ? "disabled" : ""}><span class="bridge-visually-hidden">${escapeHtml(group.title)}</span></label>` : ""}
                 <button class="bridge-group-row" data-group-id="${escapeHtml(group.id)}" role="option" aria-current="${group.id === state.activeGroupId}" aria-selected="${selected}">
                 <span class="bridge-thumb-wrap">
-                    ${technical ? `<span class="bridge-segment-glyph">技术</span>` : sidebarPreviewMarkup(group, group.title)}
+                    ${technical ? `<span class="bridge-segment-glyph">${escapeHtml(t("technicalResource"))}</span>` : sidebarPreviewMarkup(group, group.title)}
                     ${duration ? `<span class="bridge-duration">${escapeHtml(duration)}</span>` : ""}
                 </span>
                 <span class="bridge-group-copy">
@@ -416,6 +472,19 @@
             preserve: !options.scrollToLatest
         });
         if (options.scrollToLatest) requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
+    }
+
+    function ensureDesktopAvailable() {
+        if (logic.deliveryCapabilities(state).canDownload) return true;
+        showToast(t("desktopUnavailableHint"), "error", 4200);
+        return false;
+    }
+
+    function adoptDeliveryFallback(plan) {
+        if (plan?.deliveryFallback !== "local") return false;
+        state.eagleAvailable = false;
+        state.lastCapabilityCheck = Date.now();
+        return true;
     }
 
     function candidateOption(candidate, labeler) {
@@ -442,14 +511,17 @@
         }
         const selection = state.selections.get(group.id);
         const draft = state.drafts.get(group.id) || { outputName: logic.defaultOutputName(group, selection) };
-        const selectionValidation = logic.validateSelection(group, selection, { paired: state.paired, importToEagle: true });
+        const delivery = logic.deliveryCapabilities(state);
+        const selectionValidation = delivery.canDownload
+            ? logic.validateSelection(group, selection, { paired: true, importToEagle: true })
+            : { ok: false, message: t("desktopUnavailableHint") };
         const outputValidation = logic.normalizeOutputName(draft.outputName);
         const validation = selectionValidation.ok && !outputValidation.ok
             ? { ok: false, message: outputValidation.message || t("invalidOutputName") }
             : selectionValidation;
         if (group.segmentOnly || group.technicalOnly) {
             inspector.innerHTML = `<div class="bridge-segment-inspector" role="status">
-                <div class="bridge-segment-glyph">技术</div>
+                <div class="bridge-segment-glyph">${escapeHtml(t("technicalResource"))}</div>
                 <div><h2>${escapeHtml(t("segmentOnlyTitle"))}</h2><p>${escapeHtml(validation.message)}</p></div>
             </div>`;
             return;
@@ -495,11 +567,19 @@
             ].filter(Boolean).join(" · ");
             return `<div class="bridge-technical-row">${escapeHtml(summary)}</div>`;
         }).join("");
-        const summaryText = selection.mode === "resolver"
+        const summaryText = !delivery.canDownload ? t("desktopUnavailableHint") : delivery.preferLocal ? t("localDownloadInfo") : selection.mode === "resolver"
             ? resolverCandidate?.resolver === "youtube"
-                ? "所选画质将由本机软件解析、下载并合并音轨。"
-                : "本机软件将从当前内容页面识别最佳可用媒体并完成下载、合并。"
+                ? t("resolverYoutubeInfo")
+                : t("resolverInfo")
             : selection.mode === "manifest" ? t("manifestInfo") : selection.mode === "tracks" && selected.length > 1 ? t("mergeInfo") : t("directInfo");
+        const deliveryActions = !delivery.canDownload
+            ? `<button class="bridge-primary-button" disabled title="${escapeHtml(t("desktopUnavailableHint"))}">${icon("icons/action-download.svg")}<span>${escapeHtml(t("desktopUnavailable"))}</span></button>
+                <button class="bridge-secondary-button" disabled>${escapeHtml(t("downloadOnly"))}</button>`
+            : delivery.preferLocal
+            ? `<button class="bridge-primary-button" data-action="download-only" ${validation.ok && !state.busy ? "" : "disabled"}>${icon("icons/action-download.svg")}<span>${escapeHtml(t("downloadLocalPrimary"))}</span></button>
+                <button class="bridge-secondary-button" disabled title="${escapeHtml(t("eagleOptionalHint"))}">${escapeHtml(t("eagleUnavailable"))}</button>`
+            : `<button class="bridge-primary-button" data-action="create-plan" ${validation.ok && !state.busy ? "" : "disabled"}>${icon("icons/action-download.svg")}<span>${escapeHtml(t("downloadImport"))}</span></button>
+                <button class="bridge-secondary-button" data-action="download-only" ${validation.ok && !state.busy ? "" : "disabled"}>${escapeHtml(t("downloadOnly"))}</button>`;
         const subtitles = group.subtitles.length ? `<div class="bridge-subtitle-list"><span class="bridge-field-label">${escapeHtml(t("subtitles"))}</span>${group.subtitles.map(item => `<label class="bridge-check-row"><input type="checkbox" data-subtitle-id="${escapeHtml(item.id)}" ${(selection.subtitleIds || []).includes(item.id) ? "checked" : ""}><span>${escapeHtml(item.language || item.label || item.name || item.extension.toUpperCase())}</span></label>`).join("")}</div>` : "";
         inspector.innerHTML = `
             <figure class="bridge-inspector-preview">
@@ -523,9 +603,9 @@
                 </div>
             </details>
             <div class="bridge-primary-actions">
-                <button class="bridge-primary-button" data-action="create-plan" ${validation.ok && !state.busy ? "" : "disabled"}>${icon("icons/action-download.svg")}<span>${escapeHtml(t("downloadImport"))}</span></button>
-                <button class="bridge-secondary-button" data-action="download-only" ${validation.ok && !state.busy ? "" : "disabled"}>${escapeHtml(t("downloadOnly"))}</button>
+                ${deliveryActions}
             </div>
+            ${delivery.preferLocal ? `<p class="bridge-legal-note">${escapeHtml(t("eagleOptionalHint"))}</p>` : ""}
             <p class="bridge-legal-note">${escapeHtml(t("legal"))}</p>`;
         for (const select of inspector.querySelectorAll("[data-selection]")) select.value = selection[select.dataset.selection] || "";
     }
@@ -536,8 +616,19 @@
 
     function renderBatchInspector(inspector) {
         const groups = selectedGroups();
-        const validations = groups.map(group => logic.validateSelection(group, state.selections.get(group.id), { paired: state.paired, importToEagle: true }));
-        const error = validations.find(result => !result.ok)?.message || "";
+        const delivery = logic.deliveryCapabilities(state);
+        const validations = groups.map(group => logic.validateSelection(group, state.selections.get(group.id), { paired: delivery.canDownload, importToEagle: true }));
+        const error = !delivery.canDownload
+            ? t("desktopUnavailableHint")
+            : validations.find(result => !result.ok)?.message || "";
+        const deliveryActions = !delivery.canDownload
+            ? `<button class="bridge-primary-button" disabled title="${escapeHtml(t("desktopUnavailableHint"))}">${icon("icons/action-download.svg")}<span>${escapeHtml(t("desktopUnavailable"))}</span></button>
+                <button class="bridge-secondary-button" disabled>${escapeHtml(t("batchDownload"))}</button>`
+            : delivery.preferLocal
+            ? `<button class="bridge-primary-button" data-batch-action="download-only" ${groups.length && !error && !state.busy ? "" : "disabled"}>${icon("icons/action-download.svg")}<span>${escapeHtml(t("downloadLocalPrimary"))}</span></button>
+                <button class="bridge-secondary-button" disabled title="${escapeHtml(t("eagleOptionalHint"))}">${escapeHtml(t("eagleUnavailable"))}</button>`
+            : `<button class="bridge-primary-button" data-batch-action="create-plans" ${groups.length && !error && !state.busy ? "" : "disabled"}>${icon("icons/action-download.svg")}<span>${escapeHtml(t("batchImport"))}</span></button>
+                <button class="bridge-secondary-button" data-batch-action="download-only" ${groups.length && !error && !state.busy ? "" : "disabled"}>${escapeHtml(t("batchDownload"))}</button>`;
         inspector.innerHTML = `
             <h2 class="bridge-inspector-title">${escapeHtml(t("batchTitle"))}</h2>
             <div class="bridge-inspector-meta"><span>${escapeHtml(t("batchSelected", { count: groups.length }))}</span></div>
@@ -551,33 +642,41 @@
             <div class="bridge-action-summary"><img class="bridge-info-icon" src="${escapeHtml(asset("icons/icon-16.png"))}" alt=""><span>${escapeHtml(t("batchBody"))}</span></div>
             ${error ? `<div class="bridge-field-error" role="alert">${escapeHtml(error)}</div>` : ""}
             <div class="bridge-primary-actions">
-                <button class="bridge-primary-button" data-batch-action="create-plans" ${groups.length && !error && !state.busy ? "" : "disabled"}>${icon("icons/action-download.svg")}<span>${escapeHtml(t("batchImport"))}</span></button>
-                <button class="bridge-secondary-button" data-batch-action="download-only" ${groups.length && !error && !state.busy ? "" : "disabled"}>${escapeHtml(t("batchDownload"))}</button>
+                ${deliveryActions}
             </div>
+            ${delivery.preferLocal ? `<p class="bridge-legal-note">${escapeHtml(t("eagleOptionalHint"))}</p>` : ""}
             <p class="bridge-legal-note">${escapeHtml(t("legal"))}</p>`;
     }
 
     function renderTasks() {
         const panel = root.querySelector("#bridgeTasksPanel");
         if (!panel) return;
+        const previousScrollTop = panel.querySelector(".bridge-section-view")?.scrollTop || 0;
+        const delivery = logic.deliveryCapabilities(state);
         const tasks = state.plans.map(plan => logic.taskView(plan));
+        const taskHeaderBusy = taskActionGate.any();
         panel.innerHTML = `<div class="bridge-section-view">
-            <div class="bridge-section-header"><div><h2>${escapeHtml(t("taskTitle"))}</h2><p>${escapeHtml(t("taskSubtitle"))}</p></div><div class="bridge-section-actions"><button class="bridge-small-button" data-action="refresh-tasks">${escapeHtml(t("refreshTasks"))}</button><button class="bridge-small-button bridge-danger-button" data-action="clear-tasks">${escapeHtml(t("clearTasks"))}</button></div></div>
+            <div class="bridge-section-header"><div><h2>${escapeHtml(t("taskTitle"))}</h2><p>${escapeHtml(t("taskSubtitle"))}</p></div><div class="bridge-section-actions"><button class="bridge-small-button" data-action="refresh-tasks" ${delivery.canDownload && !taskHeaderBusy ? "" : "disabled"}>${escapeHtml(t("refreshTasks"))}</button><button class="bridge-small-button bridge-danger-button" data-action="clear-tasks" ${delivery.canDownload && !taskHeaderBusy ? "" : "disabled"}>${escapeHtml(t("clearTasks"))}</button></div></div>
             ${state.taskSyncError ? `<div class="bridge-sync-warning" role="status">${escapeHtml(state.taskSyncError)}</div>` : ""}
-            <div class="bridge-task-list">${tasks.length ? tasks.map(task => `
-                <article class="bridge-task-row" data-task-id="${escapeHtml(task.id)}">
+            <div class="bridge-task-list">${tasks.length ? tasks.map(task => {
+                const taskBusy = taskActionGate.isBusy("__all__") || taskActionGate.isBusy(task.id);
+                const desktopActionDisabled = taskBusy || !delivery.canDownload;
+                return `
+                <article class="bridge-task-row" data-task-id="${escapeHtml(task.id)}" aria-busy="${taskBusy}">
                     <img class="bridge-task-thumb" src="${escapeHtml(taskThumbUrl(task))}" alt="" data-fallback="${escapeHtml(asset("icons/icon-128.png"))}">
                     <div class="bridge-task-copy">
                         <div class="bridge-task-name" title="${escapeHtml(task.title)}">${escapeHtml(task.title)}</div>
-                        <div class="bridge-task-state"><span>${escapeHtml(task.statusLabel)}</span><span class="bridge-progress-track" aria-label="${escapeHtml(`${Math.round(task.progress)}%`)}"><span class="bridge-progress-value" style="width:${task.progress}%"></span></span><span>${Math.round(task.progress)}%</span></div>
+                        <div class="bridge-task-state"><span>${escapeHtml(taskStatusLabel(task))}</span><span class="bridge-progress-track" aria-label="${escapeHtml(`${Math.round(task.progress)}%`)}"><span class="bridge-progress-value" style="width:${task.progress}%"></span></span><span>${Math.round(task.progress)}%</span></div>
                         <div class="bridge-task-meta"><span>${escapeHtml(t("processed", { current: task.processed, total: task.total }))}</span>${task.createdAt ? `<span>${escapeHtml(taskTime(task.createdAt))}</span>` : ""}</div>
                         ${task.detail ? `<div class="bridge-task-detail">${escapeHtml(task.detail)}</div>` : ""}
                         ${task.finalPath ? `<div class="bridge-task-path" title="${escapeHtml(task.finalPath)}">${escapeHtml(t("outputLocation", { path: task.finalPath }))}</div>` : ""}
                         ${task.error ? `<div class="bridge-task-error">${escapeHtml(task.error)}</div>` : ""}
                     </div>
-                    <div class="bridge-task-actions">${task.canImportExisting ? `<button class="bridge-small-button bridge-import-existing" data-action="import-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("importExisting"))}</button>` : ""}${task.canOpenOutput ? `<button class="bridge-small-button" data-action="open-task-folder" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openFolder"))}</button>` : ""}${task.canOpenSource ? `<button class="bridge-small-button" data-action="open-task-source" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("openSource"))}</button>` : ""}${task.active ? `<button class="bridge-small-button" data-action="stop-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("stop"))}</button>` : task.canRetry ? `<button class="bridge-small-button" data-action="retry-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("retry"))}</button>` : ["import_failed", "failed_permanent", "needs_rebuild"].includes(task.status) ? `<button class="bridge-small-button" data-view="media">${escapeHtml(t("backToMedia"))}</button>` : ""}<button class="bridge-small-button bridge-danger-button" data-action="remove-task" data-plan-id="${escapeHtml(task.id)}">${escapeHtml(t("removeTask"))}</button></div>
-                </article>`).join("") : `<div class="bridge-empty-state"><h2>${escapeHtml(t("noTasks"))}</h2></div>`}</div>
+                    <div class="bridge-task-actions">${task.canImportExisting ? delivery.canImport ? `<button class="bridge-small-button bridge-import-existing" data-action="import-task" data-plan-id="${escapeHtml(task.id)}" ${taskBusy ? "disabled" : ""}>${escapeHtml(t("importExisting"))}</button>` : `<button class="bridge-small-button" disabled title="${escapeHtml(delivery.canDownload ? t("eagleOptionalHint") : t("desktopUnavailableHint"))}">${escapeHtml(delivery.canDownload ? t("eagleUnavailable") : t("desktopUnavailable"))}</button>` : ""}${task.canOpenOutput ? `<button class="bridge-small-button" data-action="open-task-folder" data-plan-id="${escapeHtml(task.id)}" ${desktopActionDisabled ? "disabled" : ""}>${escapeHtml(t("openFolder"))}</button>` : ""}${task.canOpenSource ? `<button class="bridge-small-button" data-action="open-task-source" data-plan-id="${escapeHtml(task.id)}" ${taskBusy ? "disabled" : ""}>${escapeHtml(t("openSource"))}</button>` : ""}${task.active ? `<button class="bridge-small-button" data-action="stop-task" data-plan-id="${escapeHtml(task.id)}" ${desktopActionDisabled ? "disabled" : ""}>${escapeHtml(t("stop"))}</button>` : task.canRetry ? `<button class="bridge-small-button" data-action="retry-task" data-plan-id="${escapeHtml(task.id)}" ${desktopActionDisabled ? "disabled" : ""}>${escapeHtml(t("retry"))}</button>` : ["import_failed", "failed_permanent", "needs_rebuild"].includes(task.status) ? `<button class="bridge-small-button" data-view="media" ${taskBusy ? "disabled" : ""}>${escapeHtml(t("backToMedia"))}</button>` : ""}<button class="bridge-small-button bridge-danger-button" data-action="remove-task" data-plan-id="${escapeHtml(task.id)}" ${desktopActionDisabled ? "disabled" : ""}>${escapeHtml(t("removeTask"))}</button></div>
+                </article>`;
+            }).join("") : `<div class="bridge-empty-state"><h2>${escapeHtml(t("noTasks"))}</h2></div>`}</div>
         </div>`;
+        logic.restoreScrollPosition(panel.querySelector(".bridge-section-view"), previousScrollTop);
     }
 
     function discoveryToolButton(id, label, active = false, description = "") {
@@ -594,14 +693,15 @@
         menu.hidden = !state.settingsOpen;
         if (!state.settingsOpen) return;
         const s = state.toolState || {};
+        const desktopAvailable = logic.deliveryCapabilities(state).canDownload;
         menu.innerHTML = `
             <h2 class="bridge-settings-heading">${escapeHtml(t("settings"))}</h2>
             <p class="bridge-settings-domain">${escapeHtml(currentDomain() || t("currentPage"))}</p>
-            ${state.paired ? "" : `<div class="bridge-pair-box"><p>${escapeHtml(t("pairBody"))}</p><div class="bridge-pair-controls"><input id="bridgePairCode" class="bridge-pair-input" inputmode="numeric" maxlength="6" placeholder="${escapeHtml(t("pairPlaceholder"))}"><button class="bridge-primary-button" data-action="pair">${escapeHtml(t("pair"))}</button></div></div>`}
-            <label class="bridge-setting-row"><span>${escapeHtml(t("siteRule"))}</span><span class="bridge-switch"><input type="checkbox" data-setting="site" ${state.siteEnabled ? "checked" : ""} ${state.paired ? "" : "disabled"}></span></label>
+            ${state.connection === "paired" ? "" : `<div class="bridge-connect-box"><p>${escapeHtml(t("autoConnectBody"))}</p><button class="bridge-primary-button" data-action="auto-connect" ${popupActionGate.isBusy("auto-connect") ? "disabled" : ""}>${escapeHtml(t("autoConnect"))}</button></div>`}
+            <label class="bridge-setting-row"><span>${escapeHtml(t("siteRule"))}</span><span class="bridge-switch"><input type="checkbox" data-setting="site" ${state.siteEnabled ? "checked" : ""} ${desktopAvailable && !state.siteLoading ? "" : "disabled"}></span></label>
             <div class="bridge-settings-actions">
-                <button class="bridge-small-button" data-action="record-page" ${state.paired && state.siteEnabled ? "" : "disabled"}>${escapeHtml(t("recordPage"))}</button>
-                <button class="bridge-small-button" data-action="ignore-next" ${state.paired ? "" : "disabled"}>${escapeHtml(t("ignoreNext"))}</button>
+                <button class="bridge-small-button" data-action="record-page" ${desktopAvailable && state.siteEnabled ? "" : "disabled"}>${escapeHtml(t("recordPage"))}</button>
+                <button class="bridge-small-button" data-action="ignore-next" ${desktopAvailable ? "" : "disabled"}>${escapeHtml(t("ignoreNext"))}</button>
                 <button class="bridge-small-button" data-tool-action="pause">${escapeHtml(t("pauseCapture"))}</button>
                 <button class="bridge-small-button" data-action="open-window">${escapeHtml(t("openWindow"))}</button>
                 <button class="bridge-small-button" data-action="clear-media">${escapeHtml(t("clearMedia"))}</button>
@@ -651,8 +751,15 @@
     }
 
     async function createPlanForGroup(group, importToEagle = true) {
+        const delivery = logic.deliveryCapabilities(state);
+        if (!delivery.canDownload) {
+            throw new Error(t("desktopUnavailableHint"));
+        }
+        if (importToEagle && !delivery.canImport) {
+            throw new Error(t("importUnavailableToast"));
+        }
         const selection = state.selections.get(group?.id);
-        const validation = logic.validateSelection(group, selection, { paired: state.paired, importToEagle });
+        const validation = logic.validateSelection(group, selection, { paired: delivery.canDownload, importToEagle });
         if (!validation.ok) throw new Error(validation.message);
         const outputNameResult = logic.normalizeOutputName(
             state.drafts.get(group.id)?.outputName || logic.defaultOutputName(group, selection)
@@ -670,7 +777,10 @@
                 outputName,
                 outputContainer: validation.outputContainer,
                 importToEagle,
-                deleteAfterImport: importToEagle
+                // The popup promises that the local download is kept. File
+                // deletion is reserved for a separately, explicitly labelled
+                // desktop action.
+                deleteAfterImport: false
             }
         });
         if (!response?.ok) throw new Error(response?.error || t("connectionError"));
@@ -688,7 +798,16 @@
     async function createPlan() {
         const group = activeGroup();
         const selection = state.selections.get(group?.id);
-        const validation = logic.validateSelection(group, selection, { paired: state.paired, importToEagle: true });
+        const delivery = logic.deliveryCapabilities(state);
+        if (!delivery.canDownload) {
+            showToast(t("desktopUnavailableHint"), "error", 4200);
+            return;
+        }
+        if (!delivery.canImport) {
+            showToast(t("importUnavailableToast"), "error", 4200);
+            return;
+        }
+        const validation = logic.validateSelection(group, selection, { paired: delivery.canDownload, importToEagle: true });
         if (!validation.ok || state.busy) {
             showToast(validation.message || t("connectionError"), "error");
             return;
@@ -697,8 +816,9 @@
         renderInspector();
         try {
             const plan = await createPlanForGroup(group);
+            const fellBackToLocal = adoptDeliveryFallback(plan);
             state.plans = [plan, ...state.plans.filter(item => item.id !== plan.id)];
-            showToast(t("taskStarted"));
+            showToast(t(fellBackToLocal ? "deliveryFallbackLocal" : "taskStarted"));
             patchHeader();
             switchView("tasks");
             scheduleTaskPoll(500);
@@ -712,7 +832,7 @@
 
     async function downloadOnlyForGroup(group) {
         const selection = state.selections.get(group?.id);
-        const validation = logic.validateSelection(group, selection, { paired: state.paired, importToEagle: false });
+        const validation = logic.validateSelection(group, selection, { paired: logic.deliveryCapabilities(state).canDownload, importToEagle: false });
         const result = await logic.startValidatedTask(
             validation,
             () => createPlanForGroup(group, false)
@@ -733,6 +853,7 @@
         const group = activeGroup();
         if (!group) return;
         if (state.busy) return;
+        if (!ensureDesktopAvailable()) return;
         state.busy = true;
         renderInspector();
         try {
@@ -757,7 +878,16 @@
     async function bulkCreatePlans() {
         const groups = selectedGroups();
         if (!groups.length || state.busy) return;
-        const invalid = groups.map(group => logic.validateSelection(group, state.selections.get(group.id), { paired: state.paired, importToEagle: true })).find(result => !result.ok);
+        const delivery = logic.deliveryCapabilities(state);
+        if (!delivery.canDownload) {
+            showToast(t("desktopUnavailableHint"), "error", 4200);
+            return;
+        }
+        if (!delivery.canImport) {
+            showToast(t("importUnavailableToast"), "error", 4200);
+            return;
+        }
+        const invalid = groups.map(group => logic.validateSelection(group, state.selections.get(group.id), { paired: logic.deliveryCapabilities(state).canDownload, importToEagle: true })).find(result => !result.ok);
         if (invalid) {
             showToast(invalid.message, "error");
             return;
@@ -766,12 +896,14 @@
         renderInspector();
         const plans = [];
         const failures = [];
+        let fellBackToLocal = false;
         for (const group of groups) {
             try { plans.push(await createPlanForGroup(group)); }
             catch (error) { failures.push(error); }
         }
         state.busy = false;
         if (plans.length) {
+            fellBackToLocal = plans.some(plan => adoptDeliveryFallback(plan));
             const ids = new Set(plans.map(plan => plan.id));
             state.plans = [...plans, ...state.plans.filter(plan => !ids.has(plan.id))];
             patchHeader();
@@ -779,18 +911,21 @@
             scheduleTaskPoll(500);
         } else renderInspector();
         if (failures.length) showToast(t("batchPartial", { count: plans.length }), "error", 4200);
+        else if (fellBackToLocal) showToast(t("deliveryFallbackLocal"), "info", 4200);
         else showToast(t("taskStarted"));
     }
 
     async function bulkDownloadOnly() {
         const groups = selectedGroups();
-        if (!groups.length) return;
-        const invalid = groups.map(group => logic.validateSelection(group, state.selections.get(group.id), { paired: state.paired, importToEagle: false })).find(result => !result.ok);
+        if (!groups.length || state.busy) return;
+        if (!ensureDesktopAvailable()) return;
+        const invalid = groups.map(group => logic.validateSelection(group, state.selections.get(group.id), { paired: true, importToEagle: false })).find(result => !result.ok);
         if (invalid) {
             showToast(invalid.message, "error");
             return;
         }
         state.busy = true;
+        renderInspector();
         const plans = [];
         const failures = [];
         for (const group of groups) {
@@ -845,64 +980,102 @@
     }
 
     async function refreshTab() {
+        const requestTicket = tabRequestGate.begin();
+        let nextTab = state.tab;
         if (isStandaloneWindow) {
             const preferredTabId = Number(popupParams.get("sourceTabId"));
             const activeWebTab = await send({
                 Message: "getActiveWebTab",
                 preferredTabId: Number.isInteger(preferredTabId) ? preferredTabId : 0
             }).catch(() => null);
-            if (activeWebTab?.id) state.tab = activeWebTab;
-            return;
+            if (activeWebTab?.id) nextTab = activeWebTab;
+        } else {
+            const requestedTabId = Number(popupParams.get("tabId"));
+            if (Number.isInteger(requestedTabId) && requestedTabId > 0) nextTab = await chrome.tabs.get(requestedTabId);
+            else [nextTab] = await chrome.tabs.query({ active: true, currentWindow: true });
         }
-        const requestedTabId = Number(popupParams.get("tabId"));
-        if (Number.isInteger(requestedTabId) && requestedTabId > 0) state.tab = await chrome.tabs.get(requestedTabId);
-        else [state.tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (state.disposed || !tabRequestGate.isCurrent(requestTicket)) return false;
+        state.tab = nextTab || null;
+        return true;
     }
 
     async function refreshConnection() {
-        state.connection = "checking";
-        patchHeader();
+        const requestTicket = connectionRequestGate.begin();
+        const next = {
+            paired: false,
+            connection: "needs_pairing",
+            eagleAvailable: null
+        };
+        if (state.connection === "checking") patchHeader();
         try {
             let auth = await send({ eagleBridge: "authState" });
-            state.paired = Boolean(auth?.ok && auth.data?.paired);
-            if (!state.paired) {
+            next.paired = Boolean(auth?.ok && auth.data?.paired);
+            if (!next.paired) {
                 const recovered = await send({ eagleBridge: "autoPair" });
                 if (recovered?.ok && recovered.data?.paired) auth = recovered;
-                state.paired = Boolean(auth?.ok && auth.data?.paired);
+                next.paired = Boolean(auth?.ok && auth.data?.paired);
+                if (!next.paired && recovered?.ok && recovered.data?.serviceReachable === false) {
+                    next.connection = "offline";
+                }
             }
-            if (!state.paired) {
-                state.connection = "needs_pairing";
-                return;
+            if (next.paired) {
+                const health = await send({ eagleBridge: "health" });
+                if (!health?.ok) throw new Error(health?.error || t("connectionError"));
+                next.eagleAvailable = typeof health.data?.eagleAvailable === "boolean"
+                    ? health.data.eagleAvailable
+                    : true;
+                next.connection = "paired";
             }
-            const health = await send({ eagleBridge: "health" });
-            if (!health?.ok) throw new Error(health?.error || t("connectionError"));
-            state.connection = "paired";
         } catch (_error) {
             const auth = await send({ eagleBridge: "authState" }).catch(() => null);
-            state.paired = Boolean(auth?.ok && auth.data?.paired);
-            state.connection = state.paired ? "offline" : "needs_pairing";
-        } finally {
-            patchHeader();
+            next.paired = Boolean(auth?.ok && auth.data?.paired);
+            next.eagleAvailable = null;
+            next.connection = next.paired ? "offline" : "needs_pairing";
         }
+        if (state.disposed || !connectionRequestGate.isCurrent(requestTicket)) return false;
+        state.paired = next.paired;
+        state.eagleAvailable = next.eagleAvailable;
+        state.connection = next.connection;
+        state.lastCapabilityCheck = Date.now();
+        patchHeader();
+        return next.connection === "paired";
     }
 
     async function refreshCandidates() {
-        const [all, previews] = await Promise.all([
-            send({ Message: "getAllData" }).catch(() => ({})),
-            send({ Message: "getMediaPreviews", tabId: state.tab?.id }).catch(() => ({}))
+        const requestTicket = candidateRequestGate.begin();
+        const requestedTabId = String(state.tab?.id || "");
+        const [allResult, previewsResult] = await Promise.allSettled([
+            send({ Message: "getAllData" }),
+            send({ Message: "getMediaPreviews", tabId: state.tab?.id })
         ]);
-        state.framePreviews = new Map(Object.entries(previews && typeof previews === "object" ? previews : {})
-            .filter(([, value]) => /^data:image\/(?:jpeg|png|webp);base64,/i.test(String(value || ""))));
+        if (state.disposed || !candidateRequestGate.isCurrent(requestTicket)
+            || requestedTabId !== String(state.tab?.id || "")) return false;
+        if (allResult.status !== "fulfilled") return false;
+        const all = allResult.value;
+        if (previewsResult.status === "fulfilled") {
+            const previews = previewsResult.value;
+            state.framePreviews = new Map(Object.entries(previews && typeof previews === "object" ? previews : {})
+                .filter(([, value]) => /^data:image\/(?:jpeg|png|webp);base64,/i.test(String(value || ""))));
+        }
         const cache = all && typeof all === "object" && !Array.isArray(all) ? all : {};
         const currentId = String(state.tab?.id || "");
         state.candidates.current = Array.isArray(cache[currentId]) ? cache[currentId].slice(-400).map(item => ({ ...item, __scope: "current" })) : [];
         state.candidates.other = Object.entries(cache).flatMap(([tabId, items]) => tabId === currentId || !Array.isArray(items) ? [] : items.slice(-200).map(item => ({ ...item, __scope: "other" }))).slice(-600);
         rebuildGroups();
+        return true;
     }
 
     function resetTabScopedUi() {
+        candidateRequestGate.invalidate();
+        toolStateRequestGate.invalidate();
+        siteRequestGate.invalidate();
+        clearTimeout(state.candidateTimer);
+        clearTimeout(state.snapshotTimer);
         state.candidates.current = [];
         state.framePreviews.clear();
+        state.toolState = {};
+        state.siteEnabled = false;
+        state.siteLoading = false;
         state.selections.clear();
         state.drafts.clear();
         state.selectedGroupIds.clear();
@@ -913,7 +1086,7 @@
     async function refreshTrackedPage() {
         const previousTabId = Number(state.tab?.id) || 0;
         const previousUrl = String(state.tab?.url || "");
-        await refreshTab();
+        if (!await refreshTab()) return false;
         const tabChanged = previousTabId !== Number(state.tab?.id)
             || previousUrl !== String(state.tab?.url || "");
         if (tabChanged) resetTabScopedUi();
@@ -925,40 +1098,47 @@
             send({ eagleBridge: "ensureDiscovery", tabId: state.tab?.id })
         ]);
         renderSettings();
+        return true;
     }
 
     function scheduleTrackedPageRefresh(delay = 140) {
+        if (state.disposed) return;
         clearTimeout(state.locationTimer);
         state.locationTimer = setTimeout(async () => {
+            if (state.disposed) return;
             await refreshTrackedPage().catch(() => undefined);
+            if (state.disposed) return;
             // Titles and structured metadata are often committed shortly
             // after the URL, so perform one settling read without polling.
             state.locationTimer = setTimeout(() => {
+                if (state.disposed) return;
                 refreshTrackedPage().catch(() => undefined);
             }, 650);
         }, delay);
     }
 
     async function refreshPlans() {
+        const requestTicket = planRequestGate.begin();
         if (!state.paired) {
-            state.plans = [];
             patchHeader();
-            return;
+            if (state.view === "tasks") renderTasks();
+            return false;
         }
         try {
             const plans = await send({ eagleBridge: "plans" });
             if (!plans?.ok) throw new Error(plans?.error || t("connectionError"));
-            state.plans = Array.isArray(plans.data) ? plans.data : [];
-            state.connection = "paired";
+            const nextPlans = Array.isArray(plans.data) ? plans.data : [];
+            if (state.disposed || !planRequestGate.isCurrent(requestTicket)) return false;
+            state.plans = nextPlans;
             state.taskSyncError = "";
             await refreshTaskPreviews(state.plans);
+            if (state.disposed || !planRequestGate.isCurrent(requestTicket)) return false;
             patchHeader();
             if (state.view === "tasks") renderTasks();
+            return true;
         } catch (error) {
-            const auth = await send({ eagleBridge: "authState" }).catch(() => null);
-            state.paired = Boolean(auth?.ok && auth.data?.paired);
-            state.connection = state.paired ? "offline" : "needs_pairing";
-            state.taskSyncError = state.paired ? t("syncInterrupted") : "";
+            if (state.disposed || !planRequestGate.isCurrent(requestTicket)) return false;
+            state.taskSyncError = t("syncInterrupted");
             patchHeader();
             if (state.view === "tasks") renderTasks();
             throw error;
@@ -972,37 +1152,52 @@
             const failureKey = `${id}:${previewPath}`;
             return id && previewPath && !state.taskPreviews.has(id) && !state.taskPreviewFailures.has(failureKey);
         }).slice(0, 50);
-        await Promise.all(targets.map(async plan => {
+        await logic.mapWithConcurrency(targets, 4, async plan => {
             const id = String(plan.id);
             const previewPath = String(plan.preview_path || plan.previewPath || "");
             const response = await send({ eagleBridge: "planPreview", planId: id }).catch(() => null);
             const dataUrl = response?.ok ? response.data?.dataUrl : "";
             if (/^data:image\/(?:jpeg|png|webp);base64,/i.test(String(dataUrl || ""))) {
                 state.taskPreviews.set(id, dataUrl);
-            } else {
+            } else if (response?.ok) {
+                // Cache a confirmed empty preview, but never turn a transient
+                // transport timeout into a permanent missing-thumbnail state.
                 state.taskPreviewFailures.add(`${id}:${previewPath}`);
             }
-        }));
+        });
     }
 
     async function refreshSite() {
-        if (!state.paired || !currentDomain()) {
-            state.siteEnabled = false;
-            return;
+        if (state.siteLoading) return false;
+        const requestTicket = siteRequestGate.begin();
+        const requestedDomain = currentDomain();
+        if (!state.paired || !requestedDomain) {
+            if (siteRequestGate.isCurrent(requestTicket)) state.siteEnabled = false;
+            return true;
         }
-        const response = await send({ eagleBridge: "siteStatus", domain: currentDomain() });
+        const response = await send({ eagleBridge: "siteStatus", domain: requestedDomain });
+        if (state.disposed || !siteRequestGate.isCurrent(requestTicket)
+            || requestedDomain !== currentDomain()) return false;
         if (response?.ok) state.siteEnabled = Boolean(response.data?.enabled);
+        return true;
     }
 
     async function refreshToolState() {
+        const requestTicket = toolStateRequestGate.begin();
+        const requestedTabId = String(state.tab?.id || "");
         const response = await send({ Message: "getButtonState", tabId: state.tab?.id });
+        if (state.disposed || !toolStateRequestGate.isCurrent(requestTicket)
+            || requestedTabId !== String(state.tab?.id || "")) return false;
         state.toolState = response && typeof response === "object" ? response : {};
+        return true;
     }
 
     async function refreshAll() {
+        const requestTicket = refreshAllRequestGate.begin();
         root.setAttribute("aria-busy", "true");
         try {
-            await refreshTab();
+            if (!await refreshTab()) return;
+            if (!refreshAllRequestGate.isCurrent(requestTicket)) return;
             patchHeader();
             // Prioritize the current media snapshot so opening the popup is
             // not held behind discovery recovery or a slow local health check.
@@ -1011,91 +1206,132 @@
             const connection = refreshConnection();
             const discovery = send({ eagleBridge: "ensureDiscovery", tabId: state.tab?.id }).catch(() => undefined);
             await connection;
+            if (!refreshAllRequestGate.isCurrent(requestTicket)) return;
             // Candidate rendering may finish before the asynchronous auth and
             // health checks. Rebuild the action state once pairing is known so
             // the first popup open cannot keep stale "not connected" buttons.
             renderInspector();
             await Promise.allSettled([candidates, toolState, discovery, refreshPlans(), refreshSite()]);
+            if (!refreshAllRequestGate.isCurrent(requestTicket)) return;
             renderSettings();
             if (state.view === "tasks") renderTasks();
             scheduleTaskPoll();
         } catch (error) {
-            showToast(error.message || error, "error", 4200);
+            if (refreshAllRequestGate.isCurrent(requestTicket)) showToast(error.message || error, "error", 4200);
         } finally {
-            root.setAttribute("aria-busy", "false");
+            if (refreshAllRequestGate.isCurrent(requestTicket)) root.setAttribute("aria-busy", "false");
         }
     }
 
     function scheduleTaskPoll(delay = null) {
+        if (state.disposed) return;
         clearTimeout(state.taskTimer);
-        if (!state.paired) return;
         const active = logic.hasActiveTasks(state.plans);
         state.taskTimer = setTimeout(async () => {
-            try { await refreshPlans(); } catch (_error) { /* keep the last visible task state */ }
+            if (state.disposed) return;
+            if (state.connection !== "paired" || Date.now() - state.lastCapabilityCheck >= 10000) {
+                await refreshConnection().catch(() => {});
+                if (state.disposed) return;
+                renderInspector();
+                if (state.view === "tasks") renderTasks();
+                renderSettings();
+            }
+            if (state.paired && state.connection === "paired") {
+                try { await refreshPlans(); } catch (_error) { /* keep the last visible task state */ }
+            }
+            if (state.disposed) return;
             scheduleTaskPoll();
-        }, delay ?? (active ? 1200 : state.view === "tasks" ? 2000 : 6000));
+        }, delay ?? (state.connection === "paired" && active ? 1200 : state.connection === "paired" && state.view === "tasks" ? 2000 : 6000));
+    }
+
+    async function runTaskAction(planId, operation) {
+        const key = String(planId || "");
+        if (!taskActionGate.begin(key)) return false;
+        if (state.view === "tasks") renderTasks();
+        try {
+            await operation();
+            return true;
+        } finally {
+            taskActionGate.end(key);
+            if (!state.disposed && state.view === "tasks") renderTasks();
+        }
     }
 
     async function stopTask(planId) {
-        try {
-            const response = await send({ eagleBridge: "stopPlan", planId });
-            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
-            showToast(t("stopped"));
-            await refreshPlans();
-        } catch (error) {
-            showToast(error.message || error, "error");
-        }
+        if (!ensureDesktopAvailable()) return;
+        return runTaskAction(planId, async () => {
+            try {
+                const response = await send({ eagleBridge: "stopPlan", planId });
+                if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+                showToast(t("stopped"));
+                await refreshPlans();
+            } catch (error) {
+                showToast(error.message || error, "error");
+            }
+        });
     }
 
     async function retryTask(planId) {
-        try {
-            const response = await send({ eagleBridge: "retryPlan", planId });
-            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
-            showToast(t("taskStarted"));
-            await refreshPlans();
-            scheduleTaskPoll(500);
-        } catch (error) {
-            showToast(error.message || error, "error", 4200);
-        }
+        if (!ensureDesktopAvailable()) return;
+        return runTaskAction(planId, async () => {
+            try {
+                const response = await send({ eagleBridge: "retryPlan", planId });
+                if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+                showToast(t("taskStarted"));
+                await refreshPlans();
+                scheduleTaskPoll(500);
+            } catch (error) {
+                showToast(error.message || error, "error", 4200);
+            }
+        });
     }
 
     async function clearTasks() {
+        if (!ensureDesktopAvailable()) return;
         if (!window.confirm(t("clearTasksConfirm"))) return;
-        try {
-            const response = await send({ eagleBridge: "clearPlans" });
-            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
-            const removed = Number(response.data?.removed || 0);
-            await refreshPlans();
-            showToast(t("tasksCleared", { count: removed }));
-        } catch (error) {
-            showToast(error.message || error, "error", 4200);
-        }
+        return runTaskAction("__all__", async () => {
+            try {
+                const response = await send({ eagleBridge: "clearPlans" });
+                if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+                const removed = Number(response.data?.removed || 0);
+                await refreshPlans();
+                showToast(t("tasksCleared", { count: removed }));
+            } catch (error) {
+                showToast(error.message || error, "error", 4200);
+            }
+        });
     }
 
     async function removeTask(planId) {
+        if (!ensureDesktopAvailable()) return;
         if (!planId || !window.confirm(t("removeTaskConfirm"))) return;
-        try {
-            const response = await send({ eagleBridge: "removePlan", planId });
-            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
-            state.taskPreviews.delete(String(planId));
-            for (const key of [...state.taskPreviewFailures]) {
-                if (key.startsWith(`${planId}:`)) state.taskPreviewFailures.delete(key);
+        return runTaskAction(planId, async () => {
+            try {
+                const response = await send({ eagleBridge: "removePlan", planId });
+                if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+                state.taskPreviews.delete(String(planId));
+                for (const key of [...state.taskPreviewFailures]) {
+                    if (key.startsWith(`${planId}:`)) state.taskPreviewFailures.delete(key);
+                }
+                await refreshPlans();
+                showToast(t("taskRemoved"));
+            } catch (error) {
+                showToast(error.message || error, "error", 4200);
             }
-            await refreshPlans();
-            showToast(t("taskRemoved"));
-        } catch (error) {
-            showToast(error.message || error, "error", 4200);
-        }
+        });
     }
 
     async function openTaskFolder(planId) {
-        try {
-            const response = await send({ eagleBridge: "openPlanOutput", planId });
-            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
-            showToast(t("folderOpened"));
-        } catch (error) {
-            showToast(error.message || error, "error", 4200);
-        }
+        if (!ensureDesktopAvailable()) return;
+        return runTaskAction(planId, async () => {
+            try {
+                const response = await send({ eagleBridge: "openPlanOutput", planId });
+                if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+                showToast(t("folderOpened"));
+            } catch (error) {
+                showToast(error.message || error, "error", 4200);
+            }
+        });
     }
 
     async function openTaskSource(planId) {
@@ -1110,56 +1346,80 @@
     }
 
     async function importExistingTask(planId) {
-        try {
-            const response = await send({ eagleBridge: "importPlan", planId });
-            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
-            showToast(t("importQueued"));
-            await refreshPlans();
-            scheduleTaskPoll(500);
-        } catch (error) {
-            showToast(error.message || error, "error", 4200);
-        }
-    }
-
-    async function pair() {
-        const code = root.querySelector("#bridgePairCode")?.value.trim() || "";
-        if (!/^\d{6}$/.test(code)) {
-            showToast(t("pairBody"), "error");
+        const delivery = logic.deliveryCapabilities(state);
+        if (!delivery.canDownload) {
+            showToast(t("desktopUnavailableHint"), "error", 4200);
             return;
         }
-        try {
-            const response = await send({ eagleBridge: "pair", code });
-            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
-            const health = await send({ eagleBridge: "health" });
-            const auth = await send({ eagleBridge: "authState" });
-            if (!health?.ok || !auth?.ok || !auth.data?.paired) {
-                throw new Error(health?.error || auth?.error || t("connectionError"));
+        if (!delivery.canImport) {
+            showToast(t("importUnavailableToast"), "error", 4200);
+            return;
+        }
+        return runTaskAction(planId, async () => {
+            try {
+                const response = await send({ eagleBridge: "importPlan", planId });
+                if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+                showToast(t("importQueued"));
+                await refreshPlans();
+                scheduleTaskPoll(500);
+            } catch (error) {
+                showToast(error.message || error, "error", 4200);
             }
-            state.paired = true;
-            state.connection = "paired";
+        });
+    }
+
+    async function autoConnect() {
+        if (!popupActionGate.begin("auto-connect")) return;
+        renderSettings();
+        try {
+            const response = await send({ eagleBridge: "autoPair" });
+            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+            if (!response.data?.serviceReachable) throw new Error(t("desktopNotFound"));
+            if (!response.data?.paired) throw new Error(t("autoConnectFailed"));
+            if (!await refreshConnection()) throw new Error(t("connectionError"));
             await Promise.allSettled([refreshSite(), refreshPlans()]);
             patchHeader();
             renderInspector();
             renderSettings();
-            showToast(t("pairingDone"));
+            showToast(t("connectionDone"));
         } catch (error) {
             await refreshConnection().catch(() => {});
             renderInspector();
             renderSettings();
             showToast(error.message || error, "error", 4200);
+        } finally {
+            popupActionGate.end("auto-connect");
+            if (!state.disposed) renderSettings();
         }
     }
 
     async function changeSite(checked) {
-        const response = await send({ eagleBridge: "setSite", domain: currentDomain(), enabled: checked });
-        if (!response?.ok) throw new Error(response?.error || t("connectionError"));
-        state.siteEnabled = checked;
-        showToast(t("siteUpdated"));
+        if (!ensureDesktopAvailable()) {
+            renderSettings();
+            return;
+        }
+        const requestTicket = siteRequestGate.begin();
+        const requestedDomain = currentDomain();
+        state.siteLoading = true;
         renderSettings();
+        try {
+            const response = await send({ eagleBridge: "setSite", domain: requestedDomain, enabled: checked });
+            if (state.disposed || !siteRequestGate.isCurrent(requestTicket)
+                || requestedDomain !== currentDomain()) return;
+            if (!response?.ok) throw new Error(response?.error || t("connectionError"));
+            state.siteEnabled = checked;
+            showToast(t("siteUpdated"));
+        } finally {
+            if (siteRequestGate.isCurrent(requestTicket)) {
+                state.siteLoading = false;
+                renderSettings();
+            }
+        }
     }
 
     async function settingsAction(action) {
         if (action === "record-page" || action === "ignore-next") {
+            if (!ensureDesktopAvailable()) return;
             const response = await send({ eagleBridge: action === "record-page" ? "manualSource" : "ignoreNext" });
             if (!response?.ok) throw new Error(response?.error || t("connectionError"));
             showToast(action === "record-page" ? t("pageRecorded") : t("nextIgnored"));
@@ -1171,6 +1431,7 @@
         });
         else if (action === "clear-media") {
             if (!window.confirm(t("clearConfirm"))) return;
+            candidateRequestGate.invalidate();
             await send({ Message: "clearData", tabId: state.tab?.id, type: true });
             await send({ Message: "ClearIcon", type: true, tabId: state.tab?.id });
             state.candidates.current = [];
@@ -1198,7 +1459,10 @@
                 if (!group || group.segmentOnly || group.technicalOnly) return;
                 state.selectedGroupIds.has(id) ? state.selectedGroupIds.delete(id) : state.selectedGroupIds.add(id);
             } else state.activeGroupId = groupButton.dataset.groupId;
-            renderSidebar();
+            logic.patchSidebarSelection(root.querySelector("#bridgeGroupList"), state.activeGroupId, {
+                batchMode: state.batchMode,
+                selectedGroupIds: state.selectedGroupIds
+            });
             renderInspector();
             return;
         }
@@ -1243,7 +1507,9 @@
             root.querySelector("#bridgeSearch")?.focus();
         } else if (action === "create-plan") createPlan();
         else if (action === "download-only") downloadOnly();
-        else if (action === "refresh-tasks") refreshPlans().catch(error => showToast(error.message, "error"));
+        else if (action === "refresh-tasks") {
+            if (ensureDesktopAvailable()) refreshPlans().catch(error => showToast(error.message, "error"));
+        }
         else if (action === "clear-tasks") clearTasks();
         else if (action === "stop-task") stopTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "retry-task") retryTask(event.target.closest("[data-plan-id]")?.dataset.planId);
@@ -1251,7 +1517,7 @@
         else if (action === "import-task") importExistingTask(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "open-task-folder") openTaskFolder(event.target.closest("[data-plan-id]")?.dataset.planId);
         else if (action === "open-task-source") openTaskSource(event.target.closest("[data-plan-id]")?.dataset.planId);
-        else if (action === "pair") pair();
+        else if (action === "auto-connect") autoConnect();
         else settingsAction(action).catch(error => showToast(error.message || error, "error"));
     });
 
@@ -1356,6 +1622,7 @@
     });
 
     chrome.runtime.onMessage.addListener(message => {
+        if (state.disposed) return;
         if (message?.Message === "activeWebTabChanged") {
             if (isStandaloneWindow) scheduleTrackedPageRefresh();
             return;
@@ -1367,6 +1634,7 @@
         if (message?.Message !== "popupAddData") return;
         const data = message.data;
         if (!state.tab || Number(data?.tabId) !== Number(state.tab.id)) return;
+        candidateRequestGate.invalidate();
         if (data?.frameDataUrl && data?.groupKey && /^data:image\/(?:jpeg|png|webp);base64,/i.test(data.frameDataUrl)) {
             state.framePreviews.set(String(data.groupKey), data.frameDataUrl);
         }
@@ -1380,6 +1648,7 @@
     });
 
     chrome.storage.onChanged.addListener(changes => {
+        if (state.disposed) return;
         if (!changes.MediaData) return;
         clearTimeout(state.snapshotTimer);
         state.snapshotTimer = setTimeout(() => {
@@ -1388,10 +1657,19 @@
     });
 
     window.addEventListener("beforeunload", () => {
+        state.disposed = true;
         clearTimeout(state.taskTimer);
         clearTimeout(state.candidateTimer);
         clearTimeout(state.snapshotTimer);
         clearTimeout(state.locationTimer);
+        clearTimeout(toastTimer);
+        connectionRequestGate.invalidate();
+        planRequestGate.invalidate();
+        candidateRequestGate.invalidate();
+        tabRequestGate.invalidate();
+        toolStateRequestGate.invalidate();
+        siteRequestGate.invalidate();
+        refreshAllRequestGate.invalidate();
     });
 
     (async () => {

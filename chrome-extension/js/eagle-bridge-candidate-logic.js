@@ -377,6 +377,13 @@
         };
     }
 
+    function shouldClearCapturedCandidates(source, autoClearMode) {
+        const normalizedSource = String(source || "").toLowerCase();
+        const mode = Number(autoClearMode) || 0;
+        return (normalizedSource === "committed" && mode === 1)
+            || (normalizedSource === "loading" && mode === 2);
+    }
+
     async function ensureContentDiscovery(chromeApi, tab) {
         const tabId = Number(tab?.id);
         const tabUrl = String(tab?.url || "");
@@ -493,6 +500,34 @@
         });
     }
 
+    function boundedMediaSnapshot(data, perTabLimit = 400, totalLimit = 1000) {
+        const perTab = Math.max(1, Math.floor(Number(perTabLimit)) || 400);
+        const total = Math.max(1, Math.floor(Number(totalLimit)) || 1000);
+        const rows = [];
+        let sequence = 0;
+        for (const [tabId, items] of Object.entries(data && typeof data === "object" ? data : {})) {
+            if (!Array.isArray(items)) continue;
+            for (const item of items.slice(-perTab)) {
+                if (!item || typeof item !== "object") continue;
+                rows.push({
+                    tabId,
+                    item,
+                    capturedAt: Number(item.getTime || item.capturedAt || item.timestamp || 0),
+                    sequence: sequence++
+                });
+            }
+        }
+        const selected = new Set([...rows]
+            .sort((left, right) => left.capturedAt - right.capturedAt || left.sequence - right.sequence)
+            .slice(-total));
+        const snapshot = {};
+        for (const row of rows) {
+            if (!selected.has(row)) continue;
+            (snapshot[row.tabId] ??= []).push(row.item);
+        }
+        return snapshot;
+    }
+
     return {
         safeThumbnailUrl,
         safeFrameDataUrl,
@@ -511,10 +546,12 @@
         createBoundedScheduler,
         createKeyedBoundedScheduler,
         createLocationChangeTracker,
+        shouldClearCapturedCandidates,
         ensureContentDiscovery,
         parseManifestQualities,
         parseVimeoPlayerConfig,
         selectThumbnail,
-        waitForSnapshot
+        waitForSnapshot,
+        boundedMediaSnapshot
     };
 });

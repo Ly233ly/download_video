@@ -13,10 +13,10 @@ $versionMatch = [regex]::Match($versionSource, 'APP_VERSION\s*=\s*"([^"]+)"')
 if (-not $versionMatch.Success) { throw "无法从 constants.py 读取当前版本号。" }
 $currentVersion = $versionMatch.Groups[1].Value
 if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
-    $PackageRoot = Join-Path $projectRoot "release\下载中转站-$currentVersion-Windows-x64\下载中转站-$currentVersion"
+    $PackageRoot = Join-Path $projectRoot "release\留底下载器-$currentVersion-Windows-x64\留底下载器-$currentVersion"
 }
 $PackageRoot = [IO.Path]::GetFullPath($PackageRoot)
-$installer = Join-Path $PackageRoot "一键安装.exe"
+$installer = Join-Path $PackageRoot "留底安装器.exe"
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "找不到待测试安装器：$installer" }
 $expectedVersion = $currentVersion
 $projectPrefix = $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -53,7 +53,7 @@ try {
     }
     $fresh = [ordered]@{
         result = ([string](Get-Content -LiteralPath (Join-Path $testRoot "install-test-result.txt") -Raw)).Trim()
-        backend = (Test-Path -LiteralPath (Join-Path $testRoot "runtime\下载中转站后台\下载中转站后台.exe"))
+        backend = (Test-Path -LiteralPath (Join-Path $testRoot "runtime\留底桌面端后台\留底桌面端后台.exe"))
         ffmpeg = (Test-Path -LiteralPath (Join-Path $testRoot "media-tools\ffmpeg.exe"))
         ffprobe = (Test-Path -LiteralPath (Join-Path $testRoot "media-tools\ffprobe.exe"))
         ytDlp = (Test-Path -LiteralPath (Join-Path $testRoot "media-tools\yt-dlp.exe"))
@@ -77,7 +77,7 @@ try {
     }
 
     Set-Content -LiteralPath (Join-Path $testRoot "rollback-marker.txt") -Value "must survive" -Encoding ASCII
-    $exeHash = (Get-FileHash -LiteralPath (Join-Path $testRoot "下载中转站.exe") -Algorithm SHA256).Hash
+    $exeHash = (Get-FileHash -LiteralPath (Join-Path $testRoot "留底下载器.exe") -Algorithm SHA256).Hash
     $env:IDM_EAGLE_TEST_UPDATE_FAIL = "1"
     $process = Start-Process -FilePath $installer -ArgumentList "--test-update" -Wait -PassThru -WindowStyle Hidden
     $rollbackExit = $process.ExitCode
@@ -86,7 +86,7 @@ try {
     $rollback = [ordered]@{
         failureExit = $rollbackExit
         markerRestored = (Test-Path -LiteralPath (Join-Path $testRoot "rollback-marker.txt"))
-        executableRestored = ((Get-FileHash -LiteralPath (Join-Path $testRoot "下载中转站.exe") -Algorithm SHA256).Hash -eq $exeHash)
+        executableRestored = ((Get-FileHash -LiteralPath (Join-Path $testRoot "留底下载器.exe") -Algorithm SHA256).Hash -eq $exeHash)
         backupRemoved = (-not (Test-Path -LiteralPath ($testRoot + ".update-backup")))
     }
 

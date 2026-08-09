@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import unittest
 from pathlib import Path
+
+from idm_eagle_bridge.constants import (
+    APP_AUTHOR,
+    APP_DESCRIPTION,
+    APP_NAME,
+    APP_SLOGAN,
+    BRAND_NAME,
+    DESKTOP_COMPONENT_NAME,
+    EXTENSION_COMPONENT_NAME,
+    INSTALLER_COMPONENT_NAME,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +25,16 @@ EXTENSION = ROOT / "chrome-extension"
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is required for extension checks")
 class ExtensionTests(unittest.TestCase):
+    def test_product_brand_hierarchy_is_consistent(self) -> None:
+        self.assertEqual(BRAND_NAME, "留底")
+        self.assertEqual(APP_NAME, "留底下载器")
+        self.assertEqual(APP_DESCRIPTION, "免费开源的 Windows 本机媒体下载与归档工具")
+        self.assertEqual(APP_SLOGAN, "想留的，留个底。")
+        self.assertEqual(DESKTOP_COMPONENT_NAME, "留底桌面端")
+        self.assertEqual(EXTENSION_COMPONENT_NAME, "留底浏览器扩展")
+        self.assertEqual(INSTALLER_COMPONENT_NAME, "留底安装器")
+        self.assertEqual(APP_AUTHOR, "阿毅i")
+
     def test_all_javascript_has_valid_syntax(self) -> None:
         files = sorted(EXTENSION.rglob("*.js"))
         self.assertGreaterEqual(len(files), 10)
@@ -29,8 +51,10 @@ class ExtensionTests(unittest.TestCase):
     def test_manifests_are_versioned_and_include_structured_site_bridges(self) -> None:
         for name in ("manifest.json", "manifest.firefox.json"):
             manifest = json.loads((EXTENSION / name).read_text(encoding="utf-8"))
-            self.assertEqual(manifest["version"], "1.5.0")
-            self.assertEqual(manifest["name"], "下载中转站")
+            self.assertEqual(manifest["version"], "1.6.0")
+            self.assertEqual(manifest["name"], "留底浏览器扩展")
+            self.assertEqual(manifest["action"]["default_title"], "留底浏览器扩展")
+            self.assertEqual(manifest["description"], "免费开源的 Windows 本机媒体下载与归档工具")
             scripts = [script for entry in manifest["content_scripts"] for script in entry["js"]]
             self.assertIn("js/bilibili-content.js", scripts)
             self.assertIn("js/youtube-content.js", scripts)
@@ -39,12 +63,12 @@ class ExtensionTests(unittest.TestCase):
             self.assertIn("catch-script/youtube.js", resources)
         setup = (ROOT / "installer" / "Setup.cs").read_text(encoding="utf-8")
         launcher = (ROOT / "launcher" / "Launcher.cs").read_text(encoding="utf-8")
-        self.assertIn('internal const string Version = "1.5.0"', setup)
-        self.assertIn('AssemblyFileVersion("1.5.0.0")', setup)
-        self.assertIn('AssemblyFileVersion("1.5.0.0")', launcher)
-        version_resource = (ROOT / "packaging" / "download-transfer-station-version.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(1, 5, 0, 0)", version_resource)
-        self.assertIn("prodvers=(1, 5, 0, 0)", version_resource)
+        self.assertIn('internal const string Version = "1.6.0"', setup)
+        self.assertIn('AssemblyFileVersion("1.6.0.0")', setup)
+        self.assertIn('AssemblyFileVersion("1.6.0.0")', launcher)
+        version_resource = (ROOT / "packaging" / "liudi-downloader-version.txt").read_text(encoding="utf-8")
+        self.assertIn("filevers=(1, 6, 0, 0)", version_resource)
+        self.assertIn("prodvers=(1, 6, 0, 0)", version_resource)
         self.assertGreaterEqual(setup.count("WriteBootstrapPairing(extensionDirectory"), 3)
 
     def test_bilibili_playinfo_becomes_grouped_video_and_audio(self) -> None:
@@ -175,9 +199,21 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("sidebarPreviewMarkup(", sidebar_source)
         self.assertIn("content-visibility: auto", css)
 
+    def test_clicking_a_sidebar_candidate_does_not_rebuild_the_scroller(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        click_start = ui.index('const groupButton = event.target.closest("[data-group-id]")')
+        click_end = ui.index('const batchAction = event.target.closest("[data-batch-action]")', click_start)
+        click_source = ui[click_start:click_end]
+
+        self.assertIn("logic.patchSidebarSelection", click_source)
+        self.assertNotIn("renderSidebar();", click_source)
+
     def test_spa_navigation_restarts_generic_discovery(self) -> None:
         background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
         content = (EXTENSION / "js" / "content-script.js").read_text(encoding="utf-8")
+        candidate_logic = (EXTENSION / "js" / "eagle-bridge-candidate-logic.js").read_text(
+            encoding="utf-8"
+        )
         ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
 
         self.assertNotIn(
@@ -193,13 +229,60 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("_structuredCatalogSent.clear()", content)
         self.assertIn("_pageResolverSent.clear()", content)
         self.assertIn("createLocationChangeTracker", content)
+        self.assertIn("function shouldClearCapturedCandidates", candidate_logic)
         self.assertIn('"tabLocationChanged"', ui)
+
+        apply_start = background.index("function applyTabLocationChange")
+        apply_end = background.index("\nfunction handleTabLocationChange", apply_start)
+        spa_navigation_handler = background[apply_start:apply_end]
+        self.assertIn("shouldClearCapturedCandidates", spa_navigation_handler)
+        self.assertIn("invalidateCapturedTabContext", spa_navigation_handler)
+        self.assertNotIn("[1, 2].includes", spa_navigation_handler)
 
         handler_start = background.index("function handleTabLocationChange")
         handler_end = background.index("\nfunction isSupportedWebTab", handler_start)
         generic_handler = background[handler_start:handler_end].lower()
         for site_name in ("bilibili", "youtube", "douyin", "vimeo"):
             self.assertNotIn(site_name, generic_handler)
+
+    def test_navigation_cleanup_cannot_delete_media_from_a_new_document_late(self) -> None:
+        background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
+        before_start = background.index("chrome.webNavigation.onBeforeNavigate.addListener")
+        before_end = background.index(
+            "chrome.webNavigation.onHistoryStateUpdated.addListener",
+            before_start,
+        )
+        before_navigate = background[before_start:before_end]
+        updated_start = background.index("chrome.tabs.onUpdated.addListener")
+        updated_end = background.index(
+            "chrome.webNavigation.onCommitted.addListener",
+            updated_start,
+        )
+        tab_updated = background[updated_start:updated_end]
+        committed_start = updated_end
+        committed_end = background.index(
+            "chrome.tabs.onRemoved.addListener",
+            committed_start,
+        )
+        committed = background[committed_start:committed_end]
+        find_start = background.index("function findMedia")
+        find_end = background.index("//正则匹配", find_start)
+        media_startup = background[find_start:find_end]
+
+        self.assertIn(
+            'clearCapturedTabForNavigation(details.tabId, "loading")',
+            before_navigate,
+        )
+        self.assertNotIn('chrome.alarms.get("save"', tab_updated)
+        self.assertNotIn("delete cacheData[tabId]", tab_updated)
+        self.assertIn(
+            'clearCapturedTabForNavigation(details.tabId, "committed")',
+            committed,
+        )
+        self.assertLess(
+            media_startup.index("flushPendingDocumentCleanup(data.tabId)"),
+            media_startup.index("data.getTime = Date.now()"),
+        )
 
     def test_standalone_window_follows_the_latest_active_web_tab(self) -> None:
         background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
@@ -292,12 +375,29 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("EagleBridgeAuthLogic.unauthorizedAction", bridge)
         self.assertIn("EagleBridgeAuthLogic.createStateUpdateQueue", bridge)
         self.assertIn("current.token === requestToken", bridge)
+
+    def test_popup_uses_automatic_desktop_connection_without_pairing_code(self) -> None:
         ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
-        pair_start = ui.index("async function pair()")
-        pair_end = ui.index("async function changeSite", pair_start)
-        pair_source = ui[pair_start:pair_end]
-        self.assertLess(pair_source.index('eagleBridge: "health"'), pair_source.index('showToast(t("pairingDone"))'))
-        self.assertIn("auth.data?.paired", pair_source)
+        bridge = (EXTENSION / "js" / "eagle-bridge.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-action="auto-connect"', ui)
+        self.assertIn('eagleBridge: "autoPair"', ui)
+        self.assertIn('"/api/pair/recover"', bridge)
+        self.assertNotIn("bridgePairCode", ui)
+        self.assertNotIn("pairPlaceholder", ui)
+        self.assertNotIn('case "pair":', bridge)
+
+        connect_start = ui.index("async function autoConnect()")
+        connect_end = ui.index("async function changeSite", connect_start)
+        connect_source = ui[connect_start:connect_end]
+        self.assertLess(
+            connect_source.index("await refreshConnection()"),
+            connect_source.index('showToast(t("connectionDone"))'),
+        )
+        self.assertIn("response.data?.paired", connect_source)
+        connection_start = ui.index("async function refreshConnection()")
+        connection_end = ui.index("async function refreshCandidates", connection_start)
+        self.assertIn('eagleBridge: "health"', ui[connection_start:connection_end])
 
     def test_popup_has_one_visible_ui_and_only_discovery_routes(self) -> None:
         popup = (EXTENSION / "popup.html").read_text(encoding="utf-8")
@@ -417,8 +517,9 @@ class ExtensionTests(unittest.TestCase):
             "deleteAfterImport: options.deleteAfterImport === true",
             bridge,
         )
-        self.assertIn("deleteAfterImport: importToEagle", ui)
-        self.assertIn("成功后删除本机下载文件", ui)
+        self.assertIn("deleteAfterImport: false", ui)
+        self.assertIn("本机下载文件会保留", ui)
+        self.assertNotIn('downloadImport: "导入 Eagle（成功后删本机文件）"', ui)
         self.assertNotIn('command == "auto_down"', background)
         self.assertNotIn('Message.Message == "autoDown"', background)
         self.assertNotIn('if (G.send2local)', background)
@@ -509,6 +610,161 @@ class ExtensionTests(unittest.TestCase):
             remaining_refreshes,
             "the connection repaint must not wait behind discovery or plan requests",
         )
+
+    def test_popup_connection_and_polling_are_race_safe(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        self.assertIn("logic.createLatestRequestGate()", ui)
+        self.assertIn("connectionRequestGate.isCurrent(requestTicket)", ui)
+        self.assertIn("planRequestGate.isCurrent(requestTicket)", ui)
+        self.assertIn("candidateRequestGate.isCurrent(requestTicket)", ui)
+        poll_start = ui.index("function scheduleTaskPoll")
+        poll_end = ui.index("async function stopTask", poll_start)
+        poll_source = ui[poll_start:poll_end]
+        self.assertNotIn(
+            "if (!state.paired) return;",
+            poll_source,
+            "an open popup must keep probing so a restarted desktop reconnects automatically",
+        )
+        self.assertIn("if (state.disposed) return;", poll_source)
+        refresh_connection = poll_source.index("await refreshConnection()")
+        repaint = poll_source.index("renderInspector();", refresh_connection)
+        self.assertIn("if (state.disposed) return;", poll_source[refresh_connection:repaint])
+
+    def test_page_switch_async_reads_use_latest_request_gates(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        for gate in (
+            "tabRequestGate",
+            "candidateRequestGate",
+            "toolStateRequestGate",
+            "siteRequestGate",
+        ):
+            self.assertIn(f"const {gate} = logic.createLatestRequestGate();", ui)
+            self.assertIn(f"{gate}.isCurrent(requestTicket)", ui)
+            self.assertIn(f"{gate}.invalidate()", ui)
+        tracked_start = ui.index("async function refreshTrackedPage()")
+        tracked_end = ui.index("function scheduleTrackedPageRefresh", tracked_start)
+        self.assertIn("if (!await refreshTab()) return false;", ui[tracked_start:tracked_end])
+
+    def test_site_status_refresh_cannot_cancel_an_active_site_change(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        site_start = ui.index("async function refreshSite()")
+        site_end = ui.index("async function refreshToolState", site_start)
+        site_source = ui[site_start:site_end]
+        self.assertLess(
+            site_source.index("if (state.siteLoading) return false;"),
+            site_source.index("siteRequestGate.begin()"),
+        )
+
+    def test_bulk_local_download_disables_actions_while_submitting(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        bulk_start = ui.index("async function bulkDownloadOnly()")
+        bulk_end = ui.index("function bulkCopyLinks", bulk_start)
+        bulk_source = ui[bulk_start:bulk_end]
+        busy_start = bulk_source.index("state.busy = true;")
+        first_submit = bulk_source.index("createPlanForGroup(group, false)")
+        self.assertIn("renderInspector();", bulk_source[busy_start:first_submit])
+
+    def test_popup_and_bridge_requests_have_bounded_waits(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        bridge = (EXTENSION / "js" / "eagle-bridge.js").read_text(encoding="utf-8")
+        send_start = ui.index("function send(payload)")
+        send_end = ui.index("function asset", send_start)
+        self.assertIn("setTimeout", ui[send_start:send_end])
+        self.assertIn("clearTimeout", ui[send_start:send_end])
+        self.assertIn("EagleBridgeAuthLogic.fetchJsonWithTimeout", bridge)
+        self.assertNotIn("await fetch(", bridge)
+
+    def test_candidate_refresh_preserves_visible_media_on_transport_failure(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        refresh_start = ui.index("async function refreshCandidates()")
+        refresh_end = ui.index("function resetTabScopedUi", refresh_start)
+        refresh_source = ui[refresh_start:refresh_end]
+        self.assertIn("Promise.allSettled", refresh_source)
+        self.assertIn('allResult.status !== "fulfilled"', refresh_source)
+        self.assertNotIn("send({ Message: \"getAllData\" }).catch", refresh_source)
+
+    def test_large_capture_sessions_persist_a_recent_bounded_window(self) -> None:
+        background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")
+        functions = (EXTENSION / "js" / "function.js").read_text(encoding="utf-8")
+        self.assertNotIn("cacheData[tabId]?.length <= 99", background)
+        self.assertIn("boundedMediaSnapshot", functions)
+        self.assertNotIn("cacheData[data.tabId] = [];", background)
+
+    def test_popup_wait_budget_covers_auth_recovery_and_one_retry(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        bridge = (EXTENSION / "js" / "eagle-bridge.js").read_text(encoding="utf-8")
+        popup_timeout = int(re.search(r"POPUP_REQUEST_TIMEOUT_MS\s*=\s*(\d+)", ui).group(1))
+        api_timeout = int(re.search(r"EAGLE_BRIDGE_API_TIMEOUT_MS\s*=\s*(\d+)", bridge).group(1))
+        pair_timeout = int(re.search(r"EAGLE_BRIDGE_AUTO_PAIR_TIMEOUT_MS\s*=\s*(\d+)", bridge).group(1))
+        self.assertGreaterEqual(popup_timeout, api_timeout * 2 + pair_timeout * 2 + 500)
+
+    def test_popup_teardown_cancels_every_owned_timer(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        teardown = ui[ui.index('window.addEventListener("beforeunload"'):]
+        for timer in (
+            "state.taskTimer",
+            "state.candidateTimer",
+            "state.snapshotTimer",
+            "state.locationTimer",
+            "toastTimer",
+        ):
+            self.assertIn(f"clearTimeout({timer})", teardown)
+        self.assertIn("state.disposed = true", teardown)
+        self.assertIn(".invalidate()", teardown)
+
+    def test_desktop_delivery_fallback_immediately_switches_to_local_mode(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        self.assertIn('plan?.deliveryFallback !== "local"', ui)
+        self.assertIn("state.eagleAvailable = false", ui)
+        self.assertIn('t("deliveryFallbackLocal")', ui)
+
+    def test_optional_eagle_and_task_status_text_cover_all_locales(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        for key in (
+            "desktopUnavailable",
+            "desktopUnavailableHint",
+            "eagleUnavailable",
+            "eagleOptionalHint",
+            "deliveryFallbackLocal",
+            "resolverYoutubeInfo",
+            "resolverInfo",
+        ):
+            self.assertEqual(ui.count(f"{key}:"), 3, f"{key} must have Simplified Chinese, Traditional Chinese, and English text")
+        self.assertIn("const taskStatusLabels = {", ui)
+        self.assertIn("const taskStatusLabel = task =>", ui)
+        self.assertIn("escapeHtml(taskStatusLabel(task))", ui)
+
+    def test_popup_locales_do_not_fall_back_to_simplified_chinese(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+
+        def locale_keys(name: str, next_name: str) -> set[str]:
+            start = ui.index(f"const {name} = {{")
+            end = ui.index(f"const {next_name} =", start)
+            return set(re.findall(r'(?:^|,)\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*"', ui[start:end]))
+
+        simplified = locale_keys("zhHans", "zhHant")
+        self.assertEqual(locale_keys("zhHant", "en"), simplified)
+        self.assertEqual(locale_keys("en", "taskStatusLabels"), simplified)
+
+    def test_visual_popup_fixture_can_render_connection_matrix(self) -> None:
+        fixture = (ROOT / "tests" / "visual_popup_fixture.js").read_text(encoding="utf-8")
+        self.assertIn('fixtureParams.get("eagle") !== "0"', fixture)
+        self.assertIn('fixtureParams.get("desktop") !== "0"', fixture)
+        self.assertIn("{ ok: true, data: { eagleAvailable } }", fixture)
+        self.assertIn("serviceReachable: desktopAvailable", fixture)
+
+    def test_live_candidate_message_invalidates_older_snapshot_reads(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        message_start = ui.index('if (message?.Message !== "popupAddData") return;')
+        message_end = ui.index("clearTimeout(state.candidateTimer)", message_start)
+        self.assertIn("candidateRequestGate.invalidate()", ui[message_start:message_end])
+
+    def test_every_rendered_popup_action_has_a_dispatch_branch(self) -> None:
+        ui = (EXTENSION / "js" / "eagle-bridge-ui.js").read_text(encoding="utf-8")
+        rendered = set(re.findall(r'data-action=["\']([^"\']+)', ui))
+        handled = set(re.findall(r'action === ["\']([^"\']+)', ui))
+        self.assertTrue(rendered)
+        self.assertEqual(rendered - handled, set())
 
     def test_legacy_listener_never_intercepts_bridge_messages(self) -> None:
         background = (EXTENSION / "js" / "background.js").read_text(encoding="utf-8")

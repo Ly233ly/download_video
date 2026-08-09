@@ -10,12 +10,12 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
-[assembly: AssemblyTitle("下载中转站")]
-[assembly: AssemblyDescription("把 IDM 下载的视频自动中转导入 Eagle")]
-[assembly: AssemblyProduct("下载中转站")]
-[assembly: AssemblyCompany("下载中转站")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyTitle("留底下载器")]
+[assembly: AssemblyDescription("免费开源的 Windows 本机媒体下载与归档工具")]
+[assembly: AssemblyProduct("留底下载器")]
+[assembly: AssemblyCompany("阿毅i")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 
 internal static class Launcher
 {
@@ -62,7 +62,7 @@ internal static class Launcher
                 {
                     MessageBox.Show(
                         "无法找到内置运行环境或 Python 3.11+。请重新运行一键安装程序进行修复。",
-                        "下载中转站",
+                        "留底下载器",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error
                     );
@@ -105,7 +105,7 @@ internal static class Launcher
             {
                 MessageBox.Show(
                     "启动助手失败：" + exception.Message,
-                    "下载中转站",
+                    "留底下载器",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error
                 );
@@ -276,7 +276,7 @@ internal static class Launcher
             child = childProcess;
             ChildExitCode = 0;
 
-            ToolStripMenuItem statusItem = new ToolStripMenuItem("下载中转站 1.5.0");
+            ToolStripMenuItem statusItem = new ToolStripMenuItem("留底下载器 v1.6.0 by阿毅i");
             statusItem.Enabled = false;
             ToolStripMenuItem openItem = new ToolStripMenuItem("显示窗口");
             openItem.Font = new Font(openItem.Font, FontStyle.Bold);
@@ -304,7 +304,7 @@ internal static class Launcher
             notifyIcon = new NotifyIcon();
             notifyIcon.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath)
                 ?? SystemIcons.Application;
-            notifyIcon.Text = "下载中转站 · IDM 视频自动导入 Eagle";
+            notifyIcon.Text = "留底下载器 · 想留的，留个底。";
             notifyIcon.ContextMenuStrip = menu;
             notifyIcon.MouseClick += delegate(object sender, MouseEventArgs eventArgs)
             {
@@ -446,6 +446,7 @@ internal static class Launcher
         {
             string[] candidates = new[]
             {
+                Path.Combine(root, "runtime", "留底桌面端后台", "留底桌面端后台.exe"),
                 Path.Combine(root, "runtime", "下载中转站后台", "下载中转站后台.exe"),
                 Path.Combine(root, "runtime", "IdmEagleBackend", "IdmEagleBackend.exe")
             };

@@ -147,7 +147,7 @@
         const fingerprint = streams.map(item => `${item.role}:${item.id}:${item.url}`).join("|");
         if (fingerprint === lastFingerprint) return;
         lastFingerprint = fingerprint;
-        window.postMessage({ source: "download-transfer-station-bilibili", channel, streams }, location.origin);
+        window.postMessage({ source: "liudi-downloader-bilibili", channel, streams }, location.origin);
     }
 
     function scan() {

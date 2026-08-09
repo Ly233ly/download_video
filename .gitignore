@@ -32,6 +32,6 @@ data/
 artifacts/
 coverage/
 assets/*-chroma.png
-assets/download-transfer-station-16.png
-assets/download-transfer-station-32.png
-assets/download-transfer-station-256.png
+assets/liudi-downloader-16.png
+assets/liudi-downloader-32.png
+assets/liudi-downloader-256.png

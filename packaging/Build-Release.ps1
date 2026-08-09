@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Version = "1.5.0",
+    [string]$Version = "1.6.0",
     [switch]$SkipTests,
     [switch]$SkipFfmpegFetch,
     [switch]$SkipYoutubeResolverFetch
@@ -44,8 +44,8 @@ function Invoke-Checked([string]$Label, [scriptblock]$Action) {
     if ($LASTEXITCODE -ne 0) { throw "$Label 失败，退出码 $LASTEXITCODE" }
 }
 
-if ($Version -ne "1.5.0") {
-    throw "本分支只允许构建已经同步版本号的 1.5.0。"
+if ($Version -ne "1.6.0") {
+    throw "本分支只允许构建已经同步版本号的 1.6.0。"
 }
 
 if (-not $SkipTests) {
@@ -120,17 +120,17 @@ New-Item -ItemType Directory -Path $pyiDist, $pyiWork -Force | Out-Null
 Push-Location $projectRoot
 try {
     Invoke-Checked "构建冻结后端" {
-        & $venvPython -m PyInstaller --noconfirm --clean --distpath $pyiDist --workpath $pyiWork (Join-Path $projectRoot "packaging\DownloadTransferStation.spec")
+        & $venvPython -m PyInstaller --noconfirm --clean --distpath $pyiDist --workpath $pyiWork (Join-Path $projectRoot "packaging\LiudiDownloader.spec")
     }
 }
 finally {
     Pop-Location
 }
 
-$releaseOuter = Reset-GeneratedDirectory (Join-Path $projectRoot "release\下载中转站-$Version-Windows-x64")
-$releaseRoot = Join-Path $releaseOuter "下载中转站-$Version"
+$releaseOuter = Reset-GeneratedDirectory (Join-Path $projectRoot "release\留底下载器-$Version-Windows-x64")
+$releaseRoot = Join-Path $releaseOuter "留底下载器-$Version"
 $payload = Join-Path $releaseRoot "app"
-$runtimeTarget = Join-Path $payload "runtime\下载中转站后台"
+$runtimeTarget = Join-Path $payload "runtime\留底桌面端后台"
 $mediaTarget = Join-Path $payload "media-tools"
 New-Item -ItemType Directory -Path $payload, $runtimeTarget, $mediaTarget -Force | Out-Null
 
@@ -163,7 +163,7 @@ foreach ($page in Get-ChildItem -LiteralPath (Join-Path $projectRoot "chrome-ext
     }
 }
 
-$icon = Join-Path $projectRoot "assets\download-transfer-station.ico"
+$icon = Join-Path $projectRoot "assets\liudi-downloader.ico"
 $launcherSource = Join-Path $projectRoot "launcher\Launcher.cs"
 $commonCsc = @(
     "/nologo", "/target:winexe", "/optimize+", "/platform:anycpu",
@@ -171,11 +171,11 @@ $commonCsc = @(
     "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
     "/win32icon:$icon"
 )
-Invoke-Checked "编译桌面启动器" { & $csc @commonCsc "/out:$(Join-Path $payload '下载中转站.exe')" $launcherSource }
+Invoke-Checked "编译桌面启动器" { & $csc @commonCsc "/out:$(Join-Path $payload '留底下载器.exe')" $launcherSource }
 Invoke-Checked "编译 IDM 接收器" { & $csc @commonCsc "/out:$(Join-Path $payload 'IdmEagleHook.exe')" $launcherSource }
 
-$frozenRoot = Join-Path $pyiDist "下载中转站后台"
-if (-not (Test-Path -LiteralPath (Join-Path $frozenRoot "下载中转站后台.exe") -PathType Leaf)) {
+$frozenRoot = Join-Path $pyiDist "留底桌面端后台"
+if (-not (Test-Path -LiteralPath (Join-Path $frozenRoot "留底桌面端后台.exe") -PathType Leaf)) {
     throw "冻结后端构建不完整。"
 }
 Copy-Item -Path (Join-Path $frozenRoot "*") -Destination $runtimeTarget -Recurse -Force
@@ -184,12 +184,12 @@ Copy-Item -LiteralPath $ffmpeg, $ffprobe, $ytDlp, $deno, (Join-Path $projectRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "licenses") -Destination $payload -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE"), (Join-Path $projectRoot "COPYING.md"), (Join-Path $projectRoot "installer\THIRD_PARTY_NOTICES.txt") -Destination $payload -Force
 
-$installerExe = Join-Path $releaseRoot "一键安装.exe"
+$installerExe = Join-Path $releaseRoot "留底安装器.exe"
 $payloadArchive = Join-Path $buildRoot "installer-payload.zip"
 Compress-Archive -LiteralPath $payload -DestinationPath $payloadArchive -CompressionLevel Optimal
 Invoke-Checked "编译一键安装器" {
     & $csc @commonCsc "/reference:System.IO.Compression.dll" "/reference:System.IO.Compression.FileSystem.dll" `
-        "/resource:$payloadArchive,DownloadTransferStation.Payload.zip" `
+        "/resource:$payloadArchive,LiudiDownloader.Payload.zip" `
         "/out:$installerExe" (Join-Path $projectRoot "installer\Setup.cs")
 }
 
@@ -198,7 +198,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE"), (Join-Path $projectRo
 Copy-Item -LiteralPath (Join-Path $projectRoot "licenses") -Destination $releaseRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "docs\UPSTREAM_PROVENANCE.md") -Destination $releaseRoot -Force
 
-$sourceRoot = Join-Path $buildRoot "source\download-for-eagle-$Version-src"
+$sourceRoot = Join-Path $buildRoot "source\liudi-downloader-$Version-src"
 New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
 foreach ($directory in @("assets", "chrome-extension", "docs", "launcher", "licenses", "src", "tests", "third_party")) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $directory) -Destination $sourceRoot -Recurse -Force
@@ -223,7 +223,7 @@ foreach ($file in @(".gitignore", "ACCEPTANCE.md", "AGENTS.md", "CONTEXT.md", "C
     Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $sourceRoot -Force
 }
 
-$sourceZipPath = Join-Path $releaseOuter "download-transfer-station-$Version-source.zip"
+$sourceZipPath = Join-Path $releaseOuter "liudi-downloader-$Version-source.zip"
 Compress-Archive -LiteralPath $sourceRoot -DestinationPath $sourceZipPath -CompressionLevel Optimal
 $sourceZipHash = (Get-FileHash -LiteralPath $sourceZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText(
@@ -248,7 +248,7 @@ $binaryInventory = foreach ($file in Get-ChildItem -LiteralPath $releaseRoot -Re
     }
 }
 $inventoryDocument = [ordered]@{
-    product = "下载中转站"
+    product = "留底下载器"
     version = $Version
     architecture = "Windows-x64"
     generatedAtUtc = [DateTime]::UtcNow.ToString("o")
@@ -275,7 +275,7 @@ if (Test-Path -LiteralPath (Join-Path $releaseRoot "app")) {
     throw "二进制发行目录仍包含外置 app 载荷。"
 }
 
-$zipPath = Join-Path $releaseOuter "download-transfer-station-$Version-windows-x64.zip"
+$zipPath = Join-Path $releaseOuter "liudi-downloader-$Version-windows-x64.zip"
 Compress-Archive -LiteralPath $releaseRoot -DestinationPath $zipPath -CompressionLevel Optimal
 $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText(

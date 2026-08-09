@@ -14,13 +14,13 @@
 
 ## 入口
 
-- 桌面助手：`src/idm_eagle_bridge/main.py`
+- 留底桌面端：`src/idm_eagle_bridge/main.py`
 - IDM 接收器：`src/idm_eagle_bridge/hook.py`
-- 浏览器扩展：`chrome-extension/`
+- 留底浏览器扩展：`chrome-extension/`
 - Windows 托盘与启动器：`launcher/Launcher.cs`
-- 安装器：`installer/Setup.cs`
+- 留底安装器：`installer/Setup.cs`
 - PyInstaller 入口：`launcher/assistant.pyw`
-- PyInstaller 配置：`packaging/DownloadTransferStation.spec`
+- PyInstaller 配置：`packaging/LiudiDownloader.spec`
 
 ## 运行测试
 
@@ -44,7 +44,7 @@ node tests/js/test_wechat_channels_bridge.js
 
 ## 当前测试边界
 
-测试覆盖浏览器候选归组、质量选择、滚动位置、认证与配对、桌面下载、FFmpeg 合并、输出校验、系统代理、Eagle 导入、文件所有权、数据库迁移、Tk UI、微信视频号 feed、原始参数、VPN/PAC 上游、证书生命周期和退出恢复顺序。
+测试覆盖浏览器候选归组、质量选择、滚动位置、SPA/完整文档导航与冷启动清理顺序、认证与断线自动恢复、跨页面异步请求代次、卡住的响应头/正文超时、桌面下载、FFmpeg 合并、输出校验、系统代理、Eagle 可选降级、并发幂等补导、停止与完成竞态、重复内容状态、文件所有权、三重路径删除校验、后台线程异常恢复、健康探测 single-flight、大任务查询索引、缓存统计与安全清理、数据库迁移、Tk UI 键盘焦点、圆角/圆形抗锯齿像素、首次主题初始化、单次主题切换与响应式布局、微信视频号 feed、原始参数、VPN/PAC 上游、证书生命周期和退出恢复顺序。
 
 真实 Chrome 工具栏操作、Windows 证书确认和用户实际 VPN/微信环境仍属于人工复验边界。
 

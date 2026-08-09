@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .database import Database
+from .constants import APP_NAME, LEGACY_APP_NAME
 from .wake_signal import notify_processing_service
 
 
@@ -17,7 +18,8 @@ def start_assistant_hidden() -> bool:
 
     project_directory = _project_directory()
     candidates = (
-        project_directory / "下载中转站.exe",
+        project_directory / f"{APP_NAME}.exe",
+        project_directory / f"{LEGACY_APP_NAME}.exe",
         project_directory / "IDM-Eagle助手.exe",
         project_directory / "launcher" / "IdmEagleAssistant.exe",
     )
@@ -44,7 +46,9 @@ def _project_directory() -> Path:
         candidates.extend((executable_directory, *executable_directory.parents))
     candidates.append(Path(__file__).resolve().parents[2])
     for candidate in candidates:
-        if (candidate / "下载中转站.exe").is_file() or (
+        if (candidate / f"{APP_NAME}.exe").is_file() or (
+            candidate / f"{LEGACY_APP_NAME}.exe"
+        ).is_file() or (
             candidate / "IDM-Eagle助手.exe"
         ).is_file():
             return candidate

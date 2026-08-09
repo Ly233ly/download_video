@@ -63,14 +63,14 @@ class PairingManager:
         try:
             payload = json.loads(self.bootstrap_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            raise PairingError("自动配对凭据不存在，请使用六位配对码") from None
+            raise PairingError("自动连接凭据不存在") from None
         expected_hash = payload.get("secretHash") if isinstance(payload, dict) else None
         expires_at = payload.get("expiresAt") if isinstance(payload, dict) else None
         if not isinstance(expected_hash, str) or not isinstance(expires_at, (int, float)):
-            raise PairingError("自动配对凭据无效，请使用六位配对码")
+            raise PairingError("自动连接凭据无效")
         if time.time() > float(expires_at):
             self.bootstrap_path.unlink(missing_ok=True)
-            raise PairingError("自动配对凭据已过期，请使用六位配对码")
+            raise PairingError("自动连接凭据已过期")
         actual_hash = hashlib.sha256(str(secret).encode("utf-8")).hexdigest()
         if not hmac.compare_digest(actual_hash, expected_hash):
             raise PairingError("自动配对凭据不正确")
@@ -78,6 +78,15 @@ class PairingManager:
         token = self._issue_token(origin)
         self.bootstrap_path.unlink(missing_ok=True)
         return token
+
+    def recover(self, origin: str) -> str:
+        """Reissue a token only to the exact extension origin already registered."""
+        if not CHROME_EXTENSION_ORIGIN.fullmatch(origin):
+            raise PairingError("只允许 Chrome、Edge 或 Firefox 扩展自动连接")
+        existing_origin = self.paired_origin
+        if not existing_origin or not hmac.compare_digest(origin, existing_origin):
+            raise PairingError("此浏览器扩展尚未在本机登记，无法自动恢复连接")
+        return self._issue_token(origin)
 
     def _issue_token(self, origin: str) -> str:
         existing_origin = self.paired_origin

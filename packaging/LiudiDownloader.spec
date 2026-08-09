@@ -9,7 +9,7 @@ a = Analysis(
     pathex=[str(project_root / 'src')],
     binaries=[],
     datas=[
-        (str(project_root / 'assets' / 'download-transfer-station.ico'), 'assets'),
+        (str(project_root / 'assets' / 'liudi-downloader.ico'), 'assets'),
         (
             str(project_root / 'src' / 'idm_eagle_bridge' / 'assets'),
             'idm_eagle_bridge/assets',
@@ -30,7 +30,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='下载中转站后台',
+    name='留底桌面端后台',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -39,8 +39,8 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
-    icon=str(project_root / 'assets' / 'download-transfer-station.ico'),
-    version=str(project_root / 'packaging' / 'download-transfer-station-version.txt'),
+    icon=str(project_root / 'assets' / 'liudi-downloader.ico'),
+    version=str(project_root / 'packaging' / 'liudi-downloader-version.txt'),
     codesign_identity=None,
     entitlements_file=None,
 )
@@ -51,5 +51,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='下载中转站后台',
+    name='留底桌面端后台',
 )

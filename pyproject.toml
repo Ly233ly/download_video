@@ -3,14 +3,17 @@ requires = ["setuptools>=70"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "idm-eagle-auto-import"
-version = "1.5.0"
-description = "Automatically import videos downloaded by IDM into Eagle with their source page URL."
+name = "liudi-downloader"
+version = "1.6.0"
+description = "免费开源的 Windows 本机媒体下载与归档工具"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
+liudi-downloader = "idm_eagle_bridge.main:main"
+liudi-downloader-hook = "idm_eagle_bridge.hook:main"
+# 保留旧命令作为升级兼容别名。
 idm-eagle = "idm_eagle_bridge.main:main"
 idm-eagle-hook = "idm_eagle_bridge.hook:main"
 

@@ -26,6 +26,7 @@ chrome.webNavigation.onBeforeNavigate.addListener(function (details) {
     if (details?.frameId === 0 && Number.isInteger(details.tabId)) {
         youtubeRequestContextByTab.delete(details.tabId);
         resolverRequestContextByTab.delete(details.tabId);
+        clearCapturedTabForNavigation(details.tabId, "loading");
     }
 });
 chrome.webNavigation.onHistoryStateUpdated.addListener(function (details) {
@@ -72,6 +73,10 @@ const captureGenerationByTab = new Map();
 const lastPageUrlByTab = new Map();
 const pendingPageLocationByTab = new Map();
 const pageLocationInitializationWaitByTab = new Map();
+// A cold Manifest V3 worker can receive navigation events before its option
+// and media snapshots have finished loading. Preserve the document boundary
+// until the snapshot is authoritative, then clear before accepting new media.
+const pendingDocumentCleanupByTab = new Map();
 let lastActiveWebTabId = 0;
 const MAX_MANIFEST_CATALOG_BYTES = 2_000_000;
 
@@ -188,6 +193,43 @@ function clearCapturedTab(tabId, resetDedupe = false) {
     delete cacheData[normalizedTabId];
 }
 
+function applyDocumentNavigationCleanup(tabId, sources) {
+    const normalizedTabId = Number(tabId) || 0;
+    if (normalizedTabId <= 0) return false;
+    const shouldClear = [...sources].some(source => (
+        globalThis.EagleBridgeCandidateLogic.shouldClearCapturedCandidates(
+            source,
+            G.autoClearMode
+        )
+    ));
+    if (!shouldClear) return false;
+    clearCapturedTab(normalizedTabId, true);
+    saveMediaData(cacheData);
+    SetIcon({ tabId: normalizedTabId });
+    return true;
+}
+
+function clearCapturedTabForNavigation(tabId, source) {
+    const normalizedTabId = Number(tabId) || 0;
+    if (normalizedTabId <= 0) return false;
+    const sources = pendingDocumentCleanupByTab.get(normalizedTabId) || new Set();
+    sources.add(String(source || ""));
+    if (!G.initSyncComplete || !G.initMediaComplete) {
+        pendingDocumentCleanupByTab.set(normalizedTabId, sources);
+        return false;
+    }
+    pendingDocumentCleanupByTab.delete(normalizedTabId);
+    return applyDocumentNavigationCleanup(normalizedTabId, sources);
+}
+
+function flushPendingDocumentCleanup(tabId) {
+    const normalizedTabId = Number(tabId) || 0;
+    const sources = pendingDocumentCleanupByTab.get(normalizedTabId);
+    if (!sources || !G.initSyncComplete || !G.initMediaComplete) return false;
+    pendingDocumentCleanupByTab.delete(normalizedTabId);
+    return applyDocumentNavigationCleanup(normalizedTabId, sources);
+}
+
 function sendRuntimeNotice(message) {
     try {
         chrome.runtime.sendMessage(message, function () { void chrome.runtime.lastError; });
@@ -205,13 +247,16 @@ function applyTabLocationChange(tabId, url, source = "history") {
     if (lastPageUrlByTab.get(normalizedTabId) === normalizedUrl) return false;
     lastPageUrlByTab.set(normalizedTabId, normalizedUrl);
 
-    if ([1, 2].includes(Number(G.autoClearMode))) {
+    if (globalThis.EagleBridgeCandidateLogic.shouldClearCapturedCandidates(
+        source,
+        G.autoClearMode
+    )) {
         clearCapturedTab(normalizedTabId, true);
         saveMediaData(cacheData);
         SetIcon({ tabId: normalizedTabId });
     } else {
-        // Keep the user's retained list, but allow the new page to rediscover
-        // URLs that also appeared on the previous page.
+        // SPA route changes select another work inside the same document. Keep
+        // earlier candidates while allowing the new route to rediscover URLs.
         invalidateCapturedTabContext(normalizedTabId, true);
     }
 
@@ -503,6 +548,10 @@ function findMedia(data, isRegex = false, filter = false, timer = false) {
         }, 500);
         return;
     }
+    // Any cold-start navigation cleanup must run before the first candidate
+    // from the new document is inserted. It must never be deferred behind an
+    // alarm callback that can delete that freshly inserted candidate later.
+    flushPendingDocumentCleanup(data.tabId);
 
     // 检查 是否启用 是否在当前标签是否在屏蔽列表中
     const blockUrlFlag = data.tabId && data.tabId > 0 && G.blockUrlSet.has(data.tabId);
@@ -601,11 +650,11 @@ function findMedia(data, isRegex = false, filter = false, timer = false) {
     cacheData[G.tabId] ??= [];
     const captureGeneration = captureGenerationByTab.get(data.tabId) || 0;
 
-    // 缓存数据大于9999条 清空缓存 避免内存占用过多
+    // 缓存达到上限时只淘汰最旧项；清空整个标签会让刚捕获的
+    // 媒体和用户仍在查看的旧媒体同时消失。
     if (cacheData[data.tabId].length > G.maxLength) {
-        cacheData[data.tabId] = [];
+        cacheData[data.tabId].splice(0, cacheData[data.tabId].length - G.maxLength);
         saveMediaData(cacheData);
-        return;
     }
 
     // 查重 避免CPU占用 大于500 强制关闭查重
@@ -803,12 +852,12 @@ function save(tabId) {
     debounceTime = Date.now();
     debounceCount = 0;
     if (cacheData[tabId]) {
-        // 单个标签数据超过99条 不再保存到storage
-        if (cacheData[tabId]?.length <= 99) {
-            saveMediaData(cacheData, function () {
-                chrome.runtime.lastError && console.log(chrome.runtime.lastError);
-            });
-        }
+        // Session storage keeps a bounded rolling window. Continue updating it
+        // after 99 captures so a restarted MV3 worker cannot resurrect a stale
+        // early snapshot and hide the newest media.
+        saveMediaData(cacheData, function () {
+            chrome.runtime.lastError && console.log(chrome.runtime.lastError);
+        });
         scheduleVisibleMediaCount(tabId);
     }
 }
@@ -832,8 +881,9 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
             () => cacheData
         ).then(snapshot => {
             const tabId = Message.tabId ?? G.tabId;
+            flushPendingDocumentCleanup(tabId);
             scheduleVisibleMediaCount(tabId);
-            sendResponse(snapshot && typeof snapshot === "object" ? snapshot : {});
+            sendResponse(cacheData && typeof cacheData === "object" ? cacheData : {});
         });
         return true;
     }
@@ -1059,16 +1109,6 @@ chrome.windows.onFocusChanged.addListener(function (activeInfo) {
 chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
     if (isSpecialPage(tab.url) || tabId <= 0 || !G.initSyncComplete) { return; }
     // console.log('onUpdated', tabId, changeInfo, tab);
-    if (changeInfo.status && changeInfo.status == "loading" && G.autoClearMode == 2) {
-        G.urlMap.delete(tabId);
-        chrome.alarms.get("save", function (alarm) {
-            if (!alarm) {
-                delete cacheData[tabId];
-                SetIcon({ tabId: tabId });
-                chrome.alarms.create("save", { when: Date.now() + 1000 });
-            }
-        });
-    }
     // 检查当前标签是否在屏蔽列表中
     if (changeInfo.url && tabId > 0) {
         if (G.blockUrl.length) {
@@ -1092,8 +1132,14 @@ chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
  * 检查 注入脚本
  */
 chrome.webNavigation.onCommitted.addListener(function (details) {
-    if (isSpecialPage(details.url) || details.tabId <= 0 || !G.initSyncComplete) { return; }
+    if (isSpecialPage(details.url) || details.tabId <= 0) { return; }
     // console.log('onCommitted', details);
+
+    if (details.frameId == 0
+        && (!['auto_subframe', 'manual_subframe', 'form_submit'].includes(details.transitionType))) {
+        clearCapturedTabForNavigation(details.tabId, "committed");
+    }
+    if (!G.initSyncComplete) { return; }
 
     // 刷新页面 检查是否在屏蔽列表中
     if (details.frameId == 0) {
@@ -1103,13 +1149,6 @@ chrome.webNavigation.onCommitted.addListener(function (details) {
             G.blockUrlSet.add(details.tabId);
         }
         announceTabLocationChanged(details.tabId, details.url, "committed");
-    }
-
-    // 刷新清理角标数
-    if (details.frameId == 0 && (!['auto_subframe', 'manual_subframe', 'form_submit'].includes(details.transitionType)) && G.autoClearMode == 1) {
-        clearCapturedTab(details.tabId, true);
-        saveMediaData(cacheData);
-        SetIcon({ tabId: details.tabId });
     }
 
     // chrome内核版本 102 以下不支持 chrome.scripting.executeScript API
@@ -1143,6 +1182,7 @@ chrome.tabs.onRemoved.addListener(function (tabId) {
     lastPageUrlByTab.delete(tabId);
     pendingPageLocationByTab.delete(tabId);
     pageLocationInitializationWaitByTab.delete(tabId);
+    pendingDocumentCleanupByTab.delete(tabId);
     if (lastActiveWebTabId === Number(tabId)) lastActiveWebTabId = 0;
     // 清理缓存数据
     chrome.alarms.get("nowClear", function (alarm) {
@@ -1342,6 +1382,9 @@ function clearRedundant() {
         pageLocationInitializationWaitByTab.forEach((_, key) => {
             !allTabId.has(key) && pageLocationInitializationWaitByTab.delete(key);
         });
+        pendingDocumentCleanupByTab.forEach((_, key) => {
+            !allTabId.has(key) && pendingDocumentCleanupByTab.delete(key);
+        });
         if (!allTabId.has(lastActiveWebTabId)) lastActiveWebTabId = 0;
 
         // 清理脚本
@@ -1364,7 +1407,7 @@ function clearRedundant() {
 // 扩展升级，清空本地储存
 chrome.runtime.onInstalled.addListener(function (details) {
     if (details.reason == "update") {
-        // Preserve the Download Transfer Station pairing token, queued source
+        // Preserve the 留底浏览器扩展 pairing token, queued source
         // events, and upstream settings. Only obsolete capture cache is reset.
         chrome.storage.local.remove(["MediaData"], function () {
             if (chrome.storage.session) {

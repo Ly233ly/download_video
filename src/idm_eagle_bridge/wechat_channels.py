@@ -579,12 +579,17 @@ class WechatChannelsCaptureService:
         media: MediaCoordinator,
         root: str | Path | None = None,
         proxy_factory: Callable[..., WechatLoopbackProxy] = WechatLoopbackProxy,
+        eagle_available: Callable[[], bool] | None = None,
     ) -> None:
         self.media = media
         self.root = Path(root) if root else ensure_data_dir() / "wechat-channels"
         self.certificate = WechatCertificateAuthority(self.root / "certificate")
         self.proxy_lease = WinInetProxyLease(self.root / "proxy-lease.json")
         self.proxy_factory = proxy_factory
+        # Eagle is optional.  Missing or broken capability providers must fail
+        # closed to a local download, never turn an ordinary download click
+        # into an unavailable import operation.
+        self.eagle_available = eagle_available or (lambda: False)
         self.registry = WechatCandidateRegistry()
         self.proxy: WechatLoopbackProxy | None = None
         self.state = "off"
@@ -938,11 +943,18 @@ class WechatChannelsCaptureService:
             variant_id = _text(payload.get("variantId"), 128)
             if not object_id or not variant_id:
                 raise WechatChannelsError("视频号页面下载请求缺少内容或质量身份")
+            try:
+                import_to_eagle = bool(self.eagle_available())
+            except Exception:
+                import_to_eagle = False
             plan = self.submit(
                 object_id,
                 variant_id,
-                import_to_eagle=True,
-                delete_after_import=True,
+                import_to_eagle=import_to_eagle,
+                # The injected page control is labelled only "下载". Keep the
+                # local copy even when Eagle is available; deletion requires
+                # the explicitly labelled desktop action.
+                delete_after_import=False,
             )
             return {
                 "action": "download",
@@ -950,6 +962,7 @@ class WechatChannelsCaptureService:
                     "id": str(plan.get("id") or ""),
                     "status": str(plan.get("status") or ""),
                     "title": str(plan.get("title") or plan.get("output_name") or ""),
+                    "delivery": "eagle" if import_to_eagle else "local",
                 },
             }
         if action == "diagnostic":

@@ -243,7 +243,7 @@ class MediaCoordinatorTests(unittest.TestCase):
             }.issubset(columns)
         )
 
-    def test_new_import_plan_defaults_to_post_import_cleanup_for_old_extensions(self) -> None:
+    def test_post_import_cleanup_requires_an_explicit_request(self) -> None:
         with patch.object(self.coordinator, "schedule"):
             plan = self.coordinator.create_plan(
                 self.payload(deleteAfterImport=True)
@@ -256,7 +256,16 @@ class MediaCoordinatorTests(unittest.TestCase):
             legacy_extension = self.coordinator.create_plan(self.payload())
         self.assertEqual(
             self.coordinator.get_plan(legacy_extension["id"])["delete_after_import"],
-            1,
+            0,
+        )
+
+        with patch.object(self.coordinator, "schedule"):
+            non_boolean = self.coordinator.create_plan(
+                self.payload(deleteAfterImport="true")
+            )
+        self.assertEqual(
+            self.coordinator.get_plan(non_boolean["id"])["delete_after_import"],
+            0,
         )
 
         with patch.object(self.coordinator, "schedule"):
@@ -568,6 +577,64 @@ class MediaCoordinatorTests(unittest.TestCase):
         self.assertEqual([stream["role"] for stream in streams], ["video", "audio"])
         self.assertTrue(all(stream["resolver"] == "" for stream in streams))
 
+    def test_page_resolver_does_not_forward_oversized_page_credentials_to_cdn(self) -> None:
+        class FakeProcess:
+            returncode = 0
+
+            def communicate(self):
+                return ("https://cdn.example/video.mp4\n", "")
+
+            def terminate(self):
+                self.returncode = 1
+
+        context = {
+            "url": "https://www.douyin.com/video/7662692425235828009",
+            "resolver": "page",
+            "headers": {
+                "cookie": "sessionid=" + "s" * 9000,
+                "authorization": "Bearer page-only-secret",
+                "user-agent": "Chrome/Test",
+                "referer": "https://www.douyin.com/jingxuan",
+                "origin": "https://www.douyin.com",
+            },
+        }
+        with patch(
+            "idm_eagle_bridge.media.resolve_media_tool",
+            side_effect=lambda name: self.root / f"{name}.exe",
+        ), patch(
+            "idm_eagle_bridge.media.subprocess.Popen", return_value=FakeProcess()
+        ):
+            streams = self.coordinator._resolve_page_streams(
+                "plan-douyin-cdn",
+                context,
+                self.root / "douyin-cdn-work",
+            )
+
+        self.assertEqual(len(streams), 1)
+        resolved_headers = streams[0]["headers"]
+        self.assertEqual(resolved_headers["user-agent"], "Chrome/Test")
+        self.assertEqual(resolved_headers["referer"], "https://www.douyin.com/jingxuan")
+        self.assertEqual(resolved_headers["origin"], "https://www.douyin.com")
+        self.assertNotIn("cookie", resolved_headers)
+        self.assertNotIn("authorization", resolved_headers)
+        ffmpeg_arguments = self.coordinator._ffmpeg_input_arguments(streams[0], None)
+        self.assertNotIn("Cookie:", " ".join(ffmpeg_arguments))
+        self.assertNotIn("Authorization:", " ".join(ffmpeg_arguments))
+
+    def test_page_resolver_keeps_small_credentials_for_the_same_host(self) -> None:
+        headers = self.coordinator._page_resolved_headers(
+            "https://media.example/watch/1",
+            "https://media.example/files/1.mp4",
+            {
+                "cookie": "sessionid=needed",
+                "authorization": "Bearer needed",
+                "user-agent": "Chrome/Test",
+            },
+        )
+        self.assertEqual(headers["cookie"], "sessionid=needed")
+        self.assertEqual(headers["authorization"], "Bearer needed")
+        self.assertEqual(headers["user-agent"], "Chrome/Test")
+
     def test_douyin_page_resolver_canonicalizes_modal_url_before_process_start(self) -> None:
         class FakeProcess:
             returncode = 1
@@ -677,6 +744,43 @@ class MediaCoordinatorTests(unittest.TestCase):
             imported = self.coordinator.get_plan(plan["id"])
             self.assertEqual(imported["status"], "imported")
             self.assertEqual(imported["progress"], 100)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_ffmpeg_reports_overlong_headers_without_hiding_the_cause(self) -> None:
+        media_root = self.root / "overlong-headers"
+        media_root.mkdir()
+        video = media_root / "video.mp4"
+        self._make_video(video)
+        server, thread = self._start_server(media_root)
+        try:
+            stream = {
+                "url": f"http://127.0.0.1:{server.server_address[1]}/video.mp4",
+                "role": "video",
+                "name": "video.mp4",
+                "extension": "mp4",
+                "mimeType": "video/mp4",
+                "size": video.stat().st_size,
+                "duration": 1,
+                "drm": False,
+            }
+            with patch.dict(
+                os.environ,
+                {"IDM_EAGLE_DOWNLOAD_ROOT": str(self.root / "overlong-downloads")},
+            ):
+                plan = self.coordinator.create_plan(
+                    self.payload(
+                        streams=[stream],
+                        runtimeHeaders=[{"cookie": "sessionid=" + "s" * 9000}],
+                    )
+                )
+                result = self._wait(plan["id"])
+            self.assertEqual(result["status"], "retry")
+            self.assertEqual(result["error_code"], "desktop_headers_too_large")
+            self.assertIn("下载请求头超过", result["error_message"])
+            self.assertNotIn("sessionid", result["error_message"])
         finally:
             server.shutdown()
             server.server_close()
@@ -955,6 +1059,83 @@ class MediaCoordinatorTests(unittest.TestCase):
         stopped = self.coordinator.stop_plan(plan["id"])
         self.assertEqual(stopped["status"], "canceled")
 
+    def test_stop_on_terminal_plan_does_not_leave_stale_stop_request(self) -> None:
+        with patch.object(self.coordinator, "schedule"):
+            plan = self.coordinator.create_plan(self.payload(importToEagle=False))
+        with self.database.session() as connection:
+            connection.execute(
+                "UPDATE download_plans SET status = 'completed_local', progress = 100 WHERE id = ?",
+                (plan["id"],),
+            )
+
+        result = self.coordinator.stop_plan(plan["id"])
+
+        self.assertEqual(result["status"], "completed_local")
+        self.assertNotIn(plan["id"], self.coordinator._stop_requested)
+
+    def test_stop_during_validation_cannot_be_overwritten_by_completion(self) -> None:
+        class FinishedProcess:
+            def __init__(self, command: list[str]) -> None:
+                Path(command[-1]).write_bytes(b"downloaded-media")
+                self.stdout = io.StringIO("progress=end\n")
+                self.stdin = None
+                self.returncode = 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                return self.returncode
+
+            def poll(self) -> int:
+                return self.returncode
+
+            def terminate(self) -> None:
+                self.returncode = 1
+
+        entered_validation = threading.Event()
+        release_validation = threading.Event()
+
+        def paused_probe(*_args: object, **_kwargs: object) -> dict:
+            entered_validation.set()
+            self.assertTrue(release_validation.wait(timeout=3))
+            return {"streams": [{"codec_type": "video"}], "format": {"duration": "1"}}
+
+        download_root = self.root / "stop-during-validation"
+        with (
+            patch.dict(os.environ, {"IDM_EAGLE_DOWNLOAD_ROOT": str(download_root)}),
+            patch.object(self.coordinator, "schedule"),
+        ):
+            plan = self.coordinator.create_plan(self.payload(importToEagle=False))
+
+        with (
+            patch.dict(os.environ, {"IDM_EAGLE_DOWNLOAD_ROOT": str(download_root)}),
+            patch.object(
+                self.coordinator.network_proxy,
+                "routes_for",
+                return_value=[ProxyRoute(None, "direct", "direct", "直连")],
+            ),
+            patch("idm_eagle_bridge.media.resolve_media_tool", return_value=self.root / "ffmpeg.exe"),
+            patch(
+                "idm_eagle_bridge.media.subprocess.Popen",
+                side_effect=lambda command, **_kwargs: FinishedProcess(command),
+            ),
+            patch.object(self.coordinator, "_probe", side_effect=paused_probe),
+            patch.object(self.coordinator, "_validate_output_duration"),
+            patch.object(self.coordinator, "_create_preview", return_value=None),
+        ):
+            worker = threading.Thread(
+                target=self.coordinator._process_guarded,
+                args=(plan["id"],),
+            )
+            worker.start()
+            self.assertTrue(entered_validation.wait(timeout=3))
+            stopped = self.coordinator.stop_plan(plan["id"])
+            self.assertEqual(stopped["status"], "canceled")
+            release_validation.set()
+            worker.join(timeout=5)
+
+        result = self.coordinator.get_plan(plan["id"])
+        self.assertEqual(result["status"], "canceled")
+        self.assertFalse((download_root / "留底下载器" / "已完成" / result["output_name"]).exists())
+
     def test_clear_terminal_history_removes_records_but_not_files_or_active_plans(self) -> None:
         output = self.root / "finished.mp4"
         output.write_bytes(b"user-visible-download")
@@ -1154,7 +1335,7 @@ class MediaCoordinatorTests(unittest.TestCase):
 
     def test_completed_plan_preview_is_bounded_to_program_preview_directory(self) -> None:
         station_root = self.root / "preview-root"
-        preview = station_root / "下载中转站" / "预览" / "frame.png"
+        preview = station_root / "留底下载器" / "预览" / "frame.png"
         preview.parent.mkdir(parents=True)
         preview.write_bytes(b"\x89PNG\r\n\x1a\n" + b"preview-frame")
         with (
@@ -1187,7 +1368,7 @@ class MediaCoordinatorTests(unittest.TestCase):
 
     def test_open_output_uses_only_program_owned_completed_directory(self) -> None:
         station_root = self.root / "open-root"
-        completed = station_root / "下载中转站" / "已完成"
+        completed = station_root / "留底下载器" / "已完成"
         completed.mkdir(parents=True)
         output = completed / "finished.mp4"
         output.write_bytes(b"media")
@@ -1223,7 +1404,7 @@ class MediaCoordinatorTests(unittest.TestCase):
 
     def test_completed_local_plan_can_be_queued_for_eagle_without_redownload(self) -> None:
         station_root = self.root / "import-existing-root"
-        completed = station_root / "下载中转站" / "已完成"
+        completed = station_root / "留底下载器" / "已完成"
         completed.mkdir(parents=True)
         output = completed / "already-downloaded.mp4"
         output.write_bytes(b"already-downloaded-media")
@@ -1242,7 +1423,7 @@ class MediaCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready_to_import")
         self.assertEqual(result["progress"], 90)
         self.assertEqual(result["import_to_eagle"], 1)
-        self.assertEqual(result["delete_after_import"], 1)
+        self.assertEqual(result["delete_after_import"], 0)
         self.assertIsNotNone(result["job_id"])
         job = self.database.get_job(result["job_id"])
         self.assertEqual(job["file_path"], str(output.resolve()))
@@ -1250,6 +1431,90 @@ class MediaCoordinatorTests(unittest.TestCase):
 
         repeated = self.coordinator.import_completed_plan(plan["id"])
         self.assertEqual(repeated["job_id"], result["job_id"], "repeated clicks must not create duplicate Eagle jobs")
+
+    def test_concurrent_completed_local_import_claim_creates_only_one_job(self) -> None:
+        station_root = self.root / "concurrent-import-root"
+        completed = station_root / "留底下载器" / "已完成"
+        completed.mkdir(parents=True)
+        output = completed / "concurrent.mp4"
+        output.write_bytes(b"concurrent-media")
+        with (
+            patch.dict(os.environ, {"IDM_EAGLE_DOWNLOAD_ROOT": str(station_root)}),
+            patch.object(self.coordinator, "schedule"),
+        ):
+            plan = self.coordinator.create_plan(self.payload(importToEagle=False))
+            with self.database.session() as connection:
+                connection.execute(
+                    "UPDATE download_plans SET status = 'completed_local', progress = 100, final_path = ? WHERE id = ?",
+                    (str(output), plan["id"]),
+                )
+
+            owned_barrier = threading.Barrier(2)
+            original_owned = self.coordinator._owned_plan_file
+            original_add_job = self.database.add_job
+            add_lock = threading.Lock()
+            first_created = threading.Event()
+            second_created = threading.Event()
+            add_calls = 0
+
+            def synchronized_owned(plan_id: str, field: str, directory: str) -> Path:
+                result = original_owned(plan_id, field, directory)
+                owned_barrier.wait(timeout=3)
+                return result
+
+            def force_distinct_legacy_jobs(file_path: str, created_at: float | None = None) -> str:
+                nonlocal add_calls
+                with add_lock:
+                    call_index = add_calls
+                    add_calls += 1
+                if call_index == 0:
+                    job_id = original_add_job(file_path, created_at)
+                    self.database.update_job(
+                        job_id,
+                        status="imported",
+                        eagle_item_id="race-item",
+                        completed_at=time.time(),
+                    )
+                    first_created.set()
+                    self.assertTrue(second_created.wait(timeout=3))
+                    return job_id
+                self.assertTrue(first_created.wait(timeout=3))
+                job_id = original_add_job(file_path, created_at)
+                second_created.set()
+                return job_id
+
+            results: list[dict] = []
+            failures: list[BaseException] = []
+
+            def import_plan() -> None:
+                try:
+                    results.append(self.coordinator.import_completed_plan(plan["id"]))
+                except BaseException as exc:  # captured so thread failures fail the test
+                    failures.append(exc)
+
+            with (
+                patch.object(self.coordinator, "_owned_plan_file", side_effect=synchronized_owned),
+                patch.object(self.database, "add_job", side_effect=force_distinct_legacy_jobs),
+            ):
+                threads = [threading.Thread(target=import_plan) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=5)
+
+        self.assertFalse(failures)
+        self.assertEqual(len(results), 2)
+        with self.database.session() as connection:
+            jobs = connection.execute(
+                "SELECT id FROM jobs WHERE file_path = ?",
+                (str(output.resolve()),),
+            ).fetchall()
+            linked = connection.execute(
+                "SELECT job_id FROM download_plans WHERE id = ?",
+                (plan["id"],),
+            ).fetchone()
+        self.assertEqual(len(jobs), 1, "concurrent import clicks must not leave an orphan job")
+        self.assertEqual(linked["job_id"], jobs[0]["id"])
 
     def test_drm_plan_is_blocked_before_rows_are_created(self) -> None:
         streams = list(self.payload()["streams"])

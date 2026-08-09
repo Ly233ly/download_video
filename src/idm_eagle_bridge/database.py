@@ -76,6 +76,16 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status_retry
 ON jobs(status, next_retry_at, created_at);
 
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at
+ON jobs(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_updated_at
+ON jobs(updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_actionable_created
+ON jobs(created_at ASC)
+WHERE status IN ('waiting_source', 'queued', 'waiting_eagle', 'retry');
+
 CREATE INDEX IF NOT EXISTS idx_jobs_file_status
 ON jobs(file_path, status, created_at DESC);
 
@@ -156,6 +166,18 @@ CREATE TABLE IF NOT EXISTS download_plans (
 
 CREATE INDEX IF NOT EXISTS idx_download_plans_status
 ON download_plans(status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_download_plans_created_at
+ON download_plans(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_download_plans_updated_at
+ON download_plans(updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_download_plans_job_id
+ON download_plans(job_id);
+
+CREATE INDEX IF NOT EXISTS idx_download_plans_group_id
+ON download_plans(group_id);
 
 CREATE TABLE IF NOT EXISTS imported_fingerprints (
     fingerprint TEXT PRIMARY KEY,
@@ -500,17 +522,92 @@ class Database:
             )
         return job_id
 
+    def claim_completed_plan_import(
+        self,
+        plan_id: str,
+        expected_final_path: str,
+        file_path: str,
+    ) -> tuple[str | None, bool]:
+        """Atomically attach one import job to a completed local media plan.
+
+        The boolean reports whether this call won the plan transition.  Keeping
+        the job lookup/insert and plan update in the same IMMEDIATE transaction
+        prevents concurrent补导 requests from creating an unreferenced second
+        job if Eagle finishes the first job between those operations.
+        """
+        path = Path(file_path).expanduser()
+        now = time.time()
+        with self.transaction() as connection:
+            plan = connection.execute(
+                "SELECT status, final_path, job_id FROM download_plans WHERE id = ?",
+                (plan_id,),
+            ).fetchone()
+            if plan is None:
+                return None, False
+            if plan["job_id"]:
+                return str(plan["job_id"]), False
+            if plan["status"] != "completed_local" or plan["final_path"] != expected_final_path:
+                return None, False
+
+            existing = connection.execute(
+                """
+                SELECT id FROM jobs
+                WHERE file_path = ?
+                  AND status IN ('queued', 'waiting_source', 'waiting_eagle', 'retry')
+                  AND created_at >= ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (str(path), now - 5 * 60),
+            ).fetchone()
+            if existing is not None:
+                job_id = str(existing["id"])
+            else:
+                job_id = str(uuid.uuid4())
+                connection.execute(
+                    """
+                    INSERT INTO jobs(
+                        id, file_path, file_name, extension, status, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, 'queued', ?, ?)
+                    """,
+                    (job_id, str(path), path.name, path.suffix.lower(), now, now),
+                )
+
+            cursor = connection.execute(
+                """
+                UPDATE download_plans SET import_to_eagle = 1,
+                    delete_after_import = 0,
+                    status = 'ready_to_import', progress = 90,
+                    phase_detail = '等待 Eagle 导入', job_id = ?,
+                    error_code = NULL, error_message = NULL,
+                    completed_at = NULL, updated_at = ?
+                WHERE id = ? AND status = 'completed_local'
+                  AND job_id IS NULL AND final_path = ?
+                """,
+                (job_id, now, plan_id, expected_final_path),
+            )
+            if cursor.rowcount != 1:
+                # BEGIN IMMEDIATE makes this defensive rather than expected, but
+                # never leave a newly inserted job behind if the state changes.
+                if existing is None:
+                    connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+                latest = connection.execute(
+                    "SELECT job_id FROM download_plans WHERE id = ?",
+                    (plan_id,),
+                ).fetchone()
+                return (str(latest["job_id"]) if latest and latest["job_id"] else None), False
+        return job_id, True
+
     def attach_best_source(
         self, job_id: str, lookback_seconds: float = 4 * 60 * 60
     ) -> bool:
         with self.transaction() as connection:
             job = connection.execute(
-                "SELECT id, created_at FROM jobs WHERE id = ?", (job_id,)
+                "SELECT id, created_at, file_name FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
             if job is None:
                 raise KeyError(job_id)
 
-            source = connection.execute(
+            recent_sources = connection.execute(
                 """
                 SELECT id, page_url, page_title, media_hint, event_type, created_at
                 FROM source_events
@@ -518,15 +615,36 @@ class Database:
                   AND created_at <= ?
                   AND created_at >= ?
                 ORDER BY created_at DESC
+                LIMIT 500
                 """,
                 (job["created_at"], job["created_at"] - lookback_seconds),
             ).fetchall()
+            explicit_sources = connection.execute(
+                """
+                SELECT id, page_url, page_title, media_hint, event_type, created_at
+                FROM source_events
+                WHERE consumed_by_job_id IS NULL
+                  AND created_at <= ?
+                  AND created_at >= ?
+                  AND event_type IN ('manual', 'ignore', 'site_disabled')
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (job["created_at"], job["created_at"] - lookback_seconds),
+            ).fetchall()
+            sources_by_id = {
+                str(source["id"]): source
+                for source in (*recent_sources, *explicit_sources)
+            }
+            source = sorted(
+                sources_by_id.values(),
+                key=lambda candidate: float(candidate["created_at"]),
+                reverse=True,
+            )
             if not source:
                 return False
 
-            source = self._choose_source(Path(connection.execute(
-                "SELECT file_name FROM jobs WHERE id = ?", (job_id,)
-            ).fetchone()["file_name"]), source)
+            source = self._choose_source(Path(job["file_name"]), source)
             if source is None:
                 return False
 
@@ -642,12 +760,21 @@ class Database:
             row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
 
+    def job_has_download_plan(self, job_id: str) -> bool:
+        """Return whether a job was created for a desktop media plan, not IDM."""
+        with self.session() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM download_plans WHERE job_id = ? LIMIT 1",
+                (job_id,),
+            ).fetchone()
+        return row is not None
+
     def list_actionable_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         now = time.time()
         with self.session() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM jobs
+                SELECT * FROM jobs INDEXED BY idx_jobs_actionable_created
                 WHERE status IN ('waiting_source', 'queued', 'waiting_eagle', 'retry')
                   AND (next_retry_at IS NULL OR next_retry_at <= ?)
                 ORDER BY created_at ASC
@@ -710,6 +837,20 @@ class Database:
                     """,
                     (completed_at, updates["updated_at"], job_id),
                 )
+            elif updates.get("status") == "skipped_duplicate":
+                completed_at = updates.get("completed_at") or updates["updated_at"]
+                connection.execute(
+                    """
+                    UPDATE download_plans SET
+                        status = 'imported', progress = 100,
+                        delete_after_import = 0,
+                        phase_detail = 'Eagle 已有相同内容，本机文件已保留',
+                        error_code = NULL, error_message = NULL,
+                        completed_at = COALESCE(completed_at, ?), updated_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (completed_at, updates["updated_at"], job_id),
+                )
 
     def record_plan_output_cleanup(
         self,
@@ -760,7 +901,8 @@ class Database:
         with self.session() as connection:
             rows = connection.execute(
                 """
-                SELECT plan.id AS plan_id, plan.final_path, plan.completed_at, jobs.id AS job_id
+                SELECT plan.id AS plan_id, plan.final_path, plan.completed_at,
+                       jobs.id AS job_id, jobs.file_path AS job_file_path
                 FROM download_plans AS plan
                 JOIN jobs ON jobs.id = plan.job_id
                 WHERE plan.status = 'imported'
@@ -817,20 +959,20 @@ class Database:
             status_rows = connection.execute(
                 "SELECT status, COUNT(*) AS count FROM jobs GROUP BY status"
             ).fetchall()
-            revision_row = connection.execute(
-                "SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS revision FROM jobs"
-            ).fetchone()
+            revision = float(
+                connection.execute(
+                    "SELECT COALESCE(MAX(updated_at), 0) FROM jobs"
+                ).fetchone()[0]
+            )
             enabled_site_count = connection.execute(
                 "SELECT COUNT(*) FROM site_rules WHERE enabled = 1"
             ).fetchone()[0]
+        job_count = sum(int(row["count"]) for row in status_rows)
         return {
             "status_counts": {
                 str(row["status"]): int(row["count"]) for row in status_rows
             },
-            "jobs_revision": (
-                int(revision_row["count"]),
-                float(revision_row["revision"]),
-            ),
+            "jobs_revision": (job_count, revision),
             "enabled_site_count": int(enabled_site_count),
         }
 

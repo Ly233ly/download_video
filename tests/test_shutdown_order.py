@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from idm_eagle_bridge.api_server import LocalApiServer
 from idm_eagle_bridge import main as main_module
+from idm_eagle_bridge.wechat_channels_proxy import WechatLoopbackProxy
 
 
 class _Recorder:
@@ -36,7 +37,68 @@ class _Thread:
         self.events.append(f"http.join:{timeout}")
 
 
+class _UnstartedHttpServer(_HttpServer):
+    def shutdown(self) -> None:
+        raise AssertionError("shutdown() would block when serve_forever() never started")
+
+
 class ShutdownOrderTests(unittest.TestCase):
+    def test_api_start_failure_keeps_server_on_non_started_close_path(self) -> None:
+        server = object.__new__(LocalApiServer)
+        server.server = SimpleNamespace(serve_forever=Mock())
+        server.thread = None
+        failed_thread = Mock()
+        failed_thread.is_alive.return_value = False
+        failed_thread.start.side_effect = OSError("thread unavailable")
+
+        with patch("idm_eagle_bridge.api_server.threading.Thread", return_value=failed_thread):
+            with self.assertRaises(OSError):
+                server.start()
+
+        self.assertIsNone(server.thread)
+
+    def test_capture_proxy_start_failure_keeps_non_started_close_path(self) -> None:
+        proxy = object.__new__(WechatLoopbackProxy)
+        proxy.server = SimpleNamespace(serve_forever=Mock())
+        proxy.thread = None
+        failed_thread = Mock()
+        failed_thread.is_alive.return_value = False
+        failed_thread.start.side_effect = OSError("thread unavailable")
+
+        with patch(
+            "idm_eagle_bridge.wechat_channels_proxy.threading.Thread",
+            return_value=failed_thread,
+        ):
+            with self.assertRaises(OSError):
+                proxy.start()
+
+        self.assertIsNone(proxy.thread)
+
+    def test_unstarted_api_server_can_be_closed_without_shutdown_deadlock(self) -> None:
+        events: list[str] = []
+        server = object.__new__(LocalApiServer)
+        server.server = _UnstartedHttpServer(events)
+        server.thread = None
+        server.api = SimpleNamespace(
+            wechat_channels=_Recorder(events, "wechat"),
+            media=_Recorder(events, "media"),
+        )
+
+        server.stop()
+
+        self.assertEqual(events, ["wechat.close", "http.close", "media.close"])
+
+    def test_unstarted_capture_proxy_can_be_closed_without_shutdown_deadlock(self) -> None:
+        events: list[str] = []
+        proxy = object.__new__(WechatLoopbackProxy)
+        proxy.server = _UnstartedHttpServer(events)
+        proxy.thread = None
+        proxy.replace_upstream = lambda *_args: events.append("upstream.close")
+
+        proxy.stop()
+
+        self.assertEqual(events, ["http.close", "upstream.close"])
+
     def test_api_restores_wechat_proxy_before_waiting_for_workers(self) -> None:
         events: list[str] = []
         server = object.__new__(LocalApiServer)

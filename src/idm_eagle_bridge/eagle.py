@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -40,11 +41,15 @@ class EagleClient:
             with urlopen(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
-            if exc.code in {404, 405}:
-                raise EagleEndpointUnavailable(f"Eagle 接口不可用：HTTP {exc.code}") from exc
-            raise EagleImportError(f"Eagle 接口返回 HTTP {exc.code}") from exc
-        except (URLError, socket.timeout) as exc:
+            status = exc.code
+            exc.close()
+            if status in {404, 405}:
+                raise EagleEndpointUnavailable(f"Eagle 接口不可用：HTTP {status}") from exc
+            raise EagleImportError(f"Eagle 接口返回 HTTP {status}") from exc
+        except (URLError, socket.timeout, OSError, HTTPException) as exc:
             raise EagleUnavailable("Eagle 当前不可用") from exc
+        except UnicodeDecodeError as exc:
+            raise EagleImportError("Eagle 返回了无法识别的文本编码") from exc
 
         try:
             result = json.loads(raw)

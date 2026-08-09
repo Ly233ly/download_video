@@ -360,8 +360,7 @@ body.popupBody {
 
 .bridge-search-input,
 .bridge-field-input,
-.bridge-field-select,
-.bridge-pair-input {
+.bridge-field-select {
     width: 100%;
     min-height: 40px;
     padding: 0 11px;
@@ -372,8 +371,7 @@ body.popupBody {
 }
 
 .bridge-search-input::placeholder,
-.bridge-field-input::placeholder,
-.bridge-pair-input::placeholder {
+.bridge-field-input::placeholder {
     color: #9aa3b3;
 }
 
@@ -1301,7 +1299,7 @@ body.popupBody {
     min-height: 54px !important;
 }
 
-.bridge-pair-box {
+.bridge-connect-box {
     margin: 4px 0 10px;
     padding: 10px;
     background: #fff8ed;
@@ -1309,17 +1307,11 @@ body.popupBody {
     border-radius: 8px;
 }
 
-.bridge-pair-box p {
+.bridge-connect-box p {
     margin: 0 0 8px;
     color: #76511d;
     font-size: 12px;
     line-height: 1.5;
-}
-
-.bridge-pair-controls {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 7px;
 }
 
 .bridge-toast {

@@ -73,14 +73,14 @@ class UpdaterTests(unittest.TestCase):
             None,
         )
         with patch("idm_eagle_bridge.updater.urlopen", side_effect=missing):
-            self.assertIsNone(check_for_update("1.5.0"))
+            self.assertIsNone(check_for_update("1.6.0"))
 
     def test_download_verifies_and_extracts_unique_installer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive_path = root / "release.zip"
             with zipfile.ZipFile(archive_path, "w") as archive:
-                archive.writestr("下载中转站-9.9.9/一键安装.exe", b"test-installer")
+                archive.writestr("留底下载器-9.9.9/留底安装器.exe", b"test-installer")
             package = archive_path.read_bytes()
             update = UpdateInfo(
                 version="9.9.9",
@@ -92,7 +92,7 @@ class UpdaterTests(unittest.TestCase):
             with patch.dict(os.environ, {"IDM_EAGLE_DATA_DIR": str(root / "data")}):
                 installer = prepare_update(update)
 
-            self.assertEqual(installer.name, "一键安装.exe")
+            self.assertEqual(installer.name, "留底安装器.exe")
             self.assertEqual(installer.read_bytes(), b"test-installer")
 
     def test_automatic_check_is_limited_to_once_per_day(self) -> None:

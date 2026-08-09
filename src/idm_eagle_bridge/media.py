@@ -27,6 +27,7 @@ from .network_proxy import (
     ProxyRoute,
 )
 from .paths import download_station_root
+from .cache import ProgramCacheManager
 from .wechat_channels_crypto import WechatVideoDecryptor
 
 
@@ -34,6 +35,7 @@ ALLOWED_CONTAINERS = frozenset({"mp4", "mkv", "webm", "m4a", "mp3", "ts"})
 ALLOWED_STREAM_ROLES = frozenset({"video", "audio", "subtitle", "media"})
 SUBTITLE_EXTENSIONS = frozenset({"vtt", "srt", "ass", "ssa", "ttml"})
 MANIFEST_EXTENSIONS = frozenset({"m3u8", "m3u", "mpd"})
+FFMPEG_HTTP_HEADER_SAFE_BYTES = 6 * 1024
 NETWORK_RETRYABLE_ERRORS = frozenset(
     {
         "desktop_download_failed",
@@ -214,6 +216,7 @@ class MediaCoordinator:
     ) -> None:
         self.database = database
         self.network_proxy = NetworkProxyManager(database)
+        self.cache = ProgramCacheManager(database)
         self.ready_callback = ready_callback
         self.executor = ThreadPoolExecutor(
             max_workers=max(1, workers), thread_name_prefix="media-plan"
@@ -223,9 +226,22 @@ class MediaCoordinator:
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._stop_requested: set[str] = set()
         self._health_cache: tuple[float, dict[str, Any]] | None = None
+        self._health_probe_lock = threading.Lock()
         self._change_listeners: list[Callable[[], None]] = []
         self._lock = threading.Lock()
         self._recover_interrupted_plans()
+
+    def cache_status(self) -> dict[str, Any]:
+        return self.cache.status()
+
+    def clear_cache(self) -> dict[str, Any]:
+        with self._lock:
+            protected = set(self._scheduled) | set(self._processes)
+        # Cache cleanup can walk large directory trees and retry filesystem
+        # operations.  Only snapshot coordinator-owned IDs under the lock;
+        # keeping the lock for the scan would stall new plans, cancellation and
+        # process registration behind an unrelated maintenance operation.
+        return self.cache.cleanup(protected_plan_ids=protected)
 
     def add_change_listener(self, listener: Callable[[], None]) -> None:
         with self._lock:
@@ -316,12 +332,10 @@ class MediaCoordinator:
             raise MediaPlanError("不支持该输出容器", "invalid_container")
         output_name = safe_output_name(payload.get("outputName"), container)
         import_to_eagle = bool(payload.get("importToEagle", True))
-        # 覆盖安装无法替 Chrome 重启已经加载的旧 service worker。旧扩展仍会
-        # 明确发送 importToEagle，却不知道 deleteAfterImport；把导入动作本身
-        # 视为新计划的清理选择，避免同一按钮因 worker 版本不同而改变语义。
-        delete_after_import = bool(
-            payload.get("deleteAfterImport", import_to_eagle)
-        )
+        # Deleting the program-created local copy requires an explicit boolean
+        # opt-in.  A missing field from an old extension, or a truthy string
+        # from an invalid client, is not deletion authorization.
+        delete_after_import = payload.get("deleteAfterImport") is True
         delete_after_import = delete_after_import and import_to_eagle
         merge_mode = _safe_text(
             payload.get("mergeMode") or ("direct" if len(streams) == 1 else "local_streamcopy"),
@@ -859,6 +873,7 @@ class MediaCoordinator:
             self._request_process_stop(process)
         assert process.stdout is not None
         last_output = ""
+        ffmpeg_failure: tuple[str, str] | None = None
         latest_bytes = 0
         latest_time_us = 0
         progress_floor = 62.0 if preprocessed else 2.0
@@ -872,6 +887,11 @@ class MediaCoordinator:
         for line in process.stdout:
             stripped = line.strip()
             last_output = stripped or last_output
+            if "overlong headers" in stripped.lower():
+                ffmpeg_failure = (
+                    "下载请求头超过本机 FFmpeg 支持的长度，请刷新来源页面后重试",
+                    "desktop_headers_too_large",
+                )
             key, _, value = stripped.partition("=")
             if key == "total_size":
                 try:
@@ -920,6 +940,8 @@ class MediaCoordinator:
             raise MediaPlanError("任务已由用户停止", "canceled")
         if process.returncode != 0 or not work_path.is_file() or work_path.stat().st_size <= 0:
             work_path.unlink(missing_ok=True)
+            if ffmpeg_failure is not None:
+                raise MediaPlanError(*ffmpeg_failure)
             raise MediaPlanError(
                 "本机 FFmpeg 下载失败：" + _safe_text(last_output or "未知错误", 300),
                 "desktop_download_failed",
@@ -938,6 +960,11 @@ class MediaCoordinator:
         except MediaPlanError:
             work_path.unlink(missing_ok=True)
             raise
+        with self._lock:
+            stopped = plan_id in self._stop_requested
+        if stopped:
+            work_path.unlink(missing_ok=True)
+            raise MediaPlanError("任务已由用户停止", "canceled")
         subtitle_files = self._download_subtitles(
             plan_id,
             subtitle_contexts,
@@ -945,6 +972,13 @@ class MediaCoordinator:
             destination,
             proxy_route.url,
         )
+        with self._lock:
+            stopped = plan_id in self._stop_requested
+        if stopped:
+            work_path.unlink(missing_ok=True)
+            for temporary, _target in subtitle_files:
+                temporary.unlink(missing_ok=True)
+            raise MediaPlanError("任务已由用户停止", "canceled")
         os.replace(work_path, destination)
         completed_subtitles: list[Path] = []
         for temporary, target in subtitle_files:
@@ -956,13 +990,13 @@ class MediaCoordinator:
         final_size = destination.stat().st_size
         if not bool(plan.get("import_to_eagle")):
             with self.database.session() as connection:
-                connection.execute(
+                cursor = connection.execute(
                     """
                     UPDATE download_plans SET status = 'completed_local', progress = 100,
                         downloaded_bytes = ?, total_bytes = COALESCE(total_bytes, ?),
                         phase_detail = '已下载到本机', final_path = ?, preview_path = ?,
                         error_code = NULL, error_message = NULL, completed_at = ?, updated_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND status = 'validating'
                     """,
                     (
                         final_size,
@@ -974,6 +1008,14 @@ class MediaCoordinator:
                         plan_id,
                     ),
                 )
+            if cursor.rowcount != 1:
+                destination.unlink(missing_ok=True)
+                for completed_subtitle in completed_subtitles:
+                    completed_subtitle.unlink(missing_ok=True)
+                if preview_path:
+                    preview_path.unlink(missing_ok=True)
+                self._remove_empty_plan_root(plan_root)
+                raise MediaPlanError("任务已由用户停止", "canceled")
             self._remove_empty_plan_root(plan_root)
             return
 
@@ -992,7 +1034,7 @@ class MediaCoordinator:
                     downloaded_bytes = ?, total_bytes = COALESCE(total_bytes, ?),
                     phase_detail = '等待 Eagle 导入', final_path = ?, preview_path = ?,
                     job_id = ?, error_code = NULL, error_message = NULL, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status = 'validating'
                 """,
                 (
                     final_size,
@@ -1017,8 +1059,13 @@ class MediaCoordinator:
                     (job_id,),
                 )
         if cursor.rowcount != 1:
+            destination.unlink(missing_ok=True)
+            for completed_subtitle in completed_subtitles:
+                completed_subtitle.unlink(missing_ok=True)
+            if preview_path:
+                preview_path.unlink(missing_ok=True)
             self._remove_empty_plan_root(plan_root)
-            return
+            raise MediaPlanError("任务已由用户停止", "canceled")
         self._remove_empty_plan_root(plan_root)
         if self.ready_callback:
             try:
@@ -1255,6 +1302,49 @@ class MediaCoordinator:
             resolved.append(item)
         return resolved
 
+    @staticmethod
+    def _page_resolved_headers(
+        page_url: str,
+        resolved_url: str,
+        headers: dict[str, Any],
+    ) -> dict[str, str]:
+        forwarded: dict[str, str] = {}
+        for name in ("user-agent", "referer", "origin"):
+            value = headers.get(name)
+            if (
+                isinstance(value, str)
+                and value
+                and "\r" not in value
+                and "\n" not in value
+            ):
+                forwarded[name] = value
+
+        page = urlsplit(page_url)
+        resolved = urlsplit(resolved_url)
+        page_host = (page.hostname or "").lower().rstrip(".")
+        resolved_host = (resolved.hostname or "").lower().rstrip(".")
+        # Page credentials authenticate the extractor, not an unrelated media CDN.
+        if page_host and resolved_host == page_host and resolved.scheme == page.scheme:
+            for name in ("authorization", "cookie"):
+                value = headers.get(name)
+                if (
+                    isinstance(value, str)
+                    and value
+                    and "\r" not in value
+                    and "\n" not in value
+                ):
+                    forwarded[name] = value
+
+        header_bytes = sum(
+            len(f"{name.title()}: {value}\r\n".encode("utf-8"))
+            for name, value in forwarded.items()
+            if name != "user-agent"
+        )
+        if header_bytes > FFMPEG_HTTP_HEADER_SAFE_BYTES:
+            forwarded.pop("cookie", None)
+            forwarded.pop("authorization", None)
+        return forwarded
+
     def _resolve_page_streams(
         self,
         plan_id: str,
@@ -1368,6 +1458,7 @@ class MediaCoordinator:
             item = dict(context)
             item.update({
                 "url": resolved_url,
+                "headers": self._page_resolved_headers(url, resolved_url, headers),
                 "resolver": "",
                 "role": "video" if index == 0 else "audio",
                 "extension": "mp4" if index == 0 else "m4a",
@@ -1636,14 +1727,9 @@ class MediaCoordinator:
 
     def stop_plan(self, plan_id: str) -> dict[str, Any]:
         plan_id = _safe_text(plan_id, 80)
-        with self._lock:
-            self._stop_requested.add(plan_id)
-            process = self._processes.get(plan_id)
-        if process:
-            self._request_process_stop(process)
         now = time.time()
         with self.database.session() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE download_plans SET status = 'canceled', progress = 0,
                     error_code = 'canceled', error_message = '任务已由用户停止',
@@ -1652,6 +1738,12 @@ class MediaCoordinator:
                 """,
                 (now, plan_id),
             )
+        if cursor.rowcount == 1:
+            with self._lock:
+                self._stop_requested.add(plan_id)
+                process = self._processes.get(plan_id)
+            if process:
+                self._request_process_stop(process)
         return self.get_plan(plan_id)
 
     def _probe(self, path: Path, require_video: bool, require_audio: bool) -> dict[str, Any]:
@@ -1883,18 +1975,21 @@ class MediaCoordinator:
             row = connection.execute(
                 """
                 SELECT
-                    COUNT(*) AS total,
-                    COALESCE(SUM(
-                        CASE WHEN (jobs.status IS NULL OR jobs.status != 'imported')
-                              AND plan.status IN (
+                    (SELECT COUNT(*) FROM download_plans) AS total,
+                    (
+                        SELECT COUNT(*)
+                        FROM download_plans AS plan
+                        LEFT JOIN jobs ON jobs.id = plan.job_id
+                        WHERE (jobs.status IS NULL OR jobs.status != 'imported')
+                          AND plan.status IN (
                                   'queued', 'downloading', 'merging',
                                   'validating', 'ready_to_import'
                               )
-                             THEN 1 ELSE 0 END
-                    ), 0) AS active,
-                    COALESCE(MAX(plan.updated_at), 0) AS revision
-                FROM download_plans AS plan
-                LEFT JOIN jobs ON jobs.id = plan.job_id
+                    ) AS active,
+                    (
+                        SELECT COALESCE(MAX(updated_at), 0)
+                        FROM download_plans
+                    ) AS revision
                 """
             ).fetchone()
         return {
@@ -2082,7 +2177,19 @@ class MediaCoordinator:
             raise MediaPlanError("只有已下载到本机的任务可以直接导入 Eagle", "plan_not_importable")
 
         output = self._owned_plan_file(plan_id, "final_path", "已完成")
-        job_id = self.database.add_job(str(output))
+        expected_final_path = str(plan.get("final_path") or "")
+        job_id, claimed = self.database.claim_completed_plan_import(
+            plan_id,
+            expected_final_path,
+            str(output),
+        )
+        if not claimed:
+            latest = self.get_plan(plan_id)
+            if latest.get("job_id"):
+                return latest
+            raise MediaPlanError("任务状态已变化，请刷新后重试", "plan_state_changed")
+        if job_id is None:
+            raise MediaPlanError("任务状态已变化，请刷新后重试", "plan_state_changed")
         if plan.get("page_url"):
             try:
                 self.database.assign_source(
@@ -2092,25 +2199,6 @@ class MediaCoordinator:
                 )
             except (ValueError, PermissionError):
                 pass
-        now = time.time()
-        with self.database.session() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE download_plans SET import_to_eagle = 1,
-                    delete_after_import = 1,
-                    status = 'ready_to_import', progress = 90,
-                    phase_detail = '等待 Eagle 导入', job_id = ?,
-                    error_code = NULL, error_message = NULL,
-                    completed_at = NULL, updated_at = ?
-                WHERE id = ? AND status = 'completed_local' AND job_id IS NULL
-                """,
-                (job_id, now, plan_id),
-            )
-        if cursor.rowcount != 1:
-            latest = self.get_plan(plan_id)
-            if latest.get("job_id"):
-                return latest
-            raise MediaPlanError("任务状态已变化，请刷新后重试", "plan_state_changed")
         if self.ready_callback:
             try:
                 self.ready_callback()
@@ -2119,44 +2207,76 @@ class MediaCoordinator:
         return self.get_plan(plan_id)
 
     def health(self) -> dict[str, Any]:
-        if self._health_cache and time.time() - self._health_cache[0] < 60:
+        def cached_result() -> dict[str, Any] | None:
+            if not self._health_cache or time.time() - self._health_cache[0] >= 60:
+                return None
             cached = dict(self._health_cache[1])
             cached["networkProxy"] = self.network_proxy.status()
             return cached
-        with self.database.session() as connection:
-            schema = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        result: dict[str, Any] = {
-            "databaseSchema": schema,
-            "downloadEngine": "desktop_ffmpeg",
-        }
-        commands = {
-            "ffmpeg": ["-version"],
-            "ffprobe": ["-version"],
-            "yt-dlp": ["--version"],
-            "deno": ["--version"],
-        }
-        for name, arguments in commands.items():
-            try:
-                tool = resolve_media_tool(name)
-                version = subprocess.run(
-                    [str(tool), *arguments],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    check=False,
-                )
-                result[name] = {
-                    "ok": version.returncode == 0,
-                    "path": str(tool),
-                    "version": version.stdout.splitlines()[0] if version.stdout else "",
-                }
-            except (MediaPlanError, OSError, subprocess.SubprocessError) as exc:
-                result[name] = {"ok": False, "error": str(exc)}
-        result["ok"] = bool(result["ffmpeg"].get("ok") and result["ffprobe"].get("ok"))
-        result["youtubeResolver"] = bool(result["yt-dlp"].get("ok") and result["deno"].get("ok"))
-        result["networkProxy"] = self.network_proxy.status()
-        cached = dict(result)
-        cached.pop("networkProxy", None)
-        self._health_cache = (time.time(), cached)
-        return result
+
+        cached = cached_result()
+        if cached is not None:
+            return cached
+
+        # Popup, page bridge and diagnostics may poll at the same time.  Only
+        # one caller refreshes the static tool versions; the rest reuse it.
+        with self._health_probe_lock:
+            cached = cached_result()
+            if cached is not None:
+                return cached
+
+            with self.database.session() as connection:
+                schema = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            result: dict[str, Any] = {
+                "databaseSchema": schema,
+                "downloadEngine": "desktop_ffmpeg",
+            }
+            commands = {
+                "ffmpeg": ["-version"],
+                "ffprobe": ["-version"],
+                "yt-dlp": ["--version"],
+                "deno": ["--version"],
+            }
+
+            def probe(name: str, arguments: list[str]) -> tuple[str, dict[str, Any]]:
+                try:
+                    tool = resolve_media_tool(name)
+                    version = subprocess.run(
+                        [str(tool), *arguments],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        check=False,
+                    )
+                    return name, {
+                        "ok": version.returncode == 0,
+                        "path": str(tool),
+                        "version": version.stdout.splitlines()[0] if version.stdout else "",
+                    }
+                except (MediaPlanError, OSError, subprocess.SubprocessError) as exc:
+                    return name, {"ok": False, "error": str(exc)}
+
+            with ThreadPoolExecutor(
+                max_workers=len(commands),
+                thread_name_prefix="media-health",
+            ) as probes:
+                futures = [
+                    probes.submit(probe, name, arguments)
+                    for name, arguments in commands.items()
+                ]
+                for future in futures:
+                    name, status = future.result()
+                    result[name] = status
+
+            result["ok"] = bool(
+                result["ffmpeg"].get("ok") and result["ffprobe"].get("ok")
+            )
+            result["youtubeResolver"] = bool(
+                result["yt-dlp"].get("ok") and result["deno"].get("ok")
+            )
+            result["networkProxy"] = self.network_proxy.status()
+            cached = dict(result)
+            cached.pop("networkProxy", None)
+            self._health_cache = (time.time(), cached)
+            return result

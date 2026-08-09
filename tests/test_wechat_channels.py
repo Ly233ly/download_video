@@ -453,7 +453,7 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
                 service.close()
                 coordinator.close()
 
-    def test_page_download_action_creates_the_selected_variant_and_imports_to_eagle(self) -> None:
+    def test_page_download_action_imports_to_eagle_and_keeps_local_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             coordinator = MediaCoordinator(Database(root / "bridge.db"))
@@ -461,6 +461,7 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
             service = WechatChannelsCaptureService(
                 coordinator,
                 root=root / "wechat-channels",
+                eagle_available=lambda: True,
             )
             try:
                 captured = service._handle_page_message(
@@ -486,7 +487,7 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
                 )
                 plan = coordinator.get_plan(created["plan"]["id"])
                 self.assertTrue(plan["import_to_eagle"])
-                self.assertTrue(plan["delete_after_import"])
+                self.assertFalse(plan["delete_after_import"])
                 self.assertIn(
                     "X-snsvideoflag=hd",
                     coordinator._remote_inputs[str(plan["id"])]["streams"][0]["url"],
@@ -500,6 +501,92 @@ class CaptureServiceLifecycleTests(unittest.TestCase):
                         },
                         {},
                     )
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_page_download_falls_back_to_local_when_eagle_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            coordinator.schedule = lambda _plan_id: None  # type: ignore[method-assign]
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+                eagle_available=lambda: False,
+            )
+            try:
+                captured = service._handle_page_message(sample_candidate(), {})
+                candidate = captured["candidate"]
+                selected = candidate["variants"][0]
+                created = service._handle_page_message(
+                    {
+                        "action": "download",
+                        "objectId": candidate["objectId"],
+                        "variantId": selected["id"],
+                    },
+                    {},
+                )
+                plan = coordinator.get_plan(created["plan"]["id"])
+                self.assertFalse(plan["import_to_eagle"])
+                self.assertFalse(plan["delete_after_import"])
+                self.assertEqual(created["plan"]["delivery"], "local")
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_page_download_falls_back_to_local_when_eagle_probe_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            coordinator.schedule = lambda _plan_id: None  # type: ignore[method-assign]
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+                eagle_available=Mock(side_effect=OSError("Eagle probe failed")),
+            )
+            try:
+                captured = service._handle_page_message(sample_candidate(), {})
+                candidate = captured["candidate"]
+                selected = candidate["variants"][0]
+                created = service._handle_page_message(
+                    {
+                        "action": "download",
+                        "objectId": candidate["objectId"],
+                        "variantId": selected["id"],
+                    },
+                    {},
+                )
+                plan = coordinator.get_plan(created["plan"]["id"])
+                self.assertFalse(plan["import_to_eagle"])
+                self.assertFalse(plan["delete_after_import"])
+                self.assertEqual(created["plan"]["delivery"], "local")
+            finally:
+                service.close()
+                coordinator.close()
+
+    def test_page_download_without_eagle_provider_defaults_to_local(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = MediaCoordinator(Database(root / "bridge.db"))
+            coordinator.schedule = lambda _plan_id: None  # type: ignore[method-assign]
+            service = WechatChannelsCaptureService(
+                coordinator,
+                root=root / "wechat-channels",
+            )
+            try:
+                candidate = service._handle_page_message(sample_candidate(), {})["candidate"]
+                created = service._handle_page_message(
+                    {
+                        "action": "download",
+                        "objectId": candidate["objectId"],
+                        "variantId": candidate["variants"][0]["id"],
+                    },
+                    {},
+                )
+                plan = coordinator.get_plan(created["plan"]["id"])
+                self.assertFalse(plan["import_to_eagle"])
+                self.assertEqual(created["plan"]["delivery"], "local")
             finally:
                 service.close()
                 coordinator.close()
@@ -1759,6 +1846,57 @@ class LoopbackProxyTests(unittest.TestCase):
             b"CONNECT channels.weixin.qq.com:443 HTTP/1.1",
             remote.sendall.call_args.args[0],
         )
+
+    def test_vpn_catch_all_bypass_does_not_disconnect_public_wechat_hosts(self) -> None:
+        remote = Mock()
+        remote.recv.return_value = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+        self.proxy.replace_upstream(
+            ("127.0.0.1", 7890),
+            ("localhost", "127.*", "*"),
+            None,
+        )
+
+        with patch(
+            "idm_eagle_bridge.wechat_channels_proxy.socket.create_connection",
+            return_value=remote,
+        ) as create_connection:
+            result = self.proxy.connect_remote(
+                "channels.weixin.qq.com",
+                443,
+                tls=False,
+            )
+
+        self.assertIs(result, remote)
+        create_connection.assert_called_once_with(("127.0.0.1", 7890), timeout=15)
+        self.assertIn(
+            b"CONNECT channels.weixin.qq.com:443 HTTP/1.1",
+            remote.sendall.call_args.args[0],
+        )
+
+    def test_explicit_vpn_bypass_rule_is_still_honored(self) -> None:
+        remote = Mock()
+        self.proxy.replace_upstream(
+            ("127.0.0.1", 7890),
+            ("*.internal.example",),
+            None,
+        )
+
+        with patch(
+            "idm_eagle_bridge.wechat_channels_proxy.socket.create_connection",
+            return_value=remote,
+        ) as create_connection:
+            result = self.proxy.connect_remote(
+                "media.internal.example",
+                443,
+                tls=False,
+            )
+
+        self.assertIs(result, remote)
+        create_connection.assert_called_once_with(
+            ("media.internal.example", 443),
+            timeout=15,
+        )
+        remote.sendall.assert_not_called()
 
     def test_non_target_connect_is_a_plain_tunnel(self) -> None:
         listener = socket.socket()
