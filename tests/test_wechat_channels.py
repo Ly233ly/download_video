@@ -1213,8 +1213,8 @@ function waitForRequests() {
   }
   if (candidateIds.indexOf("current-a") === -1 || candidateIds.indexOf("current-b") === -1) process.exit(4);
   if (candidates.some(function (item) { return item.current !== false; })) process.exit(5);
-  // 只有详情页方法触发 active 发布
-  if (active.map(function (item) { return item.objectId; }).join(",") !== "current-a,current-b") {
+  // 只有明确详情页触发 active；下一条流响应可能只是预加载，必须等播放事件确认。
+  if (active.map(function (item) { return item.objectId; }).join(",") !== "current-a") {
     process.exit(6);
   }
 })().catch(function () { process.exit(7); });

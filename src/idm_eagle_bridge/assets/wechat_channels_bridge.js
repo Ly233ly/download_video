@@ -8,9 +8,6 @@
   const downloadsInFlight = new Set();
   const ACTIVE_DETAIL_METHODS = new Set([
     "finderGetCommentDetail",
-    "goToNextFlowFeed",
-    "goToPrevFlowFeed",
-    "loadLocalPlaylist",
   ]);
   let activeObjectId = "";
   let activeVersion = 0;
@@ -323,10 +320,20 @@
       mediaItem,
       normalizeFeed,
       scan,
+      accept,
+      entryFromTrigger,
+      requestDownload,
       selectDefaultVariant,
       downloadStartedMessage,
       activeObjectId: function () { return activeObjectId; },
       seenCount: function () { return seen.size; },
+      setCandidate: function (objectId, candidate) {
+        const entry = seen.get(objectId);
+        if (!entry) return false;
+        entry.candidate = candidate;
+        entry.dirty = false;
+        return true;
+      },
     };
   }
 
@@ -431,9 +438,10 @@
     const located = objectIdFromLocation();
     if (located) return seen.get(located) || null;
 
-    const scope = trigger && typeof trigger.closest === "function"
-      ? trigger.closest(".slides-item") || document
-      : document;
+    const slide = trigger && typeof trigger.closest === "function"
+      ? trigger.closest(".slides-item")
+      : null;
+    const scope = slide || document;
     const sources = videoSources(scope);
     const sourceMatch = entryMatchingSources(sources);
     if (sourceMatch) return sourceMatch;
@@ -447,11 +455,14 @@
       if (matches.length === 1) return matches[0];
     }
 
-    if (activeObjectId && seen.has(activeObjectId)) return seen.get(activeObjectId);
+    // An inline control belongs to one concrete slide.  If that slide cannot
+    // be tied to a candidate by URL, object id, or title, falling back to the
+    // globally active/newest feed can submit a late preloaded neighbour.
+    // Refuse the click instead: a visible retry is safer than downloading a
+    // different person's video under the selected title.
+    if (slide) return null;
     if (seen.size === 1) return seen.values().next().value;
-    let newest = null;
-    for (const entry of seen.values()) newest = entry;
-    return newest;
+    return null;
   }
 
   function selectDefaultVariant(candidate, currentSource) {

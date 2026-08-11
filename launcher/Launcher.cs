@@ -14,8 +14,8 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("免费开源的 Windows 本机媒体下载与归档工具")]
 [assembly: AssemblyProduct("留底下载器")]
 [assembly: AssemblyCompany("阿毅i")]
-[assembly: AssemblyVersion("1.6.0.0")]
-[assembly: AssemblyFileVersion("1.6.0.0")]
+[assembly: AssemblyVersion("1.6.1.0")]
+[assembly: AssemblyFileVersion("1.6.1.0")]
 
 internal static class Launcher
 {
@@ -276,7 +276,7 @@ internal static class Launcher
             child = childProcess;
             ChildExitCode = 0;
 
-            ToolStripMenuItem statusItem = new ToolStripMenuItem("留底下载器 v1.6.0 by阿毅i");
+            ToolStripMenuItem statusItem = new ToolStripMenuItem("留底下载器 v1.6.1 by阿毅i");
             statusItem.Enabled = false;
             ToolStripMenuItem openItem = new ToolStripMenuItem("显示窗口");
             openItem.Font = new Font(openItem.Font, FontStyle.Bold);

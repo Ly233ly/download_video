@@ -18,12 +18,12 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("留底下载器一键安装程序")]
 [assembly: AssemblyProduct("留底下载器")]
 [assembly: AssemblyCompany("阿毅i")]
-[assembly: AssemblyVersion("1.6.0.0")]
-[assembly: AssemblyFileVersion("1.6.0.0")]
+[assembly: AssemblyVersion("1.6.1.0")]
+[assembly: AssemblyFileVersion("1.6.1.0")]
 
 internal static class SetupProgram
 {
-    internal const string Version = "1.6.0";
+    internal const string Version = "1.6.1";
     internal const string ProductName = "留底下载器";
     internal const string QuitEventName = @"Local\IdmEagleAutoImportQuit";
     internal const string DefaultIdmRegistry = @"Software\DownloadManager";

@@ -16,11 +16,11 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', '阿毅i'),
           StringStruct('FileDescription', '免费开源的 Windows 本机媒体下载与归档工具'),
-          StringStruct('FileVersion', '1.6.0'),
+          StringStruct('FileVersion', '1.6.1'),
           StringStruct('InternalName', '留底桌面端后台'),
           StringStruct('OriginalFilename', '留底桌面端后台.exe'),
           StringStruct('ProductName', '留底下载器'),
-          StringStruct('ProductVersion', '1.6.0')
+          StringStruct('ProductVersion', '1.6.1')
         ]
       )
     ]),

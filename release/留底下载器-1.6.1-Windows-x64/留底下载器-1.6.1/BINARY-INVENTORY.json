@@ -1,0 +1,183 @@
+﻿{
+    "product":  "留底下载器",
+    "version":  "1.6.1",
+    "architecture":  "Windows-x64",
+    "generatedAtUtc":  "2026-08-11T04:49:51.0832587Z",
+    "binaries":  [
+                     {
+                         "path":  "留底安装器.exe",
+                         "bytes":  148182528,
+                         "sha256":  "0a275bfcdfe3c446a80b9ae00175736937cb27f163fe4a07e82dc70812897691"
+                     },
+                     {
+                         "path":  "app/IdmEagleHook.exe",
+                         "bytes":  62976,
+                         "sha256":  "e63d154beca87311191323b036e22a9f65d3f0a40d3a11f38caa10cb4a97977c"
+                     },
+                     {
+                         "path":  "app/留底下载器.exe",
+                         "bytes":  62976,
+                         "sha256":  "c9412dad56230e091112df7f35ea2bff542334ad782d5aa5cdfd3e18dcd3e676"
+                     },
+                     {
+                         "path":  "app/media-tools/deno.exe",
+                         "bytes":  101328320,
+                         "sha256":  "a8afddac131261dc9e085c6a1a79544f0567bd09e481034b5d1533588cba9b30"
+                     },
+                     {
+                         "path":  "app/media-tools/ffmpeg.exe",
+                         "bytes":  101897728,
+                         "sha256":  "1326dde4c84ff1f96fe6b8916c5bed29e163e9b5dccf995f6f3db069d143ec5e"
+                     },
+                     {
+                         "path":  "app/media-tools/ffprobe.exe",
+                         "bytes":  101692928,
+                         "sha256":  "b49ccc7c6547b141ad5a2f6ec69cc04323d7133d7704d70b331b904c63eecb07"
+                     },
+                     {
+                         "path":  "app/media-tools/yt-dlp.exe",
+                         "bytes":  18202192,
+                         "sha256":  "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/留底桌面端后台.exe",
+                         "bytes":  2750115,
+                         "sha256":  "cca114125e442404cad2a5c16fc3be4987e0a93e50ddd2ce1c5d425825f772d4"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/libcrypto-3.dll",
+                         "bytes":  5231984,
+                         "sha256":  "eaf6d613b95b61a39558d84c50e72630a66c99914292df88e7b54ebd60c5bd34"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/libffi-8.dll",
+                         "bytes":  39696,
+                         "sha256":  "eff52743773eb550fcc6ce3efc37c85724502233b6b002a35496d828bd7b280a"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/libssl-3.dll",
+                         "bytes":  794992,
+                         "sha256":  "cf1a5fdcefa3daf69041f31f98ece1d7911ca4fcb8e9f1043b4d0f459ae4c936"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/pyexpat.pyd",
+                         "bytes":  218968,
+                         "sha256":  "05530afc9cbfe68c28c052eec159b852e731316007e1f52e0a31412e4eda07f9"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/python314.dll",
+                         "bytes":  6767440,
+                         "sha256":  "a07f7d09c3121492bb066535c6d0811df5fbc2090cbca7031a97bb47ce1480c9"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/select.pyd",
+                         "bytes":  33624,
+                         "sha256":  "56441c3148743a0890986ccdf93fea8174155b0ee84db2493151f075d8e7c51a"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/sqlite3.dll",
+                         "bytes":  1584984,
+                         "sha256":  "0fa02628266533a729be3131a8ab0d9ecf4e50544b405846803631aee6b8d936"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/tcl86t.dll",
+                         "bytes":  1839896,
+                         "sha256":  "a308beae8555cff5ac2aff7eaf0aef40b5fe173f047e246dc49da9a4d3ef62f9"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/tk86t.dll",
+                         "bytes":  1589528,
+                         "sha256":  "20f4876506bce7f89e53570e64fd1dce30a64548326b45f372871c7019560df4"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/unicodedata.pyd",
+                         "bytes":  758616,
+                         "sha256":  "58013696b4f08717aee2885aefa24031f4b18b3e62faa8125248cc3e0a86af2a"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/VCRUNTIME140.dll",
+                         "bytes":  120400,
+                         "sha256":  "052ad6a20d375957e82aa6a3c441ea548d89be0981516ca7eb306e063d5027f4"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/VCRUNTIME140_1.dll",
+                         "bytes":  49776,
+                         "sha256":  "6a99bc0128e0c7d6cbbf615fcc26909565e17d4ca3451b97f8987f9c6acbc6c8"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/zlib1.dll",
+                         "bytes":  146208,
+                         "sha256":  "1dd27f0411ebb31bd148a61589cee254410915f1e6c37aa3ffa52fac71a5426c"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_bz2.pyd",
+                         "bytes":  87896,
+                         "sha256":  "33641a8ad0403473d678c7435197d49550fc5185ba7979fb16ab80256b1f9072"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_ctypes.pyd",
+                         "bytes":  142680,
+                         "sha256":  "79967d8614f735cc62b81649641fd8d0414ca66d3d6656fa7788334bbdbbd35b"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_decimal.pyd",
+                         "bytes":  291160,
+                         "sha256":  "1f4a8ca9814508d3597992173fdf4db312f3b970f6baeb053b9d8c3087f907e7"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_hashlib.pyd",
+                         "bytes":  69464,
+                         "sha256":  "58c5c9ff93f989e2a233b8c5e06420ea73dd6c013e1f08d996fb0f2828eba0aa"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_lzma.pyd",
+                         "bytes":  161112,
+                         "sha256":  "a01f1927adaa60adcfbe3b0314205a528cb9dd5a93b7e61cb284eddee9b0b347"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_multiprocessing.pyd",
+                         "bytes":  38744,
+                         "sha256":  "a88475c4cba47977eef5756c217c79441c53cf57d0b05441de87744313e2898b"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_queue.pyd",
+                         "bytes":  36696,
+                         "sha256":  "2a7bb0a53e86ae4982a6f64e2570137829a0be66537bb1c166913af273edbf0c"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_socket.pyd",
+                         "bytes":  87888,
+                         "sha256":  "435a86973131c5d5dc90f828e72d7bb0607578a48ab5bc5377f4a280a6beb8f7"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_sqlite3.pyd",
+                         "bytes":  132432,
+                         "sha256":  "9a31c522e38cdea19386ae912f44fb75bb7f155d14d486d6bcf4de7e16883949"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_ssl.pyd",
+                         "bytes":  184664,
+                         "sha256":  "06f51fbe150c831af619890eea2d9fca9ce8b49758bfe3f382883551c592e6b3"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_tkinter.pyd",
+                         "bytes":  69464,
+                         "sha256":  "b7bc5c036699510968ff5040a392de8fe612fa66dad01fbb5d66df56db554a8f"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_uuid.pyd",
+                         "bytes":  28504,
+                         "sha256":  "35f26f7f55ded30da92ed30258fb9624a7398ba3eadee134813133c560fcbbae"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_wmi.pyd",
+                         "bytes":  40280,
+                         "sha256":  "eccb72a070d63f0ddde054c7a15d375b11b1dfc3362452c55ccabb487dee87fc"
+                     },
+                     {
+                         "path":  "app/runtime/留底桌面端后台/_internal/_zstd.pyd",
+                         "bytes":  503128,
+                         "sha256":  "e5924e2985186797668dd3b2e1efeb9313459258a4564dbf5499935c7ebd44e7"
+                     }
+                 ]
+}

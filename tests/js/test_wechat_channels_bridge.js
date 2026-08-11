@@ -16,17 +16,21 @@ const posted = [];
 const context = {
   __DOWNLOAD_STATION_TEST__: true,
   console,
-  document: {},
+  document: { createElement() { return {}; } },
   fetch: (_url, options) => {
-    posted.push(JSON.parse(options.body));
+    const payload = JSON.parse(options.body);
+    posted.push(payload);
     return Promise.resolve({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({}),
+      json: () => Promise.resolve(payload.action === "download"
+        ? { action: "download", plan: { id: "plan-test", delivery: "local" } }
+        : {}),
     });
   },
   globalThis: null,
   location: { href: "https://channels.weixin.qq.com/web/pages/feed?objectId=feed-1234" },
+  clearTimeout,
   setTimeout,
   URL,
   window: { addEventListener() {} },
@@ -139,5 +143,80 @@ assert.strictEqual(
   api.downloadStartedMessage({}, "兼容旧版"),
   "已开始下载：兼容旧版",
 );
+
+// A late response for a preloaded next feed must never make the download
+// control inside an ambiguous current slide submit that other feed.  This is
+// the intermittent production shape: WeChat may expose a blob currentSrc and
+// the visible overlay text may not contain the feed description.
+context.location.href = "https://channels.weixin.qq.com/web/pages/feed";
+const visibleFeed = api.normalizeFeed({
+  id: "visible-feed",
+  objectDesc: {
+    description: "用户当前看见的视频",
+    media: [{ url: "https://finder.video.qq.com/visible.mp4" }],
+  },
+});
+const preloadedRaw = {
+  id: "preloaded-feed",
+  objectDesc: {
+    description: "下一条预加载视频",
+    media: [{ url: "https://finder.video.qq.com/preloaded.mp4" }],
+  },
+};
+api.accept(visibleFeed);
+api.scan({ data: { object: [preloadedRaw] } }, "goToNextFlowFeed");
+assert.notStrictEqual(
+  api.activeObjectId(),
+  "preloaded-feed",
+  "a next-feed response may be a preload and must not activate before playback",
+);
+api.setCandidate("visible-feed", {
+  objectId: "visible-feed",
+  variants: [{ id: "visible-original", deliverySpec: "", quality: "原始视频" }],
+});
+api.setCandidate("preloaded-feed", {
+  objectId: "preloaded-feed",
+  variants: [{ id: "preloaded-original", deliverySpec: "", quality: "原始视频" }],
+});
+const ambiguousSlide = {
+  textContent: "当前播放画面没有接口返回的描述文本",
+  querySelectorAll(selector) {
+    return selector === "video"
+      ? [{ currentSrc: "blob:https://channels.weixin.qq.com/current", src: "", querySelectorAll() { return []; } }]
+      : [];
+  },
+};
+const label = { textContent: "下载" };
+const ambiguousTrigger = {
+  style: {},
+  closest(selector) { return selector === ".slides-item" ? ambiguousSlide : null; },
+  querySelector(selector) { return selector === '[data-role="download-label"]' ? label : null; },
+  setAttribute() {},
+};
+const toastNode = { style: {}, textContent: "", __downloadStationTimer: 0 };
+context.document.getElementById = (id) => id === "download-station-wechat-toast" ? toastNode : null;
+posted.length = 0;
+api.requestDownload(ambiguousTrigger, "");
+assert.strictEqual(
+  posted.some((item) => item.action === "download"),
+  false,
+  "an ambiguous slide must not fall back to a different active/preloaded feed",
+);
+assert.strictEqual(toastNode.textContent, "未能确认当前视频，请先播放当前视频后重试");
+clearTimeout(toastNode.__downloadStationTimer);
+
+// The safety guard must not disable a strongly matched current slide.  Even
+// with the neighbour already preloaded, the visible media URL owns the click.
+ambiguousSlide.querySelectorAll = function (selector) {
+  return selector === "video"
+    ? [{ currentSrc: "https://finder.video.qq.com/visible.mp4?token=fresh", src: "", querySelectorAll() { return []; } }]
+    : [];
+};
+posted.length = 0;
+api.requestDownload(ambiguousTrigger, "");
+const matchedDownload = posted.find((item) => item.action === "download");
+assert(matchedDownload, "a strongly matched visible slide should still download");
+assert.strictEqual(matchedDownload.objectId, "visible-feed");
+assert.strictEqual(matchedDownload.variantId, "visible-original");
 
 console.log("wechat channels bridge tests passed");
