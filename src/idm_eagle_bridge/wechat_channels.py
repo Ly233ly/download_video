@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .media import MediaCoordinator, MediaPlanError, resolve_media_tool
+from .network_proxy import normalize_proxy_url
 from .paths import ensure_data_dir
 from .wechat_channels_certificate import WechatCertificateAuthority
 from .wechat_channels_proxy import (
@@ -126,6 +127,20 @@ def _wechat_original_url(value: Any) -> str:
     return _public_https_url(original)
 
 
+def _wechat_delivery_url(value: str, delivery_spec: str) -> str:
+    parts = urlsplit(value)
+    selector_name = "x-snsvideoflag"
+    kept = [
+        item
+        for item in parts.query.split("&")
+        if item and item.partition("=")[0].lower() != selector_name
+    ]
+    kept.append(urlencode({"X-snsvideoflag": delivery_spec}))
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, "&".join(kept), parts.fragment)
+    )
+
+
 def _public_image_url(value: Any) -> str:
     raw = _text(value, 16_384)
     try:
@@ -219,6 +234,7 @@ class _PublicImageRedirectHandler(HTTPRedirectHandler):
 class WechatMediaVariant:
     variant_id: str
     url: str
+    captured_url: str
     decode_key: int | None
     width: int
     height: int
@@ -256,6 +272,17 @@ class WechatMediaVariant:
         }
 
 
+def _variant_preference(variant: WechatMediaVariant) -> tuple[bool, int, int, int]:
+    """Prefer a signed explicit rendition over the opportunistic original URL."""
+
+    return (
+        bool(variant.delivery_spec),
+        variant.width * variant.height,
+        variant.bitrate,
+        variant.file_size,
+    )
+
+
 @dataclass
 class WechatCandidate:
     object_id: str
@@ -269,13 +296,15 @@ class WechatCandidate:
     variants: dict[str, WechatMediaVariant]
     first_seen: float
     updated_at: float
+    update_sequence: int
 
     def view(self) -> dict[str, Any]:
-        variants = sorted(
-            (item.view() for item in self.variants.values()),
-            key=lambda item: (item["height"], item["bitrate"], item["fileSize"]),
+        ordered_variants = sorted(
+            self.variants.values(),
+            key=_variant_preference,
             reverse=True,
         )
+        variants = [item.view() for item in ordered_variants]
         return {
             "groupKey": f"wechat-channel:{self.object_id}",
             "objectId": self.object_id,
@@ -299,6 +328,7 @@ class WechatCandidateRegistry:
         self._items: dict[str, WechatCandidate] = {}
         self._current_object_id = ""
         self._active_version = 0
+        self._update_sequence = 0
         self._lock = threading.RLock()
 
     def ingest(
@@ -361,6 +391,7 @@ class WechatCandidateRegistry:
                 delivery_spec: str = "",
                 variant_file_size: int = 0,
                 original: bool = False,
+                captured_url: str = "",
             ) -> None:
                 identity = (
                     f"{object_id}\0{parsed_media.hostname}\0{parsed_media.path}\0"
@@ -370,6 +401,7 @@ class WechatCandidateRegistry:
                 variants[variant_id] = WechatMediaVariant(
                     variant_id=variant_id,
                     url=variant_url,
+                    captured_url=captured_url,
                     decode_key=decode_key,
                     width=variant_width,
                     height=variant_height,
@@ -383,14 +415,18 @@ class WechatCandidateRegistry:
                 )
 
             original_url = _wechat_original_url(url)
+            verified_original = bool(original_url and file_size > 0)
             add_variant(
-                original_url or url,
+                original_url if verified_original else url,
                 width,
                 height,
                 item_duration,
                 bitrate,
-                variant_file_size=file_size,
-                original=bool(original_url),
+                variant_file_size=file_size if verified_original else 0,
+                original=verified_original,
+                captured_url=(
+                    url if verified_original and url != original_url else ""
+                ),
             )
             if isinstance(specs, list):
                 for spec in specs:
@@ -405,15 +441,10 @@ class WechatCandidateRegistry:
                         spec.get("durationMs"), 24 * 60 * 60 * 1000
                     ) or item_duration
                     spec_bitrate = _number(spec.get("bitrate"), 1_000_000_000)
-                    parts = urlsplit(url)
                     # Keep the captured signed query byte-for-byte. Re-encoding an
-                    # existing CDN token can invalidate it, so only append our
-                    # bounded quality selector.
-                    selector = urlencode({"X-snsvideoflag": delivery_spec})
-                    query = f"{parts.query}&{selector}" if parts.query else selector
-                    spec_url = urlunsplit(
-                        (parts.scheme, parts.netloc, parts.path, query, parts.fragment)
-                    )
+                    # existing CDN token can invalidate it. Replace a stale
+                    # selector case-insensitively, preserving every other segment.
+                    spec_url = _wechat_delivery_url(url, delivery_spec)
                     add_variant(
                         spec_url,
                         spec_width,
@@ -429,6 +460,8 @@ class WechatCandidateRegistry:
             raise WechatChannelsError("视频号候选没有可用的 HTTPS 媒体")
         now = time.time()
         with self._lock:
+            self._update_sequence += 1
+            update_sequence = self._update_sequence
             existing = self._items.get(object_id)
             if existing:
                 existing.title = _text(payload.get("title"), 500) or existing.title
@@ -440,6 +473,7 @@ class WechatCandidateRegistry:
                 existing.created_at = _number(payload.get("createdAt")) or existing.created_at
                 existing.variants.update(variants)
                 existing.updated_at = now
+                existing.update_sequence = update_sequence
                 if make_current:
                     self._current_object_id = object_id
                 return existing
@@ -465,6 +499,7 @@ class WechatCandidateRegistry:
                 variants=variants,
                 first_seen=now,
                 updated_at=now,
+                update_sequence=update_sequence,
             )
             self._items[object_id] = candidate
             if make_current:
@@ -493,7 +528,7 @@ class WechatCandidateRegistry:
                 self._items.values(),
                 key=lambda item: (
                     item.object_id != self._current_object_id,
-                    -item.updated_at,
+                    -item.update_sequence,
                 ),
             )
             return [item.view() for item in ordered]
@@ -511,6 +546,7 @@ class WechatCandidateRegistry:
             self._items.clear()
             self._current_object_id = ""
             self._active_version = 0
+            self._update_sequence = 0
 
     def preview_request(self, object_id: str) -> tuple[str, dict[str, str]]:
         with self._lock:
@@ -538,10 +574,8 @@ class WechatCandidateRegistry:
                 if variant is None:
                     raise WechatChannelsError("视频号质量已过期，请重新打开内容")
             else:
-                variant = max(
-                    candidate.variants.values(),
-                    key=lambda item: (item.width * item.height, item.bitrate, item.file_size),
-                )
+                variant = max(candidate.variants.values(), key=_variant_preference)
+            variant_view = variant.view()
             output_name = f"{candidate.author + ' - ' if candidate.author else ''}{candidate.title or candidate.object_id}.mp4"
             return {
                 "sourceType": "wechat_channels",
@@ -557,6 +591,7 @@ class WechatCandidateRegistry:
                 "runtimeHeaders": [dict(variant.headers)],
                 "streams": [{
                     "id": variant.variant_id,
+                    "name": variant.variant_id,
                     "role": "video",
                     "url": variant.url,
                     "mime": "video/mp4",
@@ -566,9 +601,14 @@ class WechatCandidateRegistry:
                     "height": variant.height,
                     "size": variant.file_size,
                     "duration": variant.duration_ms / 1000 if variant.duration_ms else 0,
+                    "label": variant_view["quality"],
                     "headers": dict(variant.headers),
                     "wechatDecodeKey": str(variant.decode_key) if variant.decode_key is not None else "",
                     "wechatEncryptedBytes": 131_072 if variant.decode_key is not None else 0,
+                    # The exact feed URL is memory-only recovery context. The
+                    # media coordinator validates it as the same signed asset
+                    # and never persists it in the database or returns it to UI.
+                    "wechatCapturedUrl": variant.captured_url if variant.original else "",
                 }],
             }
 
@@ -622,6 +662,18 @@ class WechatChannelsCaptureService:
     def bridge_script_path() -> Path:
         return Path(__file__).resolve().parent / "assets" / "wechat_channels_bridge.js"
 
+    def _configured_media_upstream(self) -> tuple[str, int] | None:
+        configuration = self.media.network_proxy.configuration()
+        if configuration.get("mode") not in {"auto", "manual"}:
+            return None
+        configured_url = str(configuration.get("manualUrl") or "").strip()
+        if not configured_url:
+            return None
+        parsed = urlsplit(normalize_proxy_url(configured_url))
+        if not parsed.hostname or parsed.port is None:
+            return None
+        return parsed.hostname, parsed.port
+
     def start(self, *, configure_system_proxy: bool = True, trust_certificate: bool = True) -> dict[str, Any]:
         with self._lock:
             if self.proxy:
@@ -664,15 +716,35 @@ class WechatChannelsCaptureService:
                 snapshot = self.proxy_lease.backend.snapshot()
                 upstream_resolver = upstream_auto_proxy_resolver(snapshot)
                 upstream_proxy = upstream_http_proxy(snapshot)
+                using_configured_media_upstream = False
+                configured_media_upstream_required = False
+                if upstream_resolver is None and upstream_proxy is None:
+                    upstream_proxy = self._configured_media_upstream()
+                    using_configured_media_upstream = upstream_proxy is not None
+                    configured_media_upstream_required = (
+                        self.media.network_proxy.configuration().get("mode") == "manual"
+                    )
                 if (
                     upstream_resolver is None
                     and proxy_endpoint_is_loopback(upstream_proxy)
                     and not proxy_endpoint_reachable(upstream_proxy)
                 ):
                     endpoint = f"{upstream_proxy[0]}:{upstream_proxy[1]}"
-                    raise WechatChannelsError(
-                        f"检测到已失效的本机代理 {endpoint}，请先点击“修复代理冲突”"
-                    )
+                    if using_configured_media_upstream and not configured_media_upstream_required:
+                        # Automatic mode treats the saved endpoint as an optional
+                        # live fallback. Proxy applications may start after 留底
+                        # or be closed between sessions, so an offline endpoint
+                        # must quietly fall back to direct networking.
+                        upstream_proxy = None
+                    elif using_configured_media_upstream:
+                        raise WechatChannelsError(
+                            f"留底手动代理 {endpoint} 无法连接，请在“设置 > 网络代理”"
+                            "切换为“自动”，或启动对应代理软件"
+                        )
+                    else:
+                        raise WechatChannelsError(
+                            f"检测到已失效的本机代理 {endpoint}，请先点击“修复代理冲突”"
+                        )
                 if upstream_resolver:
                     # Resolve before replacing WinINET so an invalid/unavailable PAC
                     # cannot silently strand WeChat behind the capture proxy.

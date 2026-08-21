@@ -18,12 +18,12 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("留底下载器一键安装程序")]
 [assembly: AssemblyProduct("留底下载器")]
 [assembly: AssemblyCompany("阿毅i")]
-[assembly: AssemblyVersion("1.6.1.0")]
-[assembly: AssemblyFileVersion("1.6.1.0")]
+[assembly: AssemblyVersion("1.6.2.0")]
+[assembly: AssemblyFileVersion("1.6.2.0")]
 
 internal static class SetupProgram
 {
-    internal const string Version = "1.6.1";
+    internal const string Version = "1.6.2";
     internal const string ProductName = "留底下载器";
     internal const string QuitEventName = @"Local\IdmEagleAutoImportQuit";
     internal const string DefaultIdmRegistry = @"Software\DownloadManager";
@@ -485,7 +485,10 @@ internal static class InstallerEngine
             if (!testMode)
             {
                 report("正在启动助手…");
-                StartAssistant(installDirectory);
+                StartAssistant(
+                    installDirectory,
+                    updateMode || !openChromeSetup
+                );
                 report("正在确认后端、数据库与 FFmpeg…");
                 if (!WaitForHealthyVersion(SetupProgram.Version, TimeSpan.FromSeconds(25)))
                 {
@@ -580,11 +583,12 @@ internal static class InstallerEngine
         }
     }
 
-    private static void StartAssistant(string installDirectory)
+    private static void StartAssistant(string installDirectory, bool startHidden = false)
     {
         Process.Start(new ProcessStartInfo
         {
             FileName = Path.Combine(installDirectory, "留底下载器.exe"),
+            Arguments = startHidden ? "--start-hidden" : "",
             WorkingDirectory = installDirectory,
             UseShellExecute = true
         });

@@ -1,41 +1,66 @@
 # 1.6.1 发布验证
 
-验证日期：2026-08-11
+核对日期：2026-08-21
 
-## 发行载荷
+> 历史记录：1.6.1 的公开资产保持 2026-08-11 原样；本页记录的后续本地视频号候选最终以 1.6.2 正式发布。当前版本见 [1.6.2 发布验证](RELEASE_VERIFICATION_1.6.2.md)。
 
-- Windows ZIP：`liudi-downloader-1.6.1-windows-x64.zip`，大小 `147722021` 字节，SHA-256 `ef3501e0da0f5285fc10187eb6047640d243a0587f34039de393450aa78526e7`。
-- 内嵌安装器：`留底安装器.exe`，大小 `148182528` 字节，SHA-256 `0a275bfcdfe3c446a80b9ae00175736937cb27f163fe4a07e82dc70812897691`。
-- 对应源码 ZIP：`liudi-downloader-1.6.1-source.zip`，大小 `16615174` 字节，SHA-256 `ca1a4367aba8ba3e11d9afbd171c886489a287920f220f2efbd96a6a0f36b77e`。
-- 用户 ZIP 只包含单文件内嵌安装器、使用说明、许可、二进制清单和源码获取说明。
-- 用户 ZIP 不包含外置项目源码、构建脚本或 source map；运行载荷禁止文件扫描为 0。
-- 当前对应源码：<https://github.com/Ly233ly/download_video>
-- 数据库结构：6
-- 扩展协议：1
+本文件区分“GitHub 已发布资产”和“当时的本地热修复候选”。两者版本号同为 1.6.1，但内容和哈希不同，不得混用。
 
-## 自动验证
+## GitHub 已发布资产
 
-- Python：350/350 通过。
-- Node：6 组扩展逻辑测试通过。
-- 19 个活动 JavaScript 文件语法与 Chrome、Firefox 双清单解析通过。
-- 留底桌面启动器、IDM 接收器和留底安装器 C# 编译通过。
-- PyInstaller 6.21.0 冻结运行时验证通过，FFmpeg 8.1.2、yt-dlp 2026.06.09 和 Deno 2.8.1 就绪。
-- 隔离安装器的新装、覆盖升级、故障回滚和卸载全部通过。
-- 新增视频号乱序预加载回归：歧义卡片拒绝创建任务，媒体路径明确时准确提交当前视频。
+GitHub Release [`v1.6.1`](https://github.com/Ly233ly/download_video/releases/tag/v1.6.1) 发布于 2026-08-11。2026-08-21 通过 GitHub 公共 Release API 复核：
 
-## 本机覆盖安装
+- Windows ZIP：`liudi-downloader-1.6.1-windows-x64.zip`
+  - 大小：`147722021` 字节
+  - SHA-256：`ef3501e0da0f5285fc10187eb6047640d243a0587f34039de393450aa78526e7`
+- 对应源码 ZIP：`liudi-downloader-1.6.1-source.zip`
+  - 大小：`16615174` 字节
+  - SHA-256：`ca1a4367aba8ba3e11d9afbd171c886489a287920f220f2efbd96a6a0f36b77e`
 
-- 注册表、健康接口、后台文件版本和安装扩展清单均为 1.6.1。
-- 后台标题为 `留底下载器 v1.6.1 by阿毅i`。
-- 健康接口报告媒体与 YouTube 解析工具就绪，视频号捕获默认关闭。
-- 数据库 `integrity_check` 为 `ok`，结构版本为 6。
-- 覆盖安装前后均为 31 条下载计划、0 条 IDM 任务、4 条网站规则和 4 条设置，用户数据得到保留。
-- 安装目录不存在更新备份残留。
+这些公开资产是 2026-08-11 的已发布版本，不包含 2026-08-21 完成的视频号连续刷视频热修复。
 
-## 发布说明
+## 历史本地热修复候选
 
-- GitHub 仓库：<https://github.com/Ly233ly/download_video>
-- GitHub Release：<https://github.com/Ly233ly/download_video/releases/tag/v1.6.1>
-- 仓库通过 Git LFS 保存 Windows ZIP、源码 ZIP 和单文件安装器；Release 附带两个 ZIP 与各自校验文件。
-- 普通 GitHub Release 不依赖更新签名私钥。
-- 当前环境缺少既有 RSA 更新签名私钥，因此本次不生成 `update.json`；这只影响旧客户端的自动更新提示，不影响安装包下载、覆盖安装或 GitHub Release。
+2026-08-21 最终构建产物：
+
+- Windows ZIP：`liudi-downloader-1.6.1-windows-x64.zip`
+  - 大小：`147269937` 字节
+  - SHA-256：`094331f8397f0d07a94498bde84d57181e9087828d38f3798aae20dee25646d6`
+- 内嵌安装器：`留底安装器.exe`
+  - 大小：`147752960` 字节
+  - SHA-256：`f55a8424efbdb933e26e032ccde9c25967c5caf9e4f4be579672c1a0084d4733`
+- 对应源码 ZIP：`liudi-downloader-1.6.1-source.zip`
+  - 大小：`16632455` 字节
+  - SHA-256：`1daa8030698cdad879a707633a70e2fbb27a29b77664238dd007ac6940c5c594`
+- 冻结后台与本机已安装后台：
+  - SHA-256：`db4907b517b8257cbe0535183b0aed410845e39edced96047b34e6cbda0f78bd`
+
+本地覆盖安装后，健康接口为 1.6.1，数据库结构为 6，扩展协议为 1；视频号页面 bridge 哈希为 `8ed7e9a3e3cd8e5b`。
+
+上述源码 ZIP 是当时文档统一前生成的构建快照；1.6.2 已使用单一视频号技术文档重新生成源码 ZIP，不能把该历史源码 ZIP 哈希用于新版本。
+
+## 验证结果
+
+### 视频号热修复
+
+- Node 页面 bridge 测试通过。
+- 视频号/扩展定向 Python 测试 115 项通过。
+- 覆盖共用 `stodownload` 路径、稳定 `encfilekey`、`blob:` 生命周期、屏外预加载、卡片/地址冲突、详情 `data.object` 主对象与关联推荐隔离、歧义拒绝和秘密不落盘。
+- 真实 Morph 52 秒目标由页内按钮创建并完成，FFprobe 为 H264/AAC、1280×720、52.010 秒。
+- 随后连续 5 条标题、尺寸和时长不同的视频全部完成并通过 FFprobe，没有沿用前一条绑定。
+- 停止捕获后 WinINET 恢复直连、捕获端口关闭、代理租约清除。
+- 独立验收结论：PASS。完整证据见 [微信视频号技术文档](WECHAT_CHANNELS.md)。
+
+### 发行门禁状态
+
+- PyInstaller 6.21.0 构建成功；FFmpeg 8.1.2、yt-dlp 2026.06.09 和 Deno 2.8.1 已进入载荷。
+- 当前全量 Python 测试共发现 362 项：361 项通过，`test_rounded_task_cards_leave_enough_height_for_their_inner_rows` 失败。
+- 该失败属于桌面任务卡布局，与视频号热修复无关；但完整发布门禁要求全绿，因此本地热修复候选尚不能标记为正式发布验证通过。
+- 本次历史热修复构建使用了跳过重复全量测试的构建选项，因此没有作为正式资产上传；相关 UI 测试和完整门禁已在 1.6.2 中修复并重跑。
+
+## 发布边界
+
+- 该 1.6.1 本地候选曾安装并通过视频号真实验收，但没有替换 1.6.1 GitHub Release；修复随后进入 1.6.2。
+- 公开下载页仍提供 2026-08-11 资产；发布前必须替换为重新完整验证的文件及对应校验文件，不能只改文档中的哈希。
+- 用户 ZIP 仍应只包含单文件安装器、使用说明、许可、二进制清单和源码获取说明，不得包含外置源码、构建脚本、source map 或用户状态。
+- 当前环境缺少既有 RSA 更新签名私钥，因此不能生成稳定 `update.json`；这不阻止手动 GitHub Release，但客户端自动更新仍受阻。

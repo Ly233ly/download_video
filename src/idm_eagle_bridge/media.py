@@ -67,6 +67,40 @@ def _safe_extension(value: Any, fallback: str = "bin") -> str:
     return result or fallback
 
 
+def _wechat_captured_url(primary_url: str, value: Any) -> str:
+    captured = _safe_text(value, 16_384)
+    if not captured:
+        return ""
+    try:
+        primary = urlsplit(primary_url)
+        alternate = urlsplit(captured)
+    except ValueError as exc:
+        raise MediaPlanError("视频号备用地址无效", "wechat_captured_url_invalid") from exc
+    if (
+        primary.scheme.lower() != "https"
+        or alternate.scheme.lower() != "https"
+        or primary.hostname != alternate.hostname
+        or primary.port != alternate.port
+        or primary.path != alternate.path
+        or alternate.username is not None
+        or alternate.password is not None
+        or alternate.fragment
+    ):
+        raise MediaPlanError("视频号备用地址与原始媒体不一致", "wechat_captured_url_invalid")
+
+    def signed_value(url: str, name: str) -> str:
+        for key, item in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+            if key.lower() == name:
+                return item
+        return ""
+
+    for required in ("encfilekey", "token"):
+        expected = signed_value(primary_url, required)
+        if not expected or signed_value(captured, required) != expected:
+            raise MediaPlanError("视频号备用地址签名不一致", "wechat_captured_url_invalid")
+    return captured
+
+
 def safe_output_name(value: Any, container: str) -> str:
     name = Path(_safe_text(value, 220)).name
     if name.lower().endswith("." + container.lower()):
@@ -423,6 +457,7 @@ class MediaCoordinator:
             )
             wechat_decode_key: int | None = None
             wechat_encrypted_bytes = 0
+            wechat_captured_url = ""
             if source_type == "wechat_channels":
                 raw_key = _safe_text(raw.get("wechatDecodeKey"), 32)
                 if raw_key:
@@ -436,6 +471,9 @@ class MediaCoordinator:
                     if not isinstance(raw_encrypted_bytes, int) or not 1 <= raw_encrypted_bytes <= 8 * 1024 * 1024:
                         raise MediaPlanError("视频号加密长度无效", "wechat_encrypted_length_invalid")
                     wechat_encrypted_bytes = raw_encrypted_bytes
+                    wechat_captured_url = _wechat_captured_url(
+                        url, raw.get("wechatCapturedUrl")
+                    )
             contexts.append(
                 {
                     "url": url,
@@ -451,6 +489,7 @@ class MediaCoordinator:
                     "resolver": resolver,
                     "wechat_decode_key": wechat_decode_key,
                     "wechat_encrypted_bytes": wechat_encrypted_bytes,
+                    "wechat_captured_url": wechat_captured_url,
                 }
             )
             if size is not None and size > 0:
@@ -1104,18 +1143,67 @@ class MediaCoordinator:
             name.title(): str(value)
             for name, value in dict(context.get("headers") or {}).items()
         }
-        request = Request(str(context.get("url") or ""), headers=headers)
+        headers.setdefault("Accept-Encoding", "identity")
+        url = str(context.get("url") or "")
+        captured_url = str(context.get("wechat_captured_url") or "")
         proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else {}
         opener = build_opener(ProxyHandler(proxies))
         target.unlink(missing_ok=True)
         try:
-            response_context = opener.open(request, timeout=60)
+            attempts: list[tuple[str, dict[str, str], bool]] = [(url, headers, False)]
+            if not any(name.lower() == "range" for name in headers):
+                attempts.append((url, {**headers, "Range": "bytes=0-"}, False))
+            if captured_url:
+                attempts.append((captured_url, headers, True))
+                if not any(name.lower() == "range" for name in headers):
+                    attempts.append(
+                        (captured_url, {**headers, "Range": "bytes=0-"}, True)
+                    )
+            response_context = None
+            captured_fallback_used = False
+            failed_attempts: list[str] = []
+            for attempt, (attempt_url, attempt_headers, is_captured) in enumerate(attempts):
+                request = Request(attempt_url, headers=attempt_headers)
+                try:
+                    response_context = opener.open(request, timeout=60)
+                    captured_fallback_used = is_captured
+                    break
+                except HTTPError as exc:
+                    request_kind = "完整地址" if is_captured else "精简地址"
+                    if any(name.lower() == "range" for name in attempt_headers):
+                        request_kind += "分段"
+                    failed_attempts.append(f"{request_kind} HTTP {exc.code}")
+                    if exc.code in {400, 403} and attempt + 1 < len(attempts):
+                        exc.close()
+                        continue
+                    raise
+            if response_context is None:
+                raise MediaPlanError("视频号媒体下载连接失败", "wechat_download_failed")
             with response_context as response, target.open("wb") as output:
                 content_length = response.headers.get("Content-Length", "")
                 try:
-                    expected = int(content_length) if content_length else int(context.get("size") or 0)
+                    response_length = int(content_length) if content_length else 0
                 except ValueError:
-                    expected = int(context.get("size") or 0)
+                    response_length = 0
+                declared_original_size = int(context.get("size") or 0)
+                expected = response_length or declared_original_size
+                if captured_fallback_used and declared_original_size <= 0:
+                    raise MediaPlanError(
+                        "视频号完整签名地址缺少原始大小，无法确认原画",
+                        "wechat_original_unverifiable",
+                    )
+                if (
+                    captured_fallback_used
+                    and response_length > 0
+                    and response_length != declared_original_size
+                ):
+                    attempts_detail = "、".join(failed_attempts) or "精简地址不可用"
+                    raise MediaPlanError(
+                        "视频号原画当前不可用：完整地址返回的是其他画质"
+                        f"（响应 {response_length} 字节，原画声明 {declared_original_size} 字节；"
+                        f"此前 {attempts_detail}）。请改选非“原始视频”的明确画质",
+                        "wechat_original_size_mismatch",
+                    )
                 decryptor = WechatVideoDecryptor(key, encrypted_bytes)
                 downloaded = 0
                 last_update = 0.0
@@ -1141,10 +1229,25 @@ class MediaCoordinator:
                         last_update = now
                 if content_length and downloaded != int(content_length):
                     raise MediaPlanError("视频号媒体下载长度不完整", "wechat_download_incomplete")
+                if captured_fallback_used and downloaded != declared_original_size:
+                    raise MediaPlanError(
+                        "视频号原画当前不可用：完整地址下载的是其他画质"
+                        f"（下载 {downloaded} 字节，原画声明 {declared_original_size} 字节）。"
+                        "请改选非“原始视频”的明确画质",
+                        "wechat_original_size_mismatch",
+                    )
         except MediaPlanError:
             target.unlink(missing_ok=True)
             raise
-        except (HTTPError, URLError, OSError, ValueError) as exc:
+        except HTTPError as exc:
+            target.unlink(missing_ok=True)
+            if exc.code == 400:
+                raise MediaPlanError(
+                    "视频号下载地址已失效，请重新播放后选择当前画质，或重新捕获后再试",
+                    "wechat_download_failed",
+                ) from exc
+            raise MediaPlanError(f"视频号媒体下载失败：HTTP {exc.code}", "wechat_download_failed") from exc
+        except (URLError, OSError, ValueError) as exc:
             target.unlink(missing_ok=True)
             raise MediaPlanError(f"视频号媒体下载失败：{exc}", "wechat_download_failed") from exc
         if not target.is_file() or target.stat().st_size <= 0:
@@ -1166,6 +1269,7 @@ class MediaCoordinator:
                 "extension": "mp4",
                 "wechat_decode_key": None,
                 "wechat_encrypted_bytes": 0,
+                "wechat_captured_url": "",
                 "local_input": True,
             }
         )

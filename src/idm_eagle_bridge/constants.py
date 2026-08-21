@@ -2,7 +2,7 @@ from __future__ import annotations
 
 BRAND_NAME = "留底"
 APP_NAME = "留底下载器"
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.2"
 APP_AUTHOR = "阿毅i"
 APP_DESCRIPTION = "免费开源的 Windows 本机媒体下载与归档工具"
 APP_SLOGAN = "想留的，留个底。"

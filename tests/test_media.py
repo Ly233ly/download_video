@@ -11,6 +11,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 from idm_eagle_bridge.database import Database
 from idm_eagle_bridge.media import (
@@ -803,6 +804,174 @@ class MediaCoordinatorTests(unittest.TestCase):
         proxy_handler.assert_called_once_with({})
         opener.open.assert_called_once()
         self.assertEqual(target.read_bytes(), b"WEBVTT\n")
+
+    def test_wechat_download_retries_http_400_with_range_header(self) -> None:
+        class Response(io.BytesIO):
+            def __init__(self, content: bytes) -> None:
+                super().__init__(content)
+                self.headers = {"Content-Length": str(len(content))}
+
+        target = self.root / "wechat-range-retry.mp4"
+        content = b"wechat-media"
+        url = "https://finder.video.qq.com/251/20302/stodownload?token=redacted"
+        opener = Mock()
+        opener.open.side_effect = [
+            HTTPError(url, 400, "Bad Request", {}, io.BytesIO()),
+            Response(content),
+        ]
+
+        with patch("idm_eagle_bridge.media.build_opener", return_value=opener):
+            prepared = self.coordinator._download_and_decrypt_wechat_stream(
+                "missing-plan",
+                {
+                    "url": url,
+                    "headers": {"User-Agent": "Mozilla/5.0"},
+                    "size": len(content),
+                    "wechat_decode_key": 1,
+                    "wechat_encrypted_bytes": 0,
+                },
+                target,
+            )
+
+        self.assertEqual(opener.open.call_count, 2)
+        first_request = opener.open.call_args_list[0].args[0]
+        second_request = opener.open.call_args_list[1].args[0]
+        self.assertIsNone(first_request.get_header("Range"))
+        self.assertEqual(second_request.get_header("Range"), "bytes=0-")
+        self.assertEqual(first_request.get_header("Accept-encoding"), "identity")
+        self.assertEqual(target.read_bytes(), content)
+        self.assertTrue(prepared["local_input"])
+
+    def test_wechat_download_reports_expired_address_after_range_retry(self) -> None:
+        target = self.root / "wechat-expired.mp4"
+        url = "https://finder.video.qq.com/251/20302/stodownload?token=redacted"
+        opener = Mock()
+        opener.open.side_effect = [
+            HTTPError(url, 400, "Bad Request", {}, io.BytesIO()),
+            HTTPError(url, 400, "Bad Request", {}, io.BytesIO()),
+        ]
+
+        with patch("idm_eagle_bridge.media.build_opener", return_value=opener):
+            with self.assertRaisesRegex(MediaPlanError, "重新播放后选择当前画质") as caught:
+                self.coordinator._download_and_decrypt_wechat_stream(
+                    "missing-plan",
+                    {
+                        "url": url,
+                        "headers": {},
+                        "size": 0,
+                        "wechat_decode_key": 1,
+                        "wechat_encrypted_bytes": 0,
+                    },
+                    target,
+                )
+
+        self.assertEqual(caught.exception.code, "wechat_download_failed")
+        self.assertEqual(opener.open.call_count, 2)
+        self.assertFalse(target.exists())
+
+    def test_wechat_download_uses_size_verified_captured_url_after_400(self) -> None:
+        class Response(io.BytesIO):
+            def __init__(self, content: bytes) -> None:
+                super().__init__(content)
+                self.headers = {"Content-Length": str(len(content))}
+
+        target = self.root / "wechat-captured-fallback.mp4"
+        content = b"verified-original-media"
+        minimal = (
+            "https://finder.video.qq.com/251/20302/stodownload?"
+            "encfilekey=file-key&token=access-token"
+        )
+        captured = minimal + "&hy=SZ&idx=1&sign=current-signature"
+        opener = Mock()
+        opener.open.side_effect = [
+            HTTPError(minimal, 400, "Bad Request", {}, io.BytesIO()),
+            HTTPError(minimal, 400, "Bad Request", {}, io.BytesIO()),
+            Response(content),
+        ]
+
+        with patch("idm_eagle_bridge.media.build_opener", return_value=opener):
+            prepared = self.coordinator._download_and_decrypt_wechat_stream(
+                "missing-plan",
+                {
+                    "url": minimal,
+                    "wechat_captured_url": captured,
+                    "headers": {},
+                    "size": len(content),
+                    "wechat_decode_key": 1,
+                    "wechat_encrypted_bytes": 0,
+                },
+                target,
+            )
+
+        self.assertEqual(opener.open.call_count, 3)
+        fallback_request = opener.open.call_args_list[2].args[0]
+        self.assertEqual(fallback_request.full_url, captured)
+        self.assertEqual(target.read_bytes(), content)
+        self.assertEqual(prepared["wechat_captured_url"], "")
+
+    def test_wechat_captured_url_must_match_declared_original_size(self) -> None:
+        class Response(io.BytesIO):
+            def __init__(self, content: bytes) -> None:
+                super().__init__(content)
+                self.headers = {"Content-Length": str(len(content))}
+
+        target = self.root / "wechat-captured-size-mismatch.mp4"
+        minimal = (
+            "https://finder.video.qq.com/251/20302/stodownload?"
+            "encfilekey=file-key&token=access-token"
+        )
+        captured = minimal + "&sign=current-signature"
+        opener = Mock()
+        opener.open.side_effect = [
+            HTTPError(minimal, 400, "Bad Request", {}, io.BytesIO()),
+            HTTPError(minimal, 400, "Bad Request", {}, io.BytesIO()),
+            Response(b"lower-quality"),
+        ]
+
+        with patch("idm_eagle_bridge.media.build_opener", return_value=opener):
+            with self.assertRaises(MediaPlanError) as caught:
+                self.coordinator._download_and_decrypt_wechat_stream(
+                    "missing-plan",
+                    {
+                        "url": minimal,
+                        "wechat_captured_url": captured,
+                        "headers": {},
+                        "size": 99,
+                        "wechat_decode_key": 1,
+                        "wechat_encrypted_bytes": 0,
+                    },
+                    target,
+                )
+
+        self.assertEqual(caught.exception.code, "wechat_original_size_mismatch")
+        self.assertIn("响应 13 字节，原画声明 99 字节", str(caught.exception))
+        self.assertIn("精简地址 HTTP 400", str(caught.exception))
+        self.assertIn("改选非“原始视频”的明确画质", str(caught.exception))
+        self.assertFalse(target.exists())
+
+    def test_wechat_captured_url_cannot_change_signed_asset(self) -> None:
+        payload = self.payload(
+            sourceType="wechat_channels",
+            streams=[{
+                "url": (
+                    "https://finder.video.qq.com/251/20302/stodownload?"
+                    "encfilekey=file-key&token=access-token"
+                ),
+                "role": "video",
+                "extension": "mp4",
+                "size": 10,
+                "wechatDecodeKey": "1",
+                "wechatEncryptedBytes": 131_072,
+                "wechatCapturedUrl": (
+                    "https://evil.example/stodownload?"
+                    "encfilekey=file-key&token=access-token"
+                ),
+            }],
+            runtimeHeaders=[{}],
+        )
+        with self.assertRaises(MediaPlanError) as caught:
+            self.coordinator.create_plan(payload)
+        self.assertEqual(caught.exception.code, "wechat_captured_url_invalid")
 
     def test_download_only_uses_desktop_and_does_not_create_eagle_job(self) -> None:
         media_root = self.root / "download-only"

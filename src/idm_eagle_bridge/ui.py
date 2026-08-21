@@ -231,8 +231,8 @@ METRICS = {
     "master_compact_width": 300,
     "preview_max_width": 448,
     "button_height": 38,
-    "task_row_height": 106,
-    "wechat_row_height": 106,
+    "task_row_height": 128,
+    "wechat_row_height": 128,
     "table_row_height": 46,
 }
 

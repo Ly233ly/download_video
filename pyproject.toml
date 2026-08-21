@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "liudi-downloader"
-version = "1.6.1"
+version = "1.6.2"
 description = "免费开源的 Windows 本机媒体下载与归档工具"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

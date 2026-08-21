@@ -9,6 +9,7 @@
   const ACTIVE_DETAIL_METHODS = new Set([
     "finderGetCommentDetail",
   ]);
+  const videoBindings = new WeakMap();
   let activeObjectId = "";
   let activeVersion = 0;
   let publishedActiveObjectId = "";
@@ -129,10 +130,21 @@
 
   function objectIdFromLocation() {
     const href = String(location && location.href || "");
-    for (const item of seen.keys()) {
-      if (href.includes(item)) return item;
+    const matches = knownObjectIdsInValue(href);
+    return matches.size === 1 ? matches.values().next().value : "";
+  }
+
+  function knownObjectIdsInValue(value) {
+    let haystack = text(value, 8192);
+    if (!haystack) return new Set();
+    try { haystack = decodeURIComponent(haystack); } catch (_error) {}
+    const matches = new Set();
+    for (const objectId of seen.keys()) {
+      const escaped = objectId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = new RegExp("(?:^|[^A-Za-z0-9_-])" + escaped + "(?:$|[^A-Za-z0-9_-])");
+      if (pattern.test(haystack)) matches.add(objectId);
     }
-    return "";
+    return matches;
   }
 
   function markActive(objectId) {
@@ -244,7 +256,21 @@
     scheduleUiRefresh();
   }
 
+  function authoritativeDetailIds(value, sourceMethod) {
+    if (!ACTIVE_DETAIL_METHODS.has(text(sourceMethod, 64))) return [];
+    const data = value && typeof value === "object" ? value.data : null;
+    const direct = data && typeof data === "object" ? data.object : null;
+    const objects = Array.isArray(direct) ? direct : direct && typeof direct === "object" ? [direct] : [];
+    const ids = [];
+    for (const item of objects) {
+      const normalized = normalizeFeed(item);
+      if (normalized && !ids.includes(normalized.objectId)) ids.push(normalized.objectId);
+    }
+    return ids;
+  }
+
   function scan(value, sourceMethod) {
+    const authoritative = authoritativeDetailIds(value, sourceMethod);
     const queue = [value];
     const visited = new Set();
     const matched = [];
@@ -275,8 +301,9 @@
       }
     }
     const unique = Array.from(new Set(matched));
-    if (unique.length === 1 && ACTIVE_DETAIL_METHODS.has(text(sourceMethod, 64))) {
-      markActive(unique[0]);
+    if (authoritative.length === 1) {
+      bindCurrentPlayingVideo(authoritative[0], "detail");
+      markActive(authoritative[0]);
     } else {
       const located = objectIdFromLocation();
       if (located) markActive(located);
@@ -385,10 +412,115 @@
     }
   }
 
+  function mediaIdentity(value) {
+    try {
+      const parsed = new URL(value, location.href);
+      if (!/^https?:$/i.test(parsed.protocol)) return null;
+      let encfilekey = "";
+      for (const [name, argument] of parsed.searchParams.entries()) {
+        if (name.toLowerCase() === "encfilekey") {
+          encfilekey = text(argument, 2048);
+          break;
+        }
+      }
+      return {
+        path: parsed.hostname.toLowerCase() + parsed.pathname,
+        encfilekey,
+        sharedPath: /\/stodownload$/i.test(parsed.pathname),
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function feedMediaIdentity(media) {
+    return mediaIdentity(text(media && media.url, 8192) + text(media && media.urlToken, 8192));
+  }
+
+  function isVisiblePlayingVideo(video) {
+    if (!video || video.paused === true || video.ended === true) return false;
+    if (video.hidden === true) return false;
+    if (typeof window.getComputedStyle === "function") {
+      const style = window.getComputedStyle(video);
+      if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) {
+        return false;
+      }
+    }
+    if (typeof video.getClientRects === "function") {
+      const rects = Array.from(video.getClientRects());
+      if (!rects.length) return false;
+      const viewportWidth = number(window.innerWidth)
+        || number(document && document.documentElement && document.documentElement.clientWidth);
+      const viewportHeight = number(window.innerHeight)
+        || number(document && document.documentElement && document.documentElement.clientHeight);
+      if (viewportWidth && viewportHeight && !rects.some(function (rect) {
+        return number(rect.width) > 0
+          && number(rect.height) > 0
+          && Number(rect.right) > 0
+          && Number(rect.bottom) > 0
+          && Number(rect.left) < viewportWidth
+          && Number(rect.top) < viewportHeight;
+      })) return false;
+    }
+    return true;
+  }
+
+  function playingVideos(scope) {
+    if (!scope || typeof scope.querySelectorAll !== "function") return [];
+    return Array.from(scope.querySelectorAll("video")).filter(isVisiblePlayingVideo);
+  }
+
+  function videoSource(video) {
+    return firstText([video && video.currentSrc, video && video.src], 8192);
+  }
+
+  function bindVideo(video, objectId, reason) {
+    if (!isVisiblePlayingVideo(video) || !objectId || !seen.has(objectId)) return false;
+    videoBindings.set(video, {
+      objectId,
+      reason: text(reason, 32),
+      source: videoSource(video),
+      duration: Number(video.duration),
+    });
+    return true;
+  }
+
+  function bindCurrentPlayingVideo(objectId, reason) {
+    if (!document || typeof document.querySelectorAll !== "function") return false;
+    const videos = playingVideos(document);
+    return videos.length === 1 ? bindVideo(videos[0], objectId, reason) : false;
+  }
+
+  function boundEntryForVideo(video) {
+    if (!isVisiblePlayingVideo(video)) return null;
+    const binding = videoBindings.get(video);
+    if (!binding || !seen.has(binding.objectId)) return null;
+    const source = videoSource(video);
+    if (binding.source && source && binding.source !== source) {
+      videoBindings.delete(video);
+      return null;
+    }
+    const duration = Number(video.duration);
+    if (
+      Number.isFinite(binding.duration)
+      && binding.duration > 0
+      && Number.isFinite(duration)
+      && duration > 0
+      && Math.abs(binding.duration - duration) > 0.5
+    ) {
+      videoBindings.delete(video);
+      return null;
+    }
+    return seen.get(binding.objectId) || null;
+  }
+
   function videoSources(scope) {
     if (!scope || typeof scope.querySelectorAll !== "function") return [];
     const result = [];
-    for (const video of scope.querySelectorAll("video")) {
+    const allVideos = Array.from(scope.querySelectorAll("video"));
+    const currentVideos = allVideos.filter(isVisiblePlayingVideo);
+    const videos = currentVideos.length === 1 ? currentVideos : allVideos;
+    for (const video of videos) {
       const values = [video.currentSrc, video.src];
       if (typeof video.querySelectorAll === "function") {
         for (const source of video.querySelectorAll("source")) values.push(source.src);
@@ -402,11 +534,20 @@
   }
 
   function entryMatchingSources(sources) {
-    const paths = new Set(sources.map(comparableMediaPath).filter(Boolean));
-    if (!paths.size) return null;
+    const identities = sources.map(mediaIdentity).filter(Boolean);
+    if (!identities.length) return null;
     const matches = Array.from(seen.values()).filter(function (entry) {
       return entry.feed.media.some(function (media) {
-        return paths.has(comparableMediaPath(media.url));
+        const candidate = feedMediaIdentity(media);
+        if (!candidate) return false;
+        return identities.some(function (source) {
+          if (source.path !== candidate.path) return false;
+          // 微信大量视频共享 stodownload 路径。只要播放地址带有稳定的
+          // encfilekey，就必须同时匹配它；其余 token/sign 可正常轮换。
+          if (source.encfilekey) return source.encfilekey === candidate.encfilekey;
+          if (source.sharedPath || candidate.sharedPath) return false;
+          return true;
+        });
       });
     });
     return matches.length === 1 ? matches[0] : null;
@@ -421,7 +562,10 @@
     const entry = entryMatchingSources(
       sources.map(function (value) { return text(value, 8192); }).filter(Boolean),
     );
-    if (entry) markActive(entry.feed.objectId);
+    if (entry) {
+      bindVideo(video, entry.feed.objectId, "media");
+      markActive(entry.feed.objectId);
+    }
   }
 
   function markActivePlayingVideo() {
@@ -434,26 +578,129 @@
     }
   }
 
-  function entryFromTrigger(trigger) {
-    const located = objectIdFromLocation();
-    if (located) return seen.get(located) || null;
+  function objectIdFromScope(scope) {
+    if (!scope || scope === document) return "";
+    const nodes = [scope];
+    const found = new Set();
+    if (typeof scope.querySelectorAll === "function") {
+      const selector = [
+        "a[href]", "[data-id]", "[data-object-id]", "[data-objectid]", "[data-feed-id]", "[data-feedid]",
+      ].join(",");
+      for (const node of scope.querySelectorAll(selector)) nodes.push(node);
+    }
+    for (const node of nodes) {
+      const values = [node && node.href];
+      if (node && typeof node.getAttribute === "function") {
+        for (const name of [
+          "href", "data-id", "data-object-id", "data-objectid", "data-feed-id", "data-feedid",
+        ]) values.push(node.getAttribute(name));
+      }
+      for (const value of values) {
+        const haystack = text(value, 8192);
+        if (!haystack) continue;
+        for (const objectId of knownObjectIdsInValue(haystack)) found.add(objectId);
+      }
+    }
+    return found.size === 1 ? found.values().next().value : "";
+  }
 
+  function coverSources(scope) {
+    if (!scope || typeof scope.querySelectorAll !== "function") return [];
+    const result = [];
+    const currentVideos = playingVideos(scope);
+    if (currentVideos.length !== 1) return result;
+    const poster = text(currentVideos[0] && currentVideos[0].poster, 8192);
+    if (poster) result.push(poster);
+    return result;
+  }
+
+  function entryMatchingCover(sources) {
+    const paths = new Set(sources.map(comparableMediaPath).filter(Boolean));
+    if (!paths.size) return null;
+    const matches = Array.from(seen.values()).filter(function (entry) {
+      return entry.feed.media.some(function (media) {
+        return paths.has(comparableMediaPath(media.coverUrl));
+      });
+    });
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function normalizedVisibleText(value) {
+    return text(value, 20000).replace(/[\s\u200b-\u200d\ufeff]+/g, "").toLowerCase();
+  }
+
+  function triggerScope(trigger) {
     const slide = trigger && typeof trigger.closest === "function"
       ? trigger.closest(".slides-item")
       : null;
-    const scope = slide || document;
+    if (slide) return slide;
+    let current = trigger && trigger.parentElement;
+    for (let depth = 0; current && depth < 10; depth += 1) {
+      if (playingVideos(current).length === 1) return current;
+      current = current.parentElement;
+    }
+    return document;
+  }
+
+  function entryFromTrigger(trigger) {
+    const located = objectIdFromLocation();
+    const slide = trigger && typeof trigger.closest === "function"
+      ? trigger.closest(".slides-item")
+      : null;
+    const scope = triggerScope(trigger);
+    const scopedObjectId = objectIdFromScope(scope);
+    const evidence = new Set();
+    const corroboratingEvidence = new Set();
+    if (located && seen.has(located)) evidence.add(located);
+    if (scopedObjectId && seen.has(scopedObjectId)) {
+      evidence.add(scopedObjectId);
+      corroboratingEvidence.add(scopedObjectId);
+    }
+
+    const currentVideos = playingVideos(scope);
+    if (currentVideos.length === 1) {
+      const bound = boundEntryForVideo(currentVideos[0]);
+      if (bound) {
+        evidence.add(bound.feed.objectId);
+        corroboratingEvidence.add(bound.feed.objectId);
+      }
+    }
     const sources = videoSources(scope);
     const sourceMatch = entryMatchingSources(sources);
-    if (sourceMatch) return sourceMatch;
+    if (sourceMatch) {
+      evidence.add(sourceMatch.feed.objectId);
+      corroboratingEvidence.add(sourceMatch.feed.objectId);
+    }
 
-    const scopeText = text(scope && scope.textContent, 20000);
+    const coverMatch = entryMatchingCover(coverSources(scope));
+    if (coverMatch) {
+      evidence.add(coverMatch.feed.objectId);
+      corroboratingEvidence.add(coverMatch.feed.objectId);
+    }
+
+    const scopeText = normalizedVisibleText(scope && scope.textContent);
     if (scopeText) {
       const matches = Array.from(seen.values()).filter(function (entry) {
-        const title = text(entry.feed.title, 500);
+        const title = normalizedVisibleText(entry.feed.title);
         return title.length >= 4 && scopeText.includes(title);
       });
-      if (matches.length === 1) return matches[0];
+      if (matches.length === 1) {
+        evidence.add(matches[0].feed.objectId);
+        corroboratingEvidence.add(matches[0].feed.objectId);
+      }
     }
+
+    if (evidence.size === 1) {
+      const objectId = evidence.values().next().value;
+      // WeChat SPA may leave the previous objectId in the address bar while a
+      // new blob video is already playing.  Location alone cannot authorize a
+      // click whenever a current player exists.
+      if (located === objectId && currentVideos.length && !corroboratingEvidence.has(objectId)) {
+        return null;
+      }
+      return seen.get(objectId) || null;
+    }
+    if (evidence.size > 1) return null;
 
     // An inline control belongs to one concrete slide.  If that slide cannot
     // be tied to a candidate by URL, object id, or title, falling back to the
@@ -461,7 +708,6 @@
     // Refuse the click instead: a visible retry is safer than downloading a
     // different person's video under the selected title.
     if (slide) return null;
-    if (seen.size === 1) return seen.values().next().value;
     return null;
   }
 
@@ -485,15 +731,17 @@
       });
       if (exact) return exact;
     }
+    const explicitQuality = variants.find(function (variant) {
+      return Boolean(variant.deliverySpec);
+    });
+    if (explicitQuality) return explicitQuality;
     return variants.find(function (variant) {
       return !variant.deliverySpec;
     }) || variants[0];
   }
 
   function currentSourceForTrigger(trigger) {
-    const scope = trigger && typeof trigger.closest === "function"
-      ? trigger.closest(".slides-item") || document
-      : document;
+    const scope = triggerScope(trigger);
     return videoSources(scope)[0] || "";
   }
 
@@ -539,6 +787,11 @@
   function requestDownload(trigger, requestedVariantId) {
     const entry = entryFromTrigger(trigger);
     if (!entry) {
+      postDiagnostic({
+        action: "diagnostic",
+        reason: "current_video_ambiguous",
+        count: 1,
+      });
       toast("未能确认当前视频，请先播放当前视频后重试", true);
       return;
     }
@@ -746,6 +999,26 @@
         if (event && event.target && String(event.target.tagName).toLowerCase() === "video") {
           markActiveFromVideo(event.target);
         }
+      }, true);
+      const clearVideoBinding = function (event) {
+        if (event && event.target && String(event.target.tagName).toLowerCase() === "video") {
+          videoBindings.delete(event.target);
+        }
+      };
+      document.addEventListener("loadstart", clearVideoBinding, true);
+      document.addEventListener("emptied", clearVideoBinding, true);
+      document.addEventListener("durationchange", function (event) {
+        const video = event && event.target;
+        const binding = video && videoBindings.get(video);
+        const duration = Number(video && video.duration);
+        if (
+          binding
+          && Number.isFinite(binding.duration)
+          && binding.duration > 0
+          && Number.isFinite(duration)
+          && duration > 0
+          && Math.abs(binding.duration - duration) > 0.5
+        ) videoBindings.delete(video);
       }, true);
     }
     if (typeof MutationObserver !== "undefined" && document.documentElement) {
