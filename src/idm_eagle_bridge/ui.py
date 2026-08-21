@@ -5564,7 +5564,7 @@ class MainWindow:
         ).pack(anchor="w", pady=(4, 0))
         _DynamicWrapLabel(
             content,
-            text="每天最多自动检查一次；发现新版本后必须由你确认下载和安装。签名和哈希校验全部通过后才会启动安装。",
+            text="每天最多自动检查一次；发现新版本后必须由你确认下载和安装。仅接受本项目的 GitHub 正式版本，文件大小和 SHA-256 校验通过后才会启动安装。",
             style="Muted.TLabel",
             justify=LEFT,
             maximum=820,
@@ -6132,7 +6132,7 @@ class MainWindow:
         self.update_downloading = False
         self.update_button_text.set("正在安装…")
         if hasattr(self, "update_status_text"):
-            self.update_status_text.set("签名和哈希校验通过，正在启动安装")
+            self.update_status_text.set("GitHub 文件大小和哈希校验通过，正在启动安装")
         try:
             launch_installer(Path(installer))
         except Exception as exc:

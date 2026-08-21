@@ -89,5 +89,6 @@ powershell -ExecutionPolicy Bypass -File packaging/Test-FrozenRuntime.ps1
 - 用户 ZIP 不包含开发机数据、配对令牌、网站规则、任务记录或用户路径。
 - 用户可见载荷不包含外置 Python、C#、PowerShell、spec、TOML 或 source map。
 - GPL 对应源码、固定上游源码、构建材料和许可证必须与二进制发行同时可得。
-- 稳定更新清单必须使用现有 RSA 私钥签名，并核对 ZIP 大小与 SHA-256。
-- 缺少原签名私钥时只能提供手动下载，不得伪造稳定自动更新。
+- 正式自动更新从固定 GitHub Releases API 获取，必须验证严格版本号、非草稿/非预发布状态、唯一 Windows 资产、资产 API 身份、公开地址、GitHub SHA-256 和大小。
+- 发布后必须从公共 API 重新读取元数据、重新下载资产并复算 SHA-256；同时用 1.6.3 更新器完成真实下载、安全解压和唯一根目录安装器定位。
+- 不再生成或上传 `update.json`，也不需要 RSA 更新私钥。视频号本机证书模块中的 RSA 逻辑与自动更新无关，不得因本迁移移除。

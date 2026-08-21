@@ -1721,7 +1721,7 @@ class ProductionUiIntegrationTests(unittest.TestCase):
             window.root.update_idletasks()
 
             self.assertEqual(window.ui_theme, "light")
-            self.assertEqual(window.root.title(), "留底下载器 v1.6.2 by阿毅i")
+            self.assertEqual(window.root.title(), "留底下载器 v1.6.3 by阿毅i")
             self.assertEqual(window.theme_button_text.get(), "切换到深色主题")
             window._toggle_theme()
             window.root.update_idletasks()

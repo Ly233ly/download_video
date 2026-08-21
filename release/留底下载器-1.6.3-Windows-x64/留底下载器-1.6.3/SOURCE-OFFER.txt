@@ -1,0 +1,4 @@
+本安装包的 GPL-3.0 对应源码与二进制包分开提供。
+文件：liudi-downloader-1.6.3-source.zip
+SHA-256：f07e0df9a5afc482d26f098c05a1235c721b5db05464b46fec7341bb9f8be206
+分发本安装包时，必须在同一下载位置同时提供上述源码包。

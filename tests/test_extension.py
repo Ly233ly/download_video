@@ -51,7 +51,7 @@ class ExtensionTests(unittest.TestCase):
     def test_manifests_are_versioned_and_include_structured_site_bridges(self) -> None:
         for name in ("manifest.json", "manifest.firefox.json"):
             manifest = json.loads((EXTENSION / name).read_text(encoding="utf-8"))
-            self.assertEqual(manifest["version"], "1.6.2")
+            self.assertEqual(manifest["version"], "1.6.3")
             self.assertEqual(manifest["name"], "留底浏览器扩展")
             self.assertEqual(manifest["action"]["default_title"], "留底浏览器扩展")
             self.assertEqual(manifest["description"], "免费开源的 Windows 本机媒体下载与归档工具")
@@ -63,14 +63,14 @@ class ExtensionTests(unittest.TestCase):
             self.assertIn("catch-script/youtube.js", resources)
         setup = (ROOT / "installer" / "Setup.cs").read_text(encoding="utf-8")
         launcher = (ROOT / "launcher" / "Launcher.cs").read_text(encoding="utf-8")
-        self.assertIn('internal const string Version = "1.6.2"', setup)
-        self.assertIn('AssemblyFileVersion("1.6.2.0")', setup)
-        self.assertIn('AssemblyFileVersion("1.6.2.0")', launcher)
+        self.assertIn('internal const string Version = "1.6.3"', setup)
+        self.assertIn('AssemblyFileVersion("1.6.3.0")', setup)
+        self.assertIn('AssemblyFileVersion("1.6.3.0")', launcher)
         self.assertIn('updateMode || !openChromeSetup', setup)
         self.assertIn('Arguments = startHidden ? "--start-hidden" : ""', setup)
         version_resource = (ROOT / "packaging" / "liudi-downloader-version.txt").read_text(encoding="utf-8")
-        self.assertIn("filevers=(1, 6, 2, 0)", version_resource)
-        self.assertIn("prodvers=(1, 6, 2, 0)", version_resource)
+        self.assertIn("filevers=(1, 6, 3, 0)", version_resource)
+        self.assertIn("prodvers=(1, 6, 3, 0)", version_resource)
         self.assertGreaterEqual(setup.count("WriteBootstrapPairing(extensionDirectory"), 3)
 
     def test_bilibili_playinfo_becomes_grouped_video_and_audio(self) -> None:

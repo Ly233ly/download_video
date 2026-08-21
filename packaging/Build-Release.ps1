@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$Version = "1.6.2",
+    [string]$Version = "1.6.3",
     [switch]$SkipTests,
     [switch]$SkipFfmpegFetch,
     [switch]$SkipYoutubeResolverFetch
@@ -44,8 +44,8 @@ function Invoke-Checked([string]$Label, [scriptblock]$Action) {
     if ($LASTEXITCODE -ne 0) { throw "$Label 失败，退出码 $LASTEXITCODE" }
 }
 
-if ($Version -ne "1.6.2") {
-    throw "本分支只允许构建已经同步版本号的 1.6.2。"
+if ($Version -ne "1.6.3") {
+    throw "本分支只允许构建已经同步版本号的 1.6.3。"
 }
 
 if (-not $SkipTests) {
@@ -212,9 +212,27 @@ Get-ChildItem -LiteralPath $sourceRoot -File -Recurse -Force |
     Where-Object { $_.Extension.ToLowerInvariant() -in @(".pyc", ".pyo") } |
     Remove-Item -Force
 $currentVerification = Join-Path $sourceRoot "docs\RELEASE_VERIFICATION_$Version.md"
-if (Test-Path -LiteralPath $currentVerification -PathType Leaf) {
-    Remove-Item -LiteralPath $currentVerification -Force
-}
+# 完整验证页会记录源码 ZIP 自身哈希，不能原样装入该 ZIP 形成循环依赖。
+# 在源码快照中保留同名自洽说明页，让 README/安装文档的相对链接有效，
+# 并把发行资产与发布后复核分别指向不会混淆语义的公开页面。
+$verificationStub = @"
+# $Version 发布验证
+
+此源码快照不嵌入包含本 ZIP 自身哈希的完整验证页，以避免文件对自身产生循环校验依赖。
+
+正式发行资产与随附 SHA-256 文件见：
+<https://github.com/Ly233ly/download_video/releases/tag/v$Version>
+
+发布后维护的公共下载复核记录见主分支验证页：
+<https://github.com/Ly233ly/download_video/blob/main/docs/RELEASE_VERIFICATION_$Version.md>
+
+固定标签中的项目文档属于发布前快照，不会包含发布完成后才能取得的公共下载复核结果。
+"@
+[System.IO.File]::WriteAllText(
+    $currentVerification,
+    $verificationStub.Trim() + "`n",
+    (New-Object System.Text.UTF8Encoding($false))
+)
 New-Item -ItemType Directory -Path (Join-Path $sourceRoot "installer"), (Join-Path $sourceRoot "packaging"), (Join-Path $sourceRoot "media-tools") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot "installer\Setup.cs"), (Join-Path $projectRoot "installer\THIRD_PARTY_NOTICES.txt"), (Join-Path $projectRoot "installer\给接收者的使用说明.txt") -Destination (Join-Path $sourceRoot "installer") -Force
 Copy-Item -Path (Join-Path $projectRoot "packaging\*.ps1"), (Join-Path $projectRoot "packaging\*.py"), (Join-Path $projectRoot "packaging\*.spec"), (Join-Path $projectRoot "packaging\*.txt") -Destination (Join-Path $sourceRoot "packaging") -Force
