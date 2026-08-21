@@ -70,12 +70,12 @@
 - 1.6.2 正式构建未使用跳过测试选项；PyInstaller 冻结运行时、隔离新装、覆盖升级、模拟失败回滚和卸载全部通过。
 - 本机当前运行 `留底下载器 v1.6.2 by阿毅i`；注册表、启动器、后台、扩展均为 1.6.2，数据库结构 6、扩展协议 1，媒体与 YouTube 解析工具就绪。
 - 覆盖安装前后数据库 SHA-256 和记录数一致：41 条下载计划、3 条网站规则、8 条设置；数据库完整性为 `ok`，无更新备份残留。
-- 1.6.2 Windows ZIP、源码 ZIP、安装器和已安装后台的精确大小与 SHA-256 统一见 `docs/RELEASE_VERIFICATION_1.6.2.md`；公开资产待发布后补记。
+- 1.6.2 Windows ZIP、源码 ZIP、安装器、已安装后台和公开资产的精确大小与 SHA-256 统一见 `docs/RELEASE_VERIFICATION_1.6.2.md`。
 
 ## 代码与发布位置
 
 - GitHub：<https://github.com/Ly233ly/download_video>
-- GitHub Release：`v1.6.2` 待发布；计划附带 Windows ZIP、源码 ZIP 和两份 SHA-256 校验文件，公开资产以发布后验证文档为准。
+- GitHub Release：`v1.6.2`，附带 Windows ZIP、源码 ZIP 和两份 SHA-256 校验文件；公开资产已通过 GitHub API 和重新下载复核。
 - 用户安装包不把项目源码作为外置运行文件暴露；对应源码由公开仓库提供。
 
 ## 尚未完成
