@@ -4,7 +4,7 @@
 
 ## 安装
 
-1. 等 [1.6.3 发布验证](RELEASE_VERIFICATION_1.6.3.md) 标记正式通过后，下载并解压 `liudi-downloader-1.6.3-windows-x64.zip`，按该页核对大小和 SHA-256。
+1. 从 [GitHub Release v1.6.3](https://github.com/Ly233ly/download_video/releases/tag/v1.6.3) 下载并解压 `liudi-downloader-1.6.3-windows-x64.zip`，按 [1.6.3 发布验证](RELEASE_VERIFICATION_1.6.3.md) 核对大小和 SHA-256。
 2. 双击 `留底安装器.exe`，选择“一键安装”。
 3. 留底安装器复制程序文件、创建快捷方式和卸载入口，然后启动留底桌面端。
 4. 安装器会打开浏览器扩展目录。进入 Chrome 或 Edge 扩展管理页，开启“开发者模式”，选择“加载已解压的扩展程序”。

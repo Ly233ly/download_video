@@ -11,7 +11,7 @@
 
 留底下载器可以从浏览器、微信视频号和 IDM 接收媒体任务，在本机完成下载、音视频合并与校验，并按需导入 Eagle。
 
-当前源码候选版本：**1.6.3**
+当前正式版本：**1.6.3**
 
 ## 主要功能
 
@@ -29,7 +29,7 @@
 
 [前往 GitHub Releases 下载 Windows x64 安装包](https://github.com/Ly233ly/download_video/releases)
 
-> 版本状态：1.6.3 正在完成本机覆盖和公开发布。公开状态、发行文件及哈希以 [1.6.3 发布验证](docs/RELEASE_VERIFICATION_1.6.3.md) 为准；在该页标记正式通过前请继续使用 [1.6.2](docs/RELEASE_VERIFICATION_1.6.2.md)。
+> 版本状态：1.6.3 已正式发布并完成公开资产与更新器端到端验证。发行文件及 SHA-256 见 [1.6.3 发布验证](docs/RELEASE_VERIFICATION_1.6.3.md)。
 
 1. 解压 ZIP。
 2. 双击 `留底安装器.exe`，选择“一键安装”。
